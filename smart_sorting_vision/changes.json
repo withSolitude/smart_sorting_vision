@@ -1,0 +1,178 @@
+{
+  "upper": [
+    {
+      "path": "vision/pipeline/top_pick_pipeline.py",
+      "kind": "edit",
+      "variants": [
+        [
+          {
+            "old": "    plan_parallel_edge_grasp_options,\n)\nfrom vision.grasp.gripper_footprint import GripperFootprintModel\nfrom vision.grasp.grasp_pose_search import (\n    axis_vectors,\n    build_search_offsets,\n",
+            "new": "    plan_parallel_edge_grasp_options,\n)\nfrom vision.grasp.gripper_footprint import GripperFootprintModel\nfrom vision.grasp.claw_preopen_profile import ClawPreopenProfile\nfrom vision.grasp.grasp_pose_search import (\n    axis_vectors,\n    build_search_offsets,\n"
+          },
+          {
+            "old": "        self.preopen_command_max_mm = (\n            None if preopen_command_max_mm is None else float(preopen_command_max_mm)\n        )\n        self.gripper_debug_log_rejections = bool(gripper_debug_log_rejections)\n        self.gripper_footprint = GripperFootprintModel(\n            transform=self.transform,\n",
+            "new": "        self.preopen_command_max_mm = (\n            None if preopen_command_max_mm is None else float(preopen_command_max_mm)\n        )\n        self.claw_preopen_profile = ClawPreopenProfile.load()\n        if not self.dynamic_preopen_enabled:\n            raise ValueError(\"New claw requires configured dynamic preopen; fixed legacy fallback is disabled\")\n        # Net opening, margin and limits must come from the same profile.\n        # Preserve runtime_config (including yaw/TCP), but do not reuse old 6.8/48.8 limits.\n        self.preopen_margin_mm = self.claw_preopen_profile.margin_mm\n        self.preopen_command_min_mm = self.claw_preopen_profile.min_command_mm\n        self.preopen_command_max_mm = self.claw_preopen_profile.max_command_mm\n        print(f\"[CLAW] {self.claw_preopen_profile.kind} preopen profile: {self.preopen_command_min_mm:.1f}..\"\n              f\"{self.preopen_command_max_mm:.1f} mm, margin={self.preopen_margin_mm:.1f} mm\")\n        self.gripper_debug_log_rejections = bool(gripper_debug_log_rejections)\n        self.gripper_footprint = GripperFootprintModel(\n            transform=self.transform,\n"
+          },
+          {
+            "old": "        return float(out[0]), float(out[1])\n\n    def _preopen_for_width(self, width_mm: float | None) -> float | None:\n        if (\n            not self.dynamic_preopen_enabled\n            or width_mm is None\n            or not np.isfinite(float(width_mm))\n        ):\n            return None\n        value = float(width_mm) + self.preopen_margin_mm\n        if self.preopen_command_min_mm is not None:\n            value = max(value, self.preopen_command_min_mm)\n        if self.preopen_command_max_mm is not None:\n            value = min(value, self.preopen_command_max_mm)\n        return float(value)\n\n    def _build_candidates(\n        self,\n",
+            "new": "        return float(out[0]), float(out[1])\n\n    def _preopen_for_width(self, width_mm: float | None) -> float | None:\n        if not self.dynamic_preopen_enabled or width_mm is None:\n            raise ValueError(\"new claw requires a measured width; no legacy fixed preopen\")\n        return self.claw_preopen_profile.command_for_width(width_mm)\n\n    def _build_candidates(\n        self,\n"
+          },
+          {
+            "old": "                    reject(\"above_max_grasp_width\", px=candidate_px, yaw=yaw_deg)\n                    continue\n\n                preopen_mm = self._preopen_for_width(trial_width_mm)\n                engagement_opening = (\n                    self.gripper_footprint.fallback_opening_mm\n                    if preopen_mm is None\n",
+            "new": "                    reject(\"above_max_grasp_width\", px=candidate_px, yaw=yaw_deg)\n                    continue\n\n                try:\n                    preopen_mm = self._preopen_for_width(trial_width_mm)\n                except ValueError as exc:\n                    reject(\"preopen_out_of_calibrated_range\", px=candidate_px, yaw=yaw_deg,\n                           meta={\"preopen_error\": str(exc)})\n                    continue\n                engagement_opening = (\n                    self.gripper_footprint.fallback_opening_mm\n                    if preopen_mm is None\n"
+          }
+        ],
+        [
+          {
+            "old": "        )\n        self.claw_preopen_profile = ClawPreopenProfile.load()\n        if not self.dynamic_preopen_enabled:\n            raise ValueError(\"New claw requires measured dynamic preopen; fixed legacy fallback is disabled\")\n        # Net opening, margin and limits must come from the same measured profile.\n        # Preserve runtime_config (including yaw/TCP), but do not reuse old 6.8/48.8 limits.\n        self.preopen_margin_mm = self.claw_preopen_profile.margin_mm\n        self.preopen_command_min_mm = self.claw_preopen_profile.min_command_mm\n        self.preopen_command_max_mm = self.claw_preopen_profile.max_command_mm\n        print(f\"[CLAW] measured preopen profile: {self.preopen_command_min_mm:.1f}..\"\n              f\"{self.preopen_command_max_mm:.1f} mm, margin={self.preopen_margin_mm:.1f} mm\")\n        self.gripper_debug_log_rejections = bool(gripper_debug_log_rejections)\n        self.gripper_footprint = GripperFootprintModel(\n",
+            "new": "        )\n        self.claw_preopen_profile = ClawPreopenProfile.load()\n        if not self.dynamic_preopen_enabled:\n            raise ValueError(\"New claw requires configured dynamic preopen; fixed legacy fallback is disabled\")\n        # Net opening, margin and limits must come from the same profile.\n        # Preserve runtime_config (including yaw/TCP), but do not reuse old 6.8/48.8 limits.\n        self.preopen_margin_mm = self.claw_preopen_profile.margin_mm\n        self.preopen_command_min_mm = self.claw_preopen_profile.min_command_mm\n        self.preopen_command_max_mm = self.claw_preopen_profile.max_command_mm\n        print(f\"[CLAW] {self.claw_preopen_profile.kind} preopen profile: {self.preopen_command_min_mm:.1f}..\"\n              f\"{self.preopen_command_max_mm:.1f} mm, margin={self.preopen_margin_mm:.1f} mm\")\n        self.gripper_debug_log_rejections = bool(gripper_debug_log_rejections)\n        self.gripper_footprint = GripperFootprintModel(\n"
+          }
+        ]
+      ]
+    },
+    {
+      "path": "scripts/last_use/validation/validate_single_object_pick_to_tray.py",
+      "kind": "edit",
+      "variants": [
+        [
+          {
+            "old": "\nfrom communication.sorting_protocol import Mode, SortingFrame, make_pick_target, make_stop\nfrom communication.stm32_link import STM32Link\nfrom runtime.app_config import load_runtime_config\nfrom vision.cameras.top_camera import TopCamera\nfrom vision.pipeline.top_pick_pipeline import TopPickPipeline\n",
+            "new": "\nfrom communication.sorting_protocol import Mode, SortingFrame, make_pick_target, make_stop\nfrom communication.stm32_link import STM32Link\nfrom communication.claw_preopen_transaction import latch_preopen\nfrom runtime.app_config import load_runtime_config\nfrom vision.cameras.top_camera import TopCamera\nfrom vision.pipeline.top_pick_pipeline import TopPickPipeline\n"
+          },
+          {
+            "old": "    x_limits = cfg[\"mechanics\"][\"workspace_mm\"][\"x\"]\n    y_limits = cfg[\"mechanics\"][\"workspace_mm\"][\"y\"]\n    comp = build_compensator(top_vision_cfg)\n\n    return TopPickPipeline(\n        model_path=top_model_cfg[\"path\"],\n",
+            "new": "    x_limits = cfg[\"mechanics\"][\"workspace_mm\"][\"x\"]\n    y_limits = cfg[\"mechanics\"][\"workspace_mm\"][\"y\"]\n    comp = build_compensator(top_vision_cfg)\n    preopen = orient.get(\"dynamic_preopen\", {}) or {}\n\n    return TopPickPipeline(\n        model_path=top_model_cfg[\"path\"],\n"
+          },
+          {
+            "old": "        grasp_circle_min_vertices=orient.get(\"circle_min_vertices\", 8),\n        grasp_min_opening_mm=orient.get(\"min_opening_mm\", None),\n        grasp_max_opening_mm=orient.get(\"max_opening_mm\", None),\n        x_limits_mm=x_limits,\n        y_limits_mm=y_limits,\n        yaw_tcp_compensator=comp,\n",
+            "new": "        grasp_circle_min_vertices=orient.get(\"circle_min_vertices\", 8),\n        grasp_min_opening_mm=orient.get(\"min_opening_mm\", None),\n        grasp_max_opening_mm=orient.get(\"max_opening_mm\", None),\n        dynamic_preopen_enabled=preopen.get(\"enabled\", True),\n        x_limits_mm=x_limits,\n        y_limits_mm=y_limits,\n        yaw_tcp_compensator=comp,\n"
+          },
+          {
+            "old": "        \"elapsed_s\": None,\n    }\n\n    frame = make_pick_target(x, y, yaw)\n    raw = link.send_frame(frame)\n    print(\n",
+            "new": "        \"elapsed_s\": None,\n    }\n\n    if target.get(\"preopen_mm\") is None:\n        raise ValueError(\"No measured preopen command; real pick blocked\")\n    result[\"preopen_mm\"] = latch_preopen(link, target[\"preopen_mm\"], ack_timeout_s)\n    result[\"preopen_ack\"] = True\n    frame = make_pick_target(x, y, yaw)\n    raw = link.send_frame(frame)\n    print(\n"
+          },
+          {
+            "old": "                        \"alignment_x_mm\": base_x,\n                        \"alignment_y_mm\": base_y,\n                        \"yaw_deg\": yaw_value,\n                        \"descent_precomp_dx_mm\": (0.0 if drift_info is None else float(drift_info.command_delta_x_mm)),\n                        \"descent_precomp_dy_mm\": (0.0 if drift_info is None else float(drift_info.command_delta_y_mm)),\n                        \"predicted_descent_drift_x_mm\": (0.0 if drift_info is None else float(drift_info.predicted_drift_x_mm)),\n",
+            "new": "                        \"alignment_x_mm\": base_x,\n                        \"alignment_y_mm\": base_y,\n                        \"yaw_deg\": yaw_value,\n                        \"preopen_mm\": getattr(result, \"preopen_mm\", None),\n                        \"descent_precomp_dx_mm\": (0.0 if drift_info is None else float(drift_info.command_delta_x_mm)),\n                        \"descent_precomp_dy_mm\": (0.0 if drift_info is None else float(drift_info.command_delta_y_mm)),\n                        \"predicted_descent_drift_x_mm\": (0.0 if drift_info is None else float(drift_info.predicted_drift_x_mm)),\n"
+          },
+          {
+            "old": "        report[\"result\"] = {\"physical_stop\": True, \"message\": str(exc)}\n        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding=\"utf-8\")\n        return 2\n    finally:\n        try:\n            link.close()\n        except Exception:\n",
+            "new": "        report[\"result\"] = {\"physical_stop\": True, \"message\": str(exc)}\n        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding=\"utf-8\")\n        return 2\n    except (RuntimeError, ValueError, TimeoutError) as exc:\n        print(f\"[FAIL] {exc}\")\n        report[\"result\"] = {\"failed\": True, \"message\": str(exc)}\n        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding=\"utf-8\")\n        return 3\n    finally:\n        try:\n            if link.is_open:\n                link.send_frame(make_stop())\n                print(\"[STOP] cleanup STOP sent; confirm safe return on the machine\")\n        except Exception as exc:\n            print(f\"[WARN] cleanup STOP failed: {exc}; use physical STOP\")\n        try:\n            link.close()\n        except Exception:\n"
+          }
+        ]
+      ]
+    },
+    {
+      "path": "vision/grasp/claw_preopen_profile.py",
+      "kind": "file",
+      "prior_sha256": [
+        "6a5cdcb0000999ee0068a2ef7f505bc0fcae15dd30ffcf512fa5218c99c20300"
+      ]
+    },
+    {
+      "path": "config/claw_preopen_profile.json",
+      "kind": "file",
+      "prior_sha256": [
+        "d58dd52d58a77c6bbe30e1aea40612e8fd1739e983faf039798f6b29e96ed519"
+      ]
+    },
+    {
+      "path": "communication/claw_preopen_transaction.py",
+      "kind": "file",
+      "prior_sha256": [
+        "1ecba2285071d615aa0a1f2e8502b0d11760c5f51a9e3789808cd02f4edaa23e"
+      ]
+    },
+    {
+      "path": "scripts/last_use/calibration/build_claw_preopen_profile.py",
+      "kind": "file",
+      "prior_sha256": [
+        "e66fa4cce6a25f2c30cb4feaa41f80ab21dfd0236ffe0e2a530f97c6a94ce0bc"
+      ]
+    },
+    {
+      "path": "scripts/last_use/calibration/build_claw_preopen_from_cad.py",
+      "kind": "file",
+      "prior_sha256": []
+    },
+    {
+      "path": "scripts/last_use/calibration/preview_claw_preopen.py",
+      "kind": "file",
+      "prior_sha256": []
+    },
+    {
+      "path": "scripts/last_use/test_claw_preopen_profile.py",
+      "kind": "file",
+      "prior_sha256": [
+        "63db05ab90e3ff96b2c26f7acfe7451815b030626993d18d13c0964f24c75ac6"
+      ]
+    }
+  ],
+  "lower": [
+    {
+      "path": "User_File/3_Robot/holding_jaw.cpp",
+      "kind": "edit",
+      "variants": [
+        [
+          {
+            "old": "//\n\n#include \"3_Robot/holding_jaw.h\"\n#include <cmath>\n\n\n",
+            "new": "//\n\n#include \"3_Robot/holding_jaw.h\"\n#include \"3_Robot/claw_preopen_profile.h\"\n#include <cmath>\n\n\n"
+          },
+          {
+            "old": "        return HAL_ERROR;\n    }\n\n    Grap_Failed = false;\n\n    // ========================================================\n",
+            "new": "        return HAL_ERROR;\n    }\n\n    // New claw: CAD four-bar lookup anchored to the user's -15 deg closure.\n    // Validate before changing targets/state; no fallback to the old fixed 10 deg.\n    float preopen_deg = 0.0f;\n    if (!Claw_Dynamic_Preopen_Enabled || !Target_Preopen_Valid ||\n        !ClawPreopen::ToAngle(Target_Preopen_mm, preopen_deg))\n    {\n        return HAL_ERROR;\n    }\n\n    Grap_Failed = false;\n\n    // ========================================================\n"
+          },
+          {
+            "old": "    Grap_Target_Preopen_mm = Target_Preopen_mm;\n    Grap_Target_Preopen_Valid = Target_Preopen_Valid;\n\n    // 默认保持旧固定10°行为。只有视觉给出可靠抓取宽度时才使用CAD映射。\n    Grap_Target_Pre_Clip_Angle = Claw_Servo_Motor_Angle_Pre_Clip;\n    if (Claw_Dynamic_Preopen_Enabled && Grap_Target_Preopen_Valid)\n    {\n        // Target_Preopen_mm 现在定义为“有效净开口”：\n        // 物体在实际夹取方向上的宽度 + 上位机安全余量。\n        // 它不是 CAD 两个参考点之间的绝对几何距离。\n        float gap_mm = Grap_Target_Preopen_mm;\n\n        if (gap_mm < Claw_Preopen_Min_Opening_mm)\n        {\n            gap_mm = Claw_Preopen_Min_Opening_mm;\n        }\n        if (gap_mm > Claw_Preopen_Max_Opening_mm)\n        {\n            gap_mm = Claw_Preopen_Max_Opening_mm;\n        }\n\n        const float rx = Claw_CAD_Contact_Rx_mm;\n        const float ry = Claw_CAD_Contact_Ry_mm;\n        const float radius = std::sqrt(rx * rx + ry * ry);\n        const float delta = std::atan2(ry, rx);\n\n        // 40° 是实机正式夹紧/近闭合姿态。旧版错误地把这一姿态下\n        // CAD 仍存在的约31.02mm参考点间距当成真实夹爪净开口。\n        // 这里先把目标净开口还原成 CAD 绝对参考点间距再反解角度。\n        const float closed_baseline_mm =\n            Claw_CAD_Gear_Center_Distance_mm + 2.0f * ry;\n        const float absolute_opening_mm =\n            gap_mm + closed_baseline_mm;\n\n        float asin_arg =\n            (absolute_opening_mm - Claw_CAD_Gear_Center_Distance_mm)\n            / (2.0f * radius);\n\n        // 数值保护，避免浮点误差导致asin域错误。\n        if (asin_arg < -1.0f)\n        {\n            asin_arg = -1.0f;\n        }\n        if (asin_arg > 1.0f)\n        {\n            asin_arg = 1.0f;\n        }\n\n        const float phi = std::asin(asin_arg) - delta;\n        float angle_deg =\n            Claw_CAD_Reference_Clip_Angle_Deg\n            - phi * 180.0f / PI;\n\n        if (angle_deg < Claw_Preopen_Min_Angle_Deg)\n        {\n            angle_deg = Claw_Preopen_Min_Angle_Deg;\n        }\n        if (angle_deg > Claw_Preopen_Max_Angle_Deg)\n        {\n            angle_deg = Claw_Preopen_Max_Angle_Deg;\n        }\n\n        Grap_Target_Pre_Clip_Angle = angle_deg * PI / 180.0f;\n    }\n\n\n    // ========================================================\n",
+            "new": "    Grap_Target_Preopen_mm = Target_Preopen_mm;\n    Grap_Target_Preopen_Valid = Target_Preopen_Valid;\n\n    // The shared lookup supplies conservative INNER opening -> claw servo angle.\n    // Old Claw_CAD_*/Claw_Preopen_* geometry constants are intentionally unused.\n    Grap_Target_Pre_Clip_Angle = preopen_deg * PI / 180.0f;\n\n\n    // ========================================================\n"
+          },
+          {
+            "old": "        &&\n        Y_Stepping_Motor.Get_Status() ==\n            Motor_Stepping_Status_STOP;\n}",
+            "new": "        &&\n        Y_Stepping_Motor.Get_Status() ==\n            Motor_Stepping_Status_STOP;\n}\n"
+          }
+        ],
+        [
+          {
+            "old": "        return HAL_ERROR;\n    }\n\n    // NEW CLAW: do not infer installed servo zero from a static CAD pose.\n    // Validate before changing targets/state; no fallback to the old fixed 10 deg.\n    float measured_preopen_deg = 0.0f;\n    if (!Claw_Dynamic_Preopen_Enabled || !Target_Preopen_Valid ||\n        !ClawPreopen::ToAngle(Target_Preopen_mm, measured_preopen_deg))\n    {\n        return HAL_ERROR;\n    }\n",
+            "new": "        return HAL_ERROR;\n    }\n\n    // New claw: CAD four-bar lookup anchored to the user's -15 deg closure.\n    // Validate before changing targets/state; no fallback to the old fixed 10 deg.\n    float preopen_deg = 0.0f;\n    if (!Claw_Dynamic_Preopen_Enabled || !Target_Preopen_Valid ||\n        !ClawPreopen::ToAngle(Target_Preopen_mm, preopen_deg))\n    {\n        return HAL_ERROR;\n    }\n"
+          },
+          {
+            "old": "    Grap_Target_Preopen_mm = Target_Preopen_mm;\n    Grap_Target_Preopen_Valid = Target_Preopen_Valid;\n\n    // The shared measured profile supplies net INNER opening -> claw servo angle.\n    // Old Claw_CAD_*/Claw_Preopen_* geometry constants are intentionally unused.\n    Grap_Target_Pre_Clip_Angle = measured_preopen_deg * PI / 180.0f;\n\n\n    // ========================================================\n",
+            "new": "    Grap_Target_Preopen_mm = Target_Preopen_mm;\n    Grap_Target_Preopen_Valid = Target_Preopen_Valid;\n\n    // The shared lookup supplies conservative INNER opening -> claw servo angle.\n    // Old Claw_CAD_*/Claw_Preopen_* geometry constants are intentionally unused.\n    Grap_Target_Pre_Clip_Angle = preopen_deg * PI / 180.0f;\n\n\n    // ========================================================\n"
+          }
+        ]
+      ]
+    },
+    {
+      "path": "User_File/4_Interaction/ita_sorting_handshake.cpp",
+      "kind": "edit",
+      "variants": [
+        [
+          {
+            "old": "#include \"4_Interaction/ita_sorting_handshake.h\"\n\n#include <cmath>\n\n",
+            "new": "#include \"4_Interaction/ita_sorting_handshake.h\"\n#include \"3_Robot/claw_preopen_profile.h\"\n\n#include <cmath>\n\n"
+          },
+          {
+            "old": "        {\n            if (State == Sorting_Handshake_State_WAIT_PICK_TARGET)\n            {\n                // 合理的软件范围，仅防止串口错误值；真正机械角仍由 HoldingJaw\n                // 自己的保守限幅决定。\n                if (!std::isfinite(Data.X_mm) || Data.X_mm <= 0.0f || Data.X_mm > 120.0f)\n                {\n                    Communication->Send_Busy();\n                    break;\n                }\n\n",
+            "new": "        {\n            if (State == Sorting_Handshake_State_WAIT_PICK_TARGET)\n            {\n                // Reject uncalibrated/unreachable openings BEFORE acknowledging them.\n                // Error 8: new-claw preopen profile or requested gap is invalid.\n                float unused_angle_deg = 0.0f;\n                if (std::fabs(Data.Y_mm) > 0.051f ||\n                    !ClawPreopen::ToAngle(Data.X_mm, unused_angle_deg))\n                {\n                    Pending_Preopen_Valid = false;\n                    Pending_Preopen_mm = 0.0f;\n                    Notify_Error(8U);\n                    break;\n                }\n\n"
+          },
+          {
+            "old": "                180.0f\n            )\n        ) <= 1.01f;\n}",
+            "new": "                180.0f\n            )\n        ) <= 1.01f;\n}\n"
+          }
+        ]
+      ]
+    },
+    {
+      "path": "User_File/3_Robot/holding_jaw.h",
+      "kind": "claw_header"
+    },
+    {
+      "path": "User_File/3_Robot/claw_preopen_profile.h",
+      "kind": "file",
+      "prior_sha256": [
+        "6510d5bdbb40f2de694d9a9afa159b904688743a867abdd39ce67b38a43b9738"
+      ]
+    }
+  ]
+}

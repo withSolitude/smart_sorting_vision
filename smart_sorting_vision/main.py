@@ -1,0 +1,691 @@
+"""Smart Sorting System production entry point."""
+
+from pathlib import Path
+from datetime import datetime
+import json
+import signal
+import sys
+import threading
+
+ROOT = Path(__file__).resolve().parent
+
+from communication.stm32_link import STM32Link
+from communication.sorting_protocol import SortingFrame, Mode
+from runtime.app_config import load_runtime_config
+from runtime.sorting_runtime import SortingRuntime
+from vision.cameras.side_camera import SideCamera
+from vision.cameras.top_camera import TopCamera
+from vision.pipeline.side_sort_pipeline import SideSortPipeline
+from vision.pipeline.top_pick_pipeline import TopPickPipeline
+from vision.calibration.yaw_tcp_compensation import YawTcpCompensator
+from vision.calibration.descent_drift_compensation import DescentDriftCompensator
+from vision.storage.storage_manager import StorageManager
+
+
+class SmartSortingApp:
+    def __init__(self):
+        self.root = ROOT
+        self.config_path = self.root / "config" / "runtime_config.yaml"
+        self.config = load_runtime_config(self.root, self.config_path)
+
+        self.stm32 = None
+        self.top_camera = None
+        self.side_camera = None
+        self.top_pipeline = None
+        self.side_pipeline = None
+        self.storage = None
+        self.runtime = None
+        self.display = None
+        self.runtime_thread = None
+        self._log_lock = threading.Lock()
+        self._session_log_path = None
+
+    def check_files(self):
+        required = {
+            "top model": self.config["model"]["top"]["path"],
+            "side model": self.config["model"]["side"]["path"],
+            "top intrinsics": self.config["calibration"]["top_intrinsics"],
+            "pixel_to_robot": self.config["calibration"]["pixel_to_robot"],
+            "side background": self.config["calibration"]["side_background"],
+        }
+        for name, file in required.items():
+            if not Path(file).exists():
+                raise FileNotFoundError(f"缺少{name}: {file}")
+        print("[OK] Files")
+
+    def _print_runtime_mapping(self):
+        x_limits = self.config["mechanics"]["workspace_mm"]["x"]
+        y_limits = self.config["mechanics"]["workspace_mm"]["y"]
+        top_consensus = self.config["vision"]["top"]["consensus"]
+        side_consensus = self.config["vision"]["side"]["consensus"]
+
+        print("[CONFIG] file:", self.config_path)
+        print("[CONFIG] top camera :", self.config["camera"]["top"]["device"])
+        print("[CONFIG] side camera:", self.config["camera"]["side"]["device"])
+        print(f"[CONFIG] workspace X={x_limits} mm, Y={y_limits} mm")
+        print(
+            "[CONFIG] consensus "
+            f"top={top_consensus['required']}/{top_consensus['window']} "
+            f"side={side_consensus['required']}/{side_consensus['window']}"
+        )
+        runtime_cfg = self.config["runtime"]
+        print(
+            "[CONFIG] competition "
+            f"min_items={runtime_cfg.get('minimum_items_before_empty_finish', 12)} "
+            f"empty_hold={runtime_cfg.get('empty_finish_hold_s', 3.0)}s "
+            f"retry={runtime_cfg.get('retry_interval_s', 0.4)}s"
+        )
+
+    def _warmup_inference_backends(self):
+        """Eagerly initialize inference backends before WAIT START.
+
+        This intentionally happens before SortingRuntime.spin() starts accepting
+        competition work.  Any CUDA/TensorRT/shape mismatch therefore fails at
+        startup instead of failing after MCU_START_WORK.
+        """
+        runtime_cfg = self.config.get("runtime", {})
+        warmup_cfg = runtime_cfg.get("warmup", {}) or {}
+
+        if not bool(warmup_cfg.get("enabled", True)):
+            print("[WARMUP] disabled")
+            return
+
+        top_runs = max(1, int(warmup_cfg.get("top_runs", 3)))
+        side_runs = max(1, int(warmup_cfg.get("side_runs", 2)))
+
+        print(
+            "[WARMUP] inference backends "
+            f"top={top_runs} side={side_runs}"
+        )
+
+        top_frame = self.top_camera.read()
+        if top_frame is None:
+            raise RuntimeError("顶部相机预热取帧失败")
+
+        top_stats = self.top_pipeline.segmenter.warmup(
+            top_frame,
+            runs=top_runs,
+        )
+        self.top_pipeline.reset()
+
+        if self.side_pipeline.shape_classifier is not None:
+            side_stats = self.side_pipeline.shape_classifier.warmup(
+                runs=side_runs,
+            )
+        else:
+            side_stats = {
+                "first_ms": 0.0,
+                "steady_avg_ms": 0.0,
+            }
+        self.side_pipeline.reset()
+
+        print(
+            "[WARMUP] READY "
+            f"top_first={top_stats['first_ms']:.1f}ms "
+            f"top_steady={top_stats['steady_avg_ms']:.1f}ms "
+            f"side_first={side_stats['first_ms']:.1f}ms "
+            f"side_steady={side_stats['steady_avg_ms']:.1f}ms"
+        )
+
+    def initialize(self):
+        print("==============================")
+        print(" SMART SORTING SYSTEM ")
+        print("==============================")
+
+        self.check_files()
+        self._print_runtime_mapping()
+
+        self.stm32 = STM32Link(
+            device=self.config["stm32"]["device"],
+            baudrate=self.config["stm32"]["baud"],
+        )
+        self.stm32.open()
+        print("[OK] STM32")
+
+        # 上位机进程一启动就先发一次STOP，尽快终止MCU可能残留的上一轮动作。
+        # 这里只是“预STOP”，不把早到的ACK当成最终同步完成；
+        # TensorRT Warmup完成后还会执行一次完整的安全同步握手。
+        try:
+            self.stm32.send_frame(SortingFrame(mode=Mode.STOP))
+            print("[SYNC][PRESTOP] STOP(0x7F) sent")
+        except Exception as exc:
+            print(f"[SYNC][WARN] early STOP send failed: {exc}")
+
+        # C01: runtime_config.yaml is now the only production camera profile.
+        TopCamera.configure(
+            self.config["camera"]["top"],
+            calibration_file=self.config["calibration"]["top_intrinsics"],
+        )
+        SideCamera.configure(self.config["camera"]["side"])
+
+        self.top_camera = TopCamera()
+        self.top_camera.open()
+        print("[OK] Top Camera")
+
+        self.side_camera = SideCamera()
+        self.side_camera.open()
+        print("[OK] Side Camera")
+
+        top_model_cfg = self.config["model"]["top"]
+        top_vision_cfg = self.config["vision"]["top"]
+        top_consensus = top_vision_cfg["consensus"]
+        top_orientation = top_vision_cfg.get("grasp_orientation", {})
+        top_preopen = top_orientation.get("dynamic_preopen", {}) or {}
+        top_gripper_collision = top_vision_cfg.get("gripper_collision", {}) or {}
+        top_grasp_search = top_gripper_collision.get("grasp_search", {}) or {}
+        top_tcp_comp = top_vision_cfg.get("yaw_tcp_compensation", {})
+        branch1_axis_correction_deg = float(
+            top_tcp_comp.get("branch1_axis_correction_deg", 0.0)
+        )
+        branch1_closing_bias_mm = float(
+            top_tcp_comp.get("branch1_closing_bias_mm", 0.0)
+        )
+        branch1_longitudinal_bias_mm = float(
+            top_tcp_comp.get("branch1_longitudinal_bias_mm", 0.0)
+        )
+
+        x_limits = self.config["mechanics"]["workspace_mm"]["x"]
+        y_limits = self.config["mechanics"]["workspace_mm"]["y"]
+        mechanics_cfg = self.config.get("mechanics", {}) or {}
+        forbidden_zones_mm = mechanics_cfg.get("forbidden_zones_mm", []) or []
+        # 兼容你当前已经写在 mechanics 下的四点托盘配置；新版推荐放到
+        # vision.top.gripper_collision.allowed_polygon_mm，但不会要求你立刻迁移。
+        allowed_polygon_mm = top_gripper_collision.get(
+            "allowed_polygon_mm",
+            mechanics_cfg.get("allowed_polygon_mm", None),
+        )
+
+        yaw_tcp_compensator = None
+        if bool(top_tcp_comp.get("enabled", False)):
+            offset_axis0 = top_tcp_comp.get("offset_axis0_mm", [0.0, 0.0])
+            visual_to_command = top_tcp_comp.get(
+                "visual_to_command_matrix",
+                [[1.0, 0.0], [0.0, 1.0]],
+            )
+            yaw_tcp_compensator = YawTcpCompensator(
+                reference_axis_deg=float(top_tcp_comp["reference_axis_deg"]),
+                offset_axis0_x_mm=float(offset_axis0[0]),
+                offset_axis0_y_mm=float(offset_axis0[1]),
+                min_axis_deg=float(top_tcp_comp.get("min_axis_deg", -87.0)),
+                max_axis_deg=float(top_tcp_comp.get("max_axis_deg", 89.0)),
+                visual_to_command_matrix=visual_to_command,
+                closing_bias_mm=float(top_tcp_comp.get("closing_bias_mm", 0.0)),
+                longitudinal_bias_mm=float(top_tcp_comp.get("longitudinal_bias_mm", 0.0)),
+            )
+            print(
+                "[CONFIG] Yaw-TCP compensation ON: "
+                f"ref={yaw_tcp_compensator.reference_axis_deg:.3f} deg, "
+                f"d0=({yaw_tcp_compensator.offset_axis0_x_mm:.3f},"
+                f" {yaw_tcp_compensator.offset_axis0_y_mm:.3f}) mm, "
+                f"Jinv={yaw_tcp_compensator.visual_to_command_matrix}, "
+                f"closing_bias={yaw_tcp_compensator.closing_bias_mm:+.3f} mm, "
+                f"long_bias={yaw_tcp_compensator.longitudinal_bias_mm:+.3f} mm, "
+                f"branch1_axis_corr={branch1_axis_correction_deg:+.3f} deg, "
+                f"branch1_closing_bias={branch1_closing_bias_mm:+.3f} mm, "
+                f"branch1_long_bias={branch1_longitudinal_bias_mm:+.3f} mm"
+            )
+        else:
+            print("[CONFIG] Yaw-TCP compensation OFF (verification required)")
+
+        descent_drift_cfg = top_vision_cfg.get("descent_drift_compensation", {})
+        descent_drift_compensator = None
+        if bool(descent_drift_cfg.get("enabled", False)):
+            drift_matrix = (
+                top_tcp_comp.get("visual_to_command_matrix", [[1.0, 0.0], [0.0, 1.0]])
+                if bool(descent_drift_cfg.get("use_visual_to_command_matrix", True))
+                else [[1.0, 0.0], [0.0, 1.0]]
+            )
+            descent_drift_compensator = DescentDriftCompensator(
+                signed_drift_mm=float(descent_drift_cfg.get("signed_drift_mm", 0.0)),
+                relative_angle_deg=float(descent_drift_cfg.get("relative_angle_deg", 90.0)),
+                visual_to_command_matrix=drift_matrix,
+            )
+            print(
+                "[CONFIG] Z-descent lateral compensation ON: "
+                f"drift={descent_drift_compensator.signed_drift_mm:+.3f} mm, "
+                f"relative={descent_drift_compensator.relative_angle_deg:+.1f} deg"
+            )
+        else:
+            print("[CONFIG] Z-descent lateral compensation OFF")
+
+        if bool(top_gripper_collision.get("enabled", True)):
+            print(
+                "[CONFIG] Gripper footprint collision ON: "
+                f"finger={float(top_gripper_collision.get('finger_length_mm', 20.0)):.1f}x"
+                f"{float(top_gripper_collision.get('finger_thickness_mm', 9.0)):.1f}mm, "
+                f"object_margin={float(top_gripper_collision.get('object_margin_mm', 1.0)):.1f}mm, "
+                f"wall_margin={float(top_gripper_collision.get('wall_margin_mm', 2.0)):.1f}mm, "
+                f"fixed_zones={len(forbidden_zones_mm)}"
+            )
+            if bool(top_grasp_search.get("enabled", True)):
+                print(
+                    "[CONFIG] Multi-pose grasp search ON: "
+                    f"yaw={top_grasp_search.get('yaw_offsets_deg', [0, -5, 5, -10, 10, -15, 15])}, "
+                    f"long={top_grasp_search.get('longitudinal_offsets_mm', [0, -2, 2, -4, 4])}mm, "
+                    f"hard_gap={float(top_grasp_search.get('hard_min_clearance_mm', 1.0)):.2f}mm"
+                )
+        else:
+            print("[CONFIG] Gripper footprint collision OFF")
+
+        self.top_pipeline = TopPickPipeline(
+            model_path=top_model_cfg["path"],
+            calibration_path=self.config["calibration"]["pixel_to_robot"],
+            conf=top_model_cfg["conf"],
+            imgsz=top_model_cfg["imgsz"],
+            device=top_model_cfg["device"],
+            obstacle_margin=top_vision_cfg["obstacle_margin_px"],
+            border_margin=top_vision_cfg["border_margin_px"],
+            min_safe_area=top_vision_cfg["min_safe_area_px"],
+            min_clearance=top_vision_cfg["min_clearance_px"],
+            consensus_window=top_consensus["window"],
+            consensus_required=top_consensus["required"],
+            max_track_center_shift_px=top_consensus["max_track_center_shift_px"],
+            max_grasp_spread_mm=top_consensus["max_grasp_spread_mm"],
+            reset_after_misses=top_consensus["reset_after_misses"],
+            orientation_enabled=top_orientation.get("enabled", True),
+            grip_long_sides=top_orientation.get("grip_long_sides", True),
+            min_orientation_aspect_ratio=top_orientation.get("min_aspect_ratio", 1.20),
+            default_grasp_axis_robot_deg=top_orientation.get("default_grasp_axis_robot_deg", 0.0),
+            yaw_alignment_offset_deg=top_orientation.get("yaw_alignment_offset_deg", 0.0),
+            max_yaw_spread_deg=top_orientation.get("max_yaw_spread_deg", 12.0),
+            grasp_width_slack_ratio=top_orientation.get("width_slack_ratio", 0.15),
+            grasp_support_tolerance_px=top_orientation.get("support_tolerance_px", 3.0),
+            grasp_min_contact_span_px=top_orientation.get("min_contact_span_px", 3.0),
+            grasp_circle_circularity_threshold=top_orientation.get("circle_circularity_threshold", 0.985),
+            grasp_circle_min_vertices=top_orientation.get("circle_min_vertices", 8),
+            grasp_min_opening_mm=top_orientation.get("min_opening_mm", None),
+            grasp_max_opening_mm=top_orientation.get("max_opening_mm", None),
+            dynamic_preopen_enabled=top_preopen.get("enabled", True),
+            preopen_margin_mm=top_preopen.get("margin_mm", 6.0),
+            preopen_command_min_mm=top_preopen.get("min_command_mm", None),
+            preopen_command_max_mm=top_preopen.get("max_command_mm", None),
+
+            # 动态预开口 profile 元数据必须完整传入 TopPickPipeline。
+            # preopen_configured 缺失时其默认值是 False，
+            # ClawPreopenProfile.from_runtime_config() 会直接拒绝启动。
+            preopen_profile_kind=top_preopen.get("profile_kind", "cad_four_bar"),
+            preopen_configured=bool(top_preopen.get("configured", False)),
+            preopen_closed_servo_deg=float(
+                top_preopen.get("closed_servo_deg", -35.0)
+            ),
+            preopen_standby_servo_deg=float(
+                top_preopen.get("standby_servo_deg", -95.0)
+            ),
+
+            gripper_collision_enabled=top_gripper_collision.get("enabled", True),
+            gripper_finger_length_mm=top_gripper_collision.get("finger_length_mm", 20.0),
+            gripper_finger_thickness_mm=top_gripper_collision.get("finger_thickness_mm", 9.0),
+            gripper_finger_longitudinal_offset_mm=top_gripper_collision.get(
+                "finger_longitudinal_offset_mm", 0.0
+            ),
+            gripper_opening_uncertainty_mm=top_gripper_collision.get(
+                "opening_uncertainty_mm", 1.5
+            ),
+            gripper_object_margin_mm=top_gripper_collision.get("object_margin_mm", 1.0),
+            gripper_wall_margin_mm=top_gripper_collision.get("wall_margin_mm", 2.0),
+            gripper_fallback_opening_mm=top_gripper_collision.get("fallback_opening_mm", 38.3),
+            gripper_forbidden_zones_mm=forbidden_zones_mm,
+            gripper_allowed_region_mm=top_gripper_collision.get("allowed_region_mm", None),
+            gripper_allowed_polygon_mm=allowed_polygon_mm,
+            gripper_object_overlap_tolerance_px=top_gripper_collision.get(
+                "object_overlap_tolerance_px", 4
+            ),
+            gripper_enforce_image_border=top_gripper_collision.get("enforce_image_border", True),
+            gripper_image_border_margin_px=top_gripper_collision.get("image_border_margin_px", 2),
+            gripper_body_enabled=(top_gripper_collision.get("body", {}) or {}).get("enabled", False),
+            gripper_body_width_mm=(top_gripper_collision.get("body", {}) or {}).get("width_mm", 50.0),
+            gripper_body_length_mm=(top_gripper_collision.get("body", {}) or {}).get("length_mm", 20.0),
+            gripper_body_longitudinal_offset_mm=(top_gripper_collision.get("body", {}) or {}).get(
+                "longitudinal_offset_mm", -25.0
+            ),
+            gripper_debug_log_rejections=top_gripper_collision.get("debug_log_rejections", False),
+            grasp_search_enabled=top_grasp_search.get("enabled", True),
+            grasp_search_yaw_offsets_deg=top_grasp_search.get(
+                "yaw_offsets_deg", [0, -5, 5, -10, 10, -15, 15]
+            ),
+            grasp_search_longitudinal_offsets_mm=top_grasp_search.get(
+                "longitudinal_offsets_mm", [0, -2, 2, -4, 4]
+            ),
+            grasp_search_closing_offsets_mm=top_grasp_search.get(
+                "closing_offsets_mm", [0]
+            ),
+            grasp_search_hard_min_clearance_mm=top_grasp_search.get(
+                "hard_min_clearance_mm", 1.0
+            ),
+            grasp_search_preferred_clearance_mm=top_grasp_search.get(
+                "preferred_clearance_mm", 4.0
+            ),
+            grasp_search_min_target_overlap_mm=top_grasp_search.get(
+                "min_target_overlap_mm", 1.5
+            ),
+            grasp_search_min_side_gap_mm=top_grasp_search.get(
+                "min_side_gap_mm", 0.25
+            ),
+            grasp_search_yaw_penalty_per_deg=top_grasp_search.get(
+                "yaw_penalty_per_deg", 0.12
+            ),
+            grasp_search_center_penalty_per_mm=top_grasp_search.get(
+                "center_penalty_per_mm", 0.35
+            ),
+            grasp_search_max_trials_per_object=top_grasp_search.get(
+                "max_trials_per_object", 40
+            ),
+            x_limits_mm=x_limits,
+            y_limits_mm=y_limits,
+            yaw_tcp_compensator=yaw_tcp_compensator,
+            branch1_axis_correction_deg=branch1_axis_correction_deg,
+            branch1_closing_bias_mm=branch1_closing_bias_mm,
+            branch1_longitudinal_bias_mm=branch1_longitudinal_bias_mm,
+        )
+
+        side_model_cfg = self.config["model"]["side"]
+        side_vision_cfg = self.config["vision"]["side"]
+        side_consensus = side_vision_cfg["consensus"]
+
+        side_recognition_cfg = side_vision_cfg.get("recognition", {}) or {}
+        side_presence_cfg = side_vision_cfg.get("object_presence", {}) or {}
+        side_extractor_cfg = side_presence_cfg.get("extractor", {}) or {}
+        enable_color = bool(side_recognition_cfg.get("color", {}).get("enabled", True))
+        enable_qr = bool(side_recognition_cfg.get("qr", {}).get("enabled", True))
+        enable_shape = bool(side_recognition_cfg.get("shape", {}).get("enabled", True))
+
+        self.side_pipeline = SideSortPipeline(
+            background_path=self.config["calibration"]["side_background"],
+            shape_model_path=side_model_cfg["path"],
+            shape_device=side_model_cfg["device"],
+            shape_imgsz=side_model_cfg["imgsz"],
+            shape_confidence_threshold=side_model_cfg["confidence_threshold"],
+            shape_topk=side_model_cfg["topk"],
+            padding_ratio=side_vision_cfg["padding_ratio"],
+            consensus_window=side_consensus["window"],
+            consensus_required=side_consensus["required"],
+            presence_window=side_presence_cfg.get("window", 4),
+            presence_required=side_presence_cfg.get("required", 3),
+            extractor_config=side_extractor_cfg,
+            enable_color=enable_color,
+            enable_qr=enable_qr,
+            enable_shape=enable_shape,
+        )
+
+        # 必须在正式 WAIT START 前完成。这样 TensorRT execution context、
+        # CUDA kernel、PyTorch/NumPy 后处理都不会拖到第一件货物。
+        self._warmup_inference_backends()
+        print("[OK] Pipeline + Warmup")
+
+        self.storage = StorageManager(
+            box_count=int(self.config.get("storage", {}).get("box_count", 6))
+        )
+        print("[OK] Storage")
+
+        runtime_cfg = self.config["runtime"]
+        scheduler_cfg = runtime_cfg.get("scheduler", {}) or {}
+        camera_watchdog_cfg = runtime_cfg.get("camera_watchdog", {}) or {}
+        self.runtime = SortingRuntime(
+            top_camera=self.top_camera,
+            side_camera=self.side_camera,
+            top_pipeline=self.top_pipeline,
+            side_pipeline=self.side_pipeline,
+            storage_manager=self.storage,
+            stm32=self.stm32,
+            pick_ack_timeout_s=runtime_cfg["pick_ack_timeout_s"],
+            recognition_ready_timeout_s=runtime_cfg["recognition_ready_timeout_s"],
+            side_recognition_timeout_s=runtime_cfg["side_recognition_timeout_s"],
+            side_empty_retry_hold_s=runtime_cfg.get("side_empty_retry_hold_s", 0.6),
+            side_empty_retry_min_frames=runtime_cfg.get("side_empty_retry_min_frames", 5),
+            retry_pick_ready_timeout_s=runtime_cfg.get("retry_pick_ready_timeout_s", 4.0),
+            sort_ack_timeout_s=runtime_cfg["sort_ack_timeout_s"],
+            sort_done_timeout_s=runtime_cfg["sort_done_timeout_s"],
+            top_no_frame_timeout_s=camera_watchdog_cfg.get(
+                "top_no_frame_timeout_s", 2.0
+            ),
+            side_no_frame_timeout_s=camera_watchdog_cfg.get(
+                "side_no_frame_timeout_s", 2.0
+            ),
+            pick_x_limits_mm=x_limits,
+            pick_y_limits_mm=y_limits,
+            descent_drift_compensator=descent_drift_compensator,
+            branch1_axis_correction_deg=branch1_axis_correction_deg,
+            retry_interval_s=runtime_cfg.get("retry_interval_s", 0.25),
+            minimum_items_before_empty_finish=runtime_cfg.get(
+                "minimum_items_before_empty_finish", 12
+            ),
+            empty_finish_hold_s=runtime_cfg.get("empty_finish_hold_s", 1.5),
+            max_items=runtime_cfg.get("max_items", 0),
+            reject_unknown=runtime_cfg.get("reject_unknown", True),
+            on_finished=self._on_finished,
+            on_session_start=self._on_session_start,
+            loop_sleep_idle_s=scheduler_cfg.get("idle_sleep_s", 0.010),
+            loop_sleep_wait_s=scheduler_cfg.get("wait_sleep_s", 0.002),
+            loop_sleep_vision_s=scheduler_cfg.get("vision_sleep_s", 0.001),
+        )
+
+        # --------------------------------------------------------
+        # Jetson / STM32 上电同步
+        #
+        # Warmup已经完成、正式WAIT START尚未开始时，Jetson主动发送STOP。
+        # 下位机只有在夹爪、XY、储物机构全部安全回到可启动状态后，
+        # 才回MCU_STOP_ACK。这样每次开机都从同一个确定状态开始，
+        # 第一次实体按键短按必定对应START，而不是受上一轮/残留状态影响。
+        # --------------------------------------------------------
+        sync_cfg = runtime_cfg.get("startup_sync", {}) or {}
+        if bool(sync_cfg.get("enabled", True)):
+            self.runtime.synchronize_startup(
+                timeout_s=sync_cfg.get("timeout_s", 15.0),
+                retry_interval_s=sync_cfg.get("retry_interval_s", 0.25),
+                poll_sleep_s=sync_cfg.get("poll_sleep_s", 0.010),
+            )
+            print("[OK] MCU synchronized")
+        else:
+            print("[WARN] MCU startup synchronization disabled")
+
+        print("[OK] Runtime")
+
+        log_dir = self.root / "outputs" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._session_log_path = log_dir / f"competition_{stamp}.jsonl"
+        print("[LOG]", self._session_log_path)
+
+    def _on_session_start(self, runtime):
+        print(
+            f"[COMPETITION] START cycle={runtime.cycle_id} "
+            f"already_completed={runtime.completed_count}"
+        )
+
+    def _on_finished(self, record):
+        safe = {k: v for k, v in record.items() if k != "image_bgr"}
+        safe["time"] = datetime.now().isoformat(timespec="seconds")
+
+        if self._session_log_path is not None:
+            with self._log_lock:
+                with self._session_log_path.open("a", encoding="utf-8") as f:
+                    f.write(
+                        json.dumps(
+                            safe,
+                            ensure_ascii=False
+                        ) + "\n"
+                    )
+
+        if self.display is not None:
+
+            # ==========================================
+            # 颜色英文 -> 中文
+            # ==========================================
+
+            color_map = {
+                "red": "红色",
+                "orange": "橙色",
+                "yellow": "黄色",
+                "green": "绿色",
+                "cyan": "青色",
+                "blue": "蓝色",
+                "purple": "紫色",
+                "black": "黑色",
+                "white": "白色",
+                "gray": "灰色",
+                "grey": "灰色",
+            }
+
+
+            # 获取识别结果
+            raw_color = str(
+                record.get(
+                    "color",
+                    "未知颜色"
+                )
+            )
+
+            shape = str(
+                record.get(
+                    "shape",
+                    "未知形状"
+                )
+            )
+
+
+            # 转中文颜色
+            color_cn = color_map.get(
+                raw_color.lower(),
+                raw_color
+            )
+
+
+            # ==========================================
+            # GUI显示格式
+            #
+            # 原:
+            # blue / 五棱柱 / 二维码 → 1号箱
+            #
+            # 修改:
+            # 五棱柱_蓝色
+            #
+            # ==========================================
+
+            product_name = (
+                f"{shape}_{color_cn}"
+            )
+
+
+            self.display.add_finished_item(
+                sequence=int(record["sequence"]),
+                product_name=product_name,
+                image_bgr=record.get("image_bgr"),
+                success_count=int(record["success_count"]),
+            )
+
+    def run(self):
+        ui_cfg = self.config.get("ui", {})
+        if not bool(ui_cfg.get("enabled", True)):
+            self.runtime.spin()
+            return
+
+        try:
+            # Jetson + OpenCV + system PyQt5 compatibility:
+            # cv2 imported earlier may overwrite QT_QPA_PLATFORM_PLUGIN_PATH
+            # with .venv/.../cv2/qt/plugins. Restore the system Qt5 plugins
+            # immediately before importing/creating QApplication.
+            import os
+
+            system_qt_plugin_root = "/usr/lib/aarch64-linux-gnu/qt5/plugins"
+            system_qt_platform_dir = (
+                "/usr/lib/aarch64-linux-gnu/qt5/plugins/platforms"
+            )
+
+            if os.path.isdir(system_qt_platform_dir):
+                os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = (
+                    system_qt_platform_dir
+                )
+                os.environ["QT_PLUGIN_PATH"] = system_qt_plugin_root
+
+            # OpenCV wheels may also set their bundled Qt font directory.
+            os.environ.pop("QT_QPA_FONTDIR", None)
+
+            print(
+                "[GUI] Qt platform plugins:",
+                os.environ.get("QT_QPA_PLATFORM_PLUGIN_PATH"),
+            )
+
+            from PyQt5.QtWidgets import QApplication
+            from ui.sorting_display import SortingDisplayWindow
+        except Exception as exc:
+            print(f"[WARN] GUI unavailable, fallback to console: {exc}")
+            self.runtime.spin()
+            return
+
+        qt_app = QApplication.instance() or QApplication(sys.argv)
+        self.display = SortingDisplayWindow(
+            fullscreen=bool(ui_cfg.get("fullscreen", True)),
+            max_visible_rows=int(ui_cfg.get("max_visible_rows", 6)),
+        )
+
+        self.runtime_thread = threading.Thread(
+            target=self.runtime.spin,
+            name="competition-runtime",
+            daemon=True,
+        )
+        self.runtime_thread.start()
+
+        qt_app.exec_()
+
+        self.runtime.shutdown(send_stop=True)
+        if self.runtime_thread.is_alive():
+            self.runtime_thread.join(timeout=2.0)
+
+    def close(self):
+        print("[SYSTEM] shutdown")
+
+        if self.runtime is not None:
+            try:
+                self.runtime.shutdown(send_stop=True)
+                if self.runtime_thread is not None and self.runtime_thread.is_alive():
+                    self.runtime_thread.join(timeout=2.0)
+            except Exception as exc:
+                print(f"[WARN] runtime shutdown failed: {exc}")
+
+        for name, resource in (
+            ("top_camera", self.top_camera),
+            ("side_camera", self.side_camera),
+            ("stm32", self.stm32),
+        ):
+            if resource is None:
+                continue
+            close = getattr(resource, "close", None)
+            if not callable(close):
+                close = getattr(resource, "release", None)
+            if not callable(close):
+                print(f"[WARN] {name} has no close/release method")
+                continue
+            try:
+                close()
+            except Exception as exc:
+                print(f"[WARN] {name} close failed: {exc}")
+
+        self.runtime = None
+        self.top_camera = None
+        self.side_camera = None
+        self.stm32 = None
+
+
+app = None
+
+
+def handler(sig, frame):
+    global app
+    if app:
+        app.close()
+    sys.exit(0)
+
+
+def main():
+    global app
+    signal.signal(signal.SIGINT, handler)
+    app = SmartSortingApp()
+    try:
+        app.initialize()
+        app.run()
+    finally:
+        app.close()
+
+
+if __name__ == "__main__":
+    main()

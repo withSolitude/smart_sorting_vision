@@ -1,0 +1,358 @@
+config_version: 2
+
+stm32:
+  device: /dev/ttyCH341USB0
+  baud: 115200
+
+# 正式运行只从这里读取相机映射。设备名必须在 Jetson 现场用 ls -l /dev/v4l/by-id/ 核对。
+camera:
+  top:
+    device: /dev/v4l/by-id/usb-icSpring_icspring_camera_20240307110322-video-index0
+    width: 1920
+    height: 1080
+    fps: 30
+    fourcc: MJPG
+    buffer_size: 1
+    safe_roi: [580, 120, 1330, 927]   # x1, y1, x2, y2，基于去畸变完整图
+    controls:
+      auto_exposure: 1
+      exposure_time_absolute: 100
+      gain: 0
+      white_balance_automatic: 0
+      white_balance_temperature: 5400
+      brightness: 0
+      contrast: 30
+      saturation: 55
+      hue: 0
+      gamma: 100
+      power_line_frequency: 1
+      sharpness: 8
+      backlight_compensation: 0
+
+  side:
+    device: /dev/v4l/by-id/usb-icSpring_icspring_camera-video-index0
+    width: 1280
+    height: 720
+    fps: 30
+    fourcc: MJPG
+    buffer_size: 1
+    roi: [0, 0, 837, 720]             # 最终实测侧面机械ROI
+    controls:
+      auto_exposure: 1
+      exposure_time_absolute: 185
+      gain: 0
+      white_balance_automatic: 0
+      white_balance_temperature: 4650
+      brightness: -3
+      contrast: 38
+      saturation: 55
+      hue: 0
+      gamma: 100
+      power_line_frequency: 1
+      sharpness: 1
+      backlight_compensation: 0
+
+# 使用工程根目录相对路径，禁止再写 /home/nvidia/...。
+model:
+  top:
+    path: outputs/training/top_seg/top_seg_v1_aug/weights/best.engine
+    conf: 0.35
+    imgsz: 832
+    device: 0
+  side:
+    path: outputs/training/side_cls/school_test/weights/best.engine
+    imgsz: 224
+    device: 0
+    confidence_threshold: 0.7
+    topk: 3
+
+calibration:
+  top_intrinsics: data/calibration/top_camera/top_camera_intrinsics.npz
+  pixel_to_robot: data/calibration/top_camera/robot_mapping/pixel_to_robot.json
+  side_background: data/calibration/side_camera/side_mechanical_roi_background.png
+
+mechanics:
+  # 用户实测工作范围。虽然 X 的运动描述是“0 到 -77”，数值区间统一按 [min, max] 存储。
+  workspace_mm:
+    x: [-75.0, 0.0]
+    y: [0.0, 50.0]
+  # 当前没有提供夹爪外形和机械禁入区，因此不擅自缩小工作范围。
+  forbidden_zones_mm: []
+  allowed_polygon_mm: []
+  #allowed_polygon_mm: [[-86.09, 43.88], [-88.24, -15.83], [-20.76, -20.51], [-22.22, 46.07]]
+
+vision:
+  top:
+    obstacle_margin_px: 12
+    border_margin_px: 12
+    min_safe_area_px: 50
+    min_clearance_px: 3.0
+
+    # 动态抓取Yaw。这里的角度是“夹爪闭合轴在机械XY坐标系中的方向”，
+    # 上位机不直接假设舵机安装零位。下位机再把该方向换算成真实舵机角度。
+    grasp_orientation:
+      enabled: true
+      # 兼容旧配置；正式通用规划已不再仅靠“长方形长短轴”决定抓取。
+      grip_long_sides: true
+      # 兼容旧配置/调试显示；三角形、方形、五边形等由 antipodal 几何统一处理。
+      min_aspect_ratio: 1.15
+      default_grasp_axis_robot_deg: -85.0
+      # 视觉规划的“物体短轴”与实机夹爪闭合轴之间的常量对齐修正。
+      # 先保持0.0；运行 calibrate_real_grasp_yaw_alignment.py 手动对齐后，
+      # 将其输出的 selected_offset_deg 填到这里。不要改下位机Yaw标定参数。
+      yaw_alignment_offset_deg: 0.0
+      # 多帧方向抖动超过该值，不输出READY。
+      max_yaw_spread_deg: 12.0
+
+      # 通用平行夹爪几何规划：三角形、四边形、五边形、六边形等统一处理。
+      # 先找凸包的 antipodal 支撑对，再在“接近最小夹持宽度”的候选中
+      # 优先 edge-edge，其次 edge-vertex（例如三角形），最后 vertex-vertex。
+      width_slack_ratio: 0.15
+      support_tolerance_px: 3.0
+      min_contact_span_px: 6.0
+      # 只有真正接近圆形时才使用固定Yaw；普通正多边形仍使用真实边。
+      circle_circularity_threshold: 0.985
+      circle_min_vertices: 8
+      # 真实夹爪开口上下限（mm）。当前未知时保持 null；填入后正式流水线会硬拒绝超范围抓取。
+      min_opening_mm: null
+      max_opening_mm: null
+
+      # 动态预收缩：视觉使用“当前夹取方向上的真实夹持宽度”计算预开口。
+      # command = grasp_width_mm + margin_mm；圆形/几何回退无法可靠估宽时，
+      # 不发送该命令，下位机自动使用旧固定 10° 预收缩。
+      dynamic_preopen:
+        enabled: true
+        configured: true
+        profile_kind: cad_four_bar
+        hardware_validated: false
+        # 新夹爪开合舵机：-15°近闭合，-95°待机张开；不是Yaw角。
+        closed_servo_deg: -35.0
+        standby_servo_deg: -95.0
+        # command 是两片硅胶内侧之间的目标净开口。
+        # 物体宽度 + 总余量；薄硅胶安装后先使用5mm（两侧合计）。
+        margin_mm: 6.0
+        # 新CAD四连杆表对应的安全协议范围；角度换算表编译在STM32头文件中。
+        min_command_mm: 0.9
+        max_command_mm: 46.5
+
+    # Yaw-TCP 偏心补偿。
+    # H 是在 CALIB_MOVE/待机 Yaw 姿态下建立的；旧代码240°会被驱动夹到+135°，
+    # 该舵机姿态在最终 Yaw 标定中实测闭合轴约 -88.936°。
+    # TCP 圆拟合来自 2026-09-12 的5点复测：r≈19.698mm，拟合RMSE≈0.423mm。
+    # 当前进入真实物体空抓对心阶段，正式启用；如需回退，将 enabled 改回 false。
+    yaw_tcp_compensation:
+      enabled: true
+
+      reference_axis_deg: -56.788489
+      offset_axis0_mm: [0.23628793,15.44517776]
+
+      # 沿夹爪闭合轴左右修正
+      closing_bias_mm: 0.0
+
+      # 垂直于闭合轴，沿夹爪前后修正
+      longitudinal_bias_mm: 0.0
+
+      # ======================================================
+      # branch=1 专用微调
+      #
+      # branch1_axis_correction_deg:
+      #   只修另一物理侧的夹爪实际方向角，branch=0不受影响。
+      #   必须与 STM32 ita_robot.h 中的
+      #   Pick_Yaw_Branch1_Axis_Correction_Deg 保持完全相同。
+      #
+      # branch1_closing_bias_mm:
+      #   只修另一物理侧的抓取中心左右偏差。
+      #   正值沿真实夹爪闭合轴方向移动，负值反向。
+      #
+      # branch1_longitudinal_bias_mm:
+      #   只修另一物理侧的抓取中心前后偏差。
+      #   正值沿真实夹爪闭合轴 +90° 方向移动，负值反向。
+      # ======================================================
+      branch1_axis_correction_deg: 0.0
+      branch1_closing_bias_mm: 10.0
+      branch1_longitudinal_bias_mm: 10.0
+
+      visual_to_command_matrix:
+        - [0.72533465, 0.01675850]
+        - [0.00479271, 0.64797763]
+
+      command_to_visual_tcp_matrix:
+        - [1.37890961, -0.03566244]
+        - [-0.01019898, 1.54352692]
+
+      # 双边抓取时这里表示“有向物理Yaw”的可执行范围，不是协议轴向yaw。
+      # 由当前下位机Yaw标定 q=q0+k*(theta-theta0) 与舵机±135°范围换算；
+      # 留少量边界余量，branch 0/1都会先经过此范围检查再做TCP补偿。
+      min_axis_deg: -79.0
+      max_axis_deg: 165.0
+
+      xy_calibration_claw_angle_deg: 45.0
+      tcp_fit_claw_angle_deg: 5.0
+
+    # Z下降时机构存在可重复的横向漂移。这里补偿的是“真实下降过程中”
+    # 才出现的位移，因此不放进 TopPickPipeline 的空抓对心坐标，
+    # 只在正式 PICK_TARGET 下发前追加一次预偏移。
+    descent_drift_compensation:
+      enabled: true
+      # 实测 TCP 在下降时沿“闭合轴 + relative_angle_deg”方向漂移的距离(mm)。
+      # 正值表示 +90° 方向，负值表示反方向。当前先填0.0，
+      # 用单物体抓取脚本 --descent-drift-mm 快速试出数值后再写回来。
+      signed_drift_mm: -5.0
+      # 两个夹爪连线/闭合轴的垂直方向。若机械实际不是严格90°可微调。
+      relative_angle_deg: 90.0
+      # true 时复用 Yaw-TCP 标定得到的 J^-1，把“物理平面mm”换成XY命令mm。
+      use_visual_to_command_matrix: true
+
+    gripper_collision:
+      enabled: false
+
+      allowed_polygon_mm: null
+
+      # 来自本次 STEP 顶视投影：夹持端零件最小外接矩形约 30.7 x 13.5 mm，
+      # 向上取整作为保守单指包络。
+      finger_length_mm: 5.0
+      finger_thickness_mm: 2.7
+      finger_longitudinal_offset_mm: 0.0
+
+      # 覆盖动态预开口角度补偿、硅胶变形、机构误差。
+      opening_uncertainty_mm: 0.3
+
+      # 夹爪真实外形之外的额外安全余量。
+      object_margin_mm: 0.1
+      wall_margin_mm: 0.5
+
+      # 没有可靠 grasp_width 时，下位机固定预夹角约对应此有效净开口。
+      fallback_opening_mm: 38.3
+
+      enforce_image_border: true
+      image_border_margin_px: 0
+
+      # 不确定物理托盘边界时保持 null。
+      allowed_region_mm: null
+
+      # 只有夹爪主体在下降高度也可能碰撞时才打开。
+      body:
+        enabled: false
+        width_mm: 50.0
+        length_mm: 20.0
+        longitudinal_offset_mm: -25.0
+
+      # 同一物体多姿态抓取搜索
+      grasp_search:
+        enabled: true
+
+        yaw_offsets_deg:
+          [0, -5, 5, -10, 10, -15, 15, -20, 20, -30, 30]
+
+        longitudinal_offsets_mm:
+          [0.0, -2.0, 2.0, -3.0, 3.0]
+
+        closing_offsets_mm:
+          [0.0]
+
+        hard_min_clearance_mm: 0.5
+        preferred_clearance_mm: 2.0
+        min_target_overlap_mm: 1.5
+        min_side_gap_mm: 0.15
+
+        yaw_penalty_per_deg: 0.12
+        center_penalty_per_mm: 0.25
+
+        max_trials_per_object: 200
+
+      debug_log_rejections: true
+
+    consensus:
+      window: 2
+      required: 2
+      max_track_center_shift_px: 55.0
+      max_grasp_spread_mm: 3.0
+      reset_after_misses: 3
+  side:
+    recognition:
+      color:
+        enabled: true
+      qr:
+        enabled: true
+      shape:
+        enabled: true
+
+    # 先确认“托盘上确实有物体”，再进入颜色/QR/Shape识别。
+    # 单帧背景差分误触发不会直接送入分类器。
+    object_presence:
+      window: 4
+      required: 3
+      extractor:
+        # 有可靠 strong core 时沿用原来的较灵敏门槛，保证正常物体不漏检。
+        min_object_area: 1200
+        min_object_area_ratio: 0.003
+
+        # strong core 太小通常是反光/噪声，不作为可靠物体种子。
+        min_core_area: 350
+        min_core_area_ratio: 0.0006
+
+        # 没有 strong core、只能依赖弱差分时显著提高门槛。
+        # 837x720 ROI 下 0.010 约等于 6026 px。
+        fallback_min_object_area: 4500
+        fallback_min_object_area_ratio: 0.010
+        fallback_min_bbox_width_ratio: 0.06
+        fallback_min_bbox_height_ratio: 0.10
+
+    padding_ratio: 0.15
+
+    # 属性识别仍保持 4/5；若 4s 内一直未达共识，Runtime 使用整个
+    # 识别阶段的有效完整结果多数票兜底。
+    consensus:
+      window: 5
+      required: 4
+
+storage:
+  box_count: 6
+
+runtime:
+  # 命令丢包时的周期重发间隔。ACK/READY/DONE 的绝对截止时间不会因重发而延长。
+  retry_interval_s: 0.25
+
+  # 上位机 <-> STM32 握手超时。达到阈值后进入 ERROR 并发送 STOP。
+  pick_ack_timeout_s: 1.5
+  sort_ack_timeout_s: 1.5
+  recognition_ready_timeout_s: 18.0
+  retry_pick_ready_timeout_s: 4.0
+  sort_done_timeout_s: 16.0
+
+  # Side 正常仍按 vision.side.consensus 的 4/5 共识立即输出。
+  # 4s 到时仍未共识时，使用整个识别阶段票数最多的完整结果继续分拣；
+  # 这不是控制故障，因此不会仅因“识别不稳定”而 STOP。
+  side_recognition_timeout_s: 4.0
+
+  # 识别台连续确认空载时认为抓取途中掉落，走 RETRY_PICK 恢复，不终止比赛。
+  # 时间与帧数两个门槛必须同时满足，防止单帧漏检误触发。
+  side_empty_retry_hold_s: 0.6
+  side_empty_retry_min_frames: 5
+
+  # 相机无帧与“识别不稳定”分离。连续取不到新图像达到阈值才属于相机故障，
+  # 触发 ERROR + STOP；同时可防止 Side 相机冻结后使用旧票数分箱。
+  camera_watchdog:
+    top_no_frame_timeout_s: 2.0
+    side_no_frame_timeout_s: 2.0
+
+  # 上电时 Jetson 主动 STOP，等待 STM32 全机构回到可启动安全状态。
+  startup_sync:
+    enabled: true
+    timeout_s: 15.0
+    retry_interval_s: 0.25
+    poll_sleep_s: 0.010
+
+  # 比赛结束条件：完成至少12件以后，顶部连续1.5s确认场上0物体才自动STOP。
+  minimum_items_before_empty_finish: 12
+  empty_finish_hold_s: 1.5
+  # 0表示不按固定件数强制结束；如果赛场明确只有12件，可改为12。
+  max_items: 0
+
+  # 正式比赛不允许把 unknown 直接分配到储物盒。
+  reject_unknown: true
+
+ui:
+  enabled: true
+  fullscreen: true
+  max_visible_rows: 6

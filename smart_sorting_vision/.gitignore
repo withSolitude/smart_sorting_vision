@@ -1,0 +1,29 @@
+# Python虚拟环境
+.venv/
+
+# Python缓存
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# 运行输出
+outputs/
+runs/
+
+# 安装包
+*.whl
+
+# IDE
+.idea/
+.vscode/
+
+# 备份
+preopen_yaml_backups/
+
+# 环境变量
+.env
+.env.*
+
+# 日志
+*.log
