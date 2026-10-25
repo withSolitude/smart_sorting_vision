@@ -16,7 +16,7 @@ class TopCamera:
 
     设计原则
     ------------------------------------------------------------
-    1. 所有相机硬件参数只允许在本文件中定义。
+    1. 所有相机硬件参数只从 config/runtime_config.yaml 读取。
     2. 其它模块禁止重新设置曝光、白平衡、分辨率等参数。
     3. read_full():
            返回原始 1920x1080 BGR 图像。
@@ -58,13 +58,8 @@ class TopCamera:
     )
 
     # ============================================================
-    # 相机设备
-    #
-    # 当前顶部相机：
-    # /dev/video0
-    #
-    # 如果以后两个USB相机同时连接后 video 编号发生变化，
-    # 再改成 /dev/v4l/by-id/... 的固定设备路径。
+    # 下面的值只是未调用 configure() 时的最小兜底；正式运行必须由
+    # config/runtime_config.yaml 覆盖。
     # ============================================================
 
     DEVICE = (
@@ -231,19 +226,21 @@ class TopCamera:
         compatible while making runtime_config.yaml the single production source.
         """
         cls.DEVICE = str(config["device"])
-        cls.WIDTH = int(config.get("width", cls.WIDTH))
-        cls.HEIGHT = int(config.get("height", cls.HEIGHT))
-        cls.FPS = int(config.get("fps", cls.FPS))
-        cls.FOURCC = str(config.get("fourcc", cls.FOURCC))
-        cls.BUFFER_SIZE = int(config.get("buffer_size", cls.BUFFER_SIZE))
+        cls.WIDTH = int(config["width"])
+        cls.HEIGHT = int(config["height"])
+        cls.FPS = int(config["fps"])
+        cls.FOURCC = str(config["fourcc"])
+        cls.BUFFER_SIZE = int(config["buffer_size"])
+        cls.WARMUP_FRAMES = int(config["warmup_frames"])
+        cls.RECONNECT_INTERVAL_S = float(config["reconnect_interval_s"])
+        cls.FPS_TOLERANCE = float(config["fps_tolerance"])
 
-        roi = config.get("safe_roi")
-        if roi is not None:
-            if not isinstance(roi, (list, tuple)) or len(roi) != 4:
-                raise ValueError("camera.top.safe_roi 必须是 [x1, y1, x2, y2]")
-            cls.SAFE_ROI_X1, cls.SAFE_ROI_Y1, cls.SAFE_ROI_X2, cls.SAFE_ROI_Y2 = map(int, roi)
-            cls.SAFE_ROI_WIDTH = cls.SAFE_ROI_X2 - cls.SAFE_ROI_X1
-            cls.SAFE_ROI_HEIGHT = cls.SAFE_ROI_Y2 - cls.SAFE_ROI_Y1
+        roi = config["safe_roi"]
+        if not isinstance(roi, (list, tuple)) or len(roi) != 4:
+            raise ValueError("camera.top.safe_roi 必须是 [x1, y1, x2, y2]")
+        cls.SAFE_ROI_X1, cls.SAFE_ROI_Y1, cls.SAFE_ROI_X2, cls.SAFE_ROI_Y2 = map(int, roi)
+        cls.SAFE_ROI_WIDTH = cls.SAFE_ROI_X2 - cls.SAFE_ROI_X1
+        cls.SAFE_ROI_HEIGHT = cls.SAFE_ROI_Y2 - cls.SAFE_ROI_Y1
 
         controls = config.get("controls", {})
         mapping = {
@@ -987,6 +984,8 @@ class TopCamera:
 
     def open(
         self,
+        *,
+        require_calibration: bool = True,
     ) -> None:
 
         if self._opened:
@@ -1002,12 +1001,19 @@ class TopCamera:
         self._verify_roi_definition()
 
         # --------------------------------------------------------
-        # 先加载标定参数。
+        # 正式运行必须有内参；从零调试时允许先打开原始画面采集标定图片。
         # --------------------------------------------------------
 
-        self._load_calibration()
-
-        self._create_undistort_maps()
+        if require_calibration or self.CALIBRATION_FILE.exists():
+            self._load_calibration()
+            self._create_undistort_maps()
+        else:
+            self._camera_matrix = None
+            self._dist_coeffs = None
+            self._new_camera_matrix = None
+            self._map1 = None
+            self._map2 = None
+            print("[TOP CAMERA] 未找到内参，当前仅提供原始画面；完成标定后再使用去畸变。")
 
         # --------------------------------------------------------
         # 打开 V4L2 相机

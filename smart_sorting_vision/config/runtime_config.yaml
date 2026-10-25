@@ -13,6 +13,9 @@ camera:
     fps: 30
     fourcc: MJPG
     buffer_size: 1
+    warmup_frames: 10
+    reconnect_interval_s: 0.5
+    fps_tolerance: 1.0
     safe_roi: [580, 120, 1330, 927]   # x1, y1, x2, y2，基于去畸变完整图
     controls:
       auto_exposure: 1
@@ -36,6 +39,8 @@ camera:
     fps: 30
     fourcc: MJPG
     buffer_size: 1
+    warmup_frames: 10
+    reconnect_interval_s: 0.5
     roi: [0, 0, 837, 720]             # 最终实测侧面机械ROI
     controls:
       auto_exposure: 1
@@ -70,6 +75,15 @@ calibration:
   top_intrinsics: data/calibration/top_camera/top_camera_intrinsics.npz
   pixel_to_robot: data/calibration/top_camera/robot_mapping/pixel_to_robot.json
   side_background: data/calibration/side_camera/side_mechanical_roi_background.png
+  top_camera:
+    image_dir: data/calibration/top_camera/images
+    chessboard_size: [6, 9]
+    square_size_mm: 5.2  # 必须按实际棋盘格测量值修改
+    min_valid_images: 12
+    warning_error_px: 0.8
+  side_background_capture:
+    settle_frames: 15
+    frame_count: 30
 
 mechanics:
   # 用户实测工作范围。虽然 X 的运动描述是“0 到 -77”，数值区间统一按 [min, max] 存储。
@@ -206,6 +220,7 @@ vision:
       enabled: false
 
       allowed_polygon_mm: null
+      object_overlap_tolerance_px: 4
 
       # 来自本次 STEP 顶视投影：夹持端零件最小外接矩形约 30.7 x 13.5 mm，
       # 向上取整作为保守单指包络。
@@ -271,8 +286,46 @@ vision:
     recognition:
       color:
         enabled: true
+        mask_erode_px: 3
+        achromatic_s_max: 80
+        achromatic_lab_chroma_max: 22.0
+        reliable_v_min: 35
+        reliable_v_max: 238
+        chromatic_s_min: 45
+        chromatic_lab_chroma_min: 10.0
+        hue_hist_bins: 36
+        dominant_hue_half_width: 12
+        black_v_max: 45
+        black_lab_l_max: 75
+        white_lab_l_p75_min: 195
+        white_lab_l_p90_min: 210
+        brown_h_min: 6
+        brown_h_max: 25
+        brown_v_max: 115
+        brown_lab_l_max: 115
+        purple_ambiguous_h_min: 115
+        purple_ambiguous_h_max: 133
+        purple_lab_a_min: 140
+        pastel_pink_h_min: 138
+        pastel_pink_h_max: 160
+        pastel_pink_s_max: 110
+        pastel_pink_v_min: 125
+        pastel_pink_lab_l_min: 120
+        pink_low_h_max: 7
+        pink_low_h_s_max: 175
+        pink_low_h_v_min: 150
+        min_pixels: 150
       qr:
         enabled: true
+        try_rotate: true
+        try_downscale: false
+        try_invert: false
+        max_input_side: 640
+        opencv_curved_fallback: true
+        zxing_rectify_fallback: true
+        curved_warp_size: 360
+        curved_quiet_zone: 28
+        curved_gammas: [0.72, 0.82, 0.90, 1.10, 1.22]
       shape:
         enabled: true
 
@@ -296,6 +349,30 @@ vision:
         fallback_min_object_area_ratio: 0.010
         fallback_min_bbox_width_ratio: 0.06
         fallback_min_bbox_height_ratio: 0.10
+        chroma_threshold: 8
+        light_luma_threshold: 25
+        dark_luma_threshold: 50
+        strong_chroma_threshold: 14
+        strong_light_luma_threshold: 45
+        strong_dark_luma_threshold: 75
+        max_object_area_ratio: 0.80
+        min_padding_px: 12
+        open_kernel_size: 3
+        close_kernel_size: 5
+        close_iterations: 2
+        enable_gray_texture_assist: true
+        gray_texture_gradient_threshold: 15.0
+        gray_texture_luma_min: -12
+        gray_texture_luma_max: 25
+        gray_texture_support_x_ratio: 0.80
+        gray_texture_support_y_ratio: 0.15
+        gray_texture_close_kernel_size: 5
+        gray_texture_max_growth_ratio: 2.00
+        enable_achromatic_safe_crop: true
+        achromatic_saturation_threshold: 80
+        achromatic_chroma_delta_threshold: 10.0
+        achromatic_min_crop_width_ratio: 0.50
+        achromatic_min_crop_height_ratio: 0.93
 
     padding_ratio: 0.15
 
@@ -358,7 +435,21 @@ runtime:
   # 正式比赛不允许把 unknown 直接分配到储物盒。
   reject_unknown: true
 
+  warmup:
+    enabled: true
+    top_runs: 3
+    side_runs: 2
+
+  scheduler:
+    idle_sleep_s: 0.010
+    wait_sleep_s: 0.002
+    vision_sleep_s: 0.001
+
 ui:
   enabled: true
   fullscreen: true
   max_visible_rows: 6
+
+debug:
+  frames_dir: data/debug/last_debug/frames
+  dataset_dir: data/debug/last_debug/dataset

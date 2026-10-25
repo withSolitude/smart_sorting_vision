@@ -113,6 +113,8 @@ class SideSortPipeline:
         presence_window: int = 4,
         presence_required: int = 3,
         extractor_config: dict[str, Any] | None = None,
+        color_config: dict[str, Any] | None = None,
+        qr_config: dict[str, Any] | None = None,
         enable_color: bool = True,
         enable_qr: bool = True,
         enable_shape: bool = True,
@@ -178,9 +180,15 @@ class SideSortPipeline:
             maxlen=self.presence_window
         )
 
-        self.color_classifier = ColorClassifier() if self.enable_color else None
+        self.color_classifier = (
+            ColorClassifier(**dict(color_config or {}))
+            if self.enable_color else None
+        )
 
-        self.qr_detector = QRDetector() if self.enable_qr else None
+        self.qr_detector = (
+            QRDetector(**dict(qr_config or {}))
+            if self.enable_qr else None
+        )
 
         self.shape_classifier = (
             ShapeClassifier(

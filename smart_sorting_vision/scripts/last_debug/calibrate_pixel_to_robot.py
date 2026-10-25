@@ -1,0 +1,73 @@
+"""用四个固定点标定顶部 ROI 像素到 XY 坐标的单应矩阵。
+
+先在画面中依次点击左上、右上、右下、左下四个固定点，再输入每个点的
+机械 XY。该脚本使用 TopCamera.read() 的 ROI 坐标，和正式流水线一致。
+"""
+from __future__ import annotations
+
+import argparse
+import json
+
+import cv2
+import numpy as np
+
+from vision.calibration.pixel_to_robot import PixelToRobotTransform
+
+from .common import ROOT, load_context
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="config/runtime_config.yaml")
+    args = parser.parse_args()
+    cfg, TopCamera, _ = load_context(ROOT / args.config)
+    output = ROOT / cfg["calibration"]["pixel_to_robot"]
+
+    camera = TopCamera()
+    try:
+        camera.open()
+        frame = camera.read()
+        points: list[tuple[float, float]] = []
+
+        def on_click(event, x, y, _flags, _param):
+            if event == cv2.EVENT_LBUTTONDOWN and len(points) < 4:
+                points.append((float(x), float(y)))
+
+        window = "pixel to robot: click 4 points"
+        cv2.namedWindow(window)
+        cv2.setMouseCallback(window, on_click)
+        while len(points) < 4:
+            view = frame.copy()
+            for i, (u, v) in enumerate(points, start=1):
+                cv2.circle(view, (round(u), round(v)), 6, (0, 0, 255), 2)
+                cv2.putText(view, f"P{i}", (round(u) + 8, round(v) - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 255, 255), 2)
+            cv2.putText(view, f"click {len(points) + 1}/4; Q quit", (15, 28),
+                        cv2.FONT_HERSHEY_SIMPLEX, .65, (0, 255, 0), 2)
+            cv2.imshow(window, view)
+            if cv2.waitKey(20) & 0xFF in (ord("q"), 27):
+                return
+
+        robot = []
+        for i, (u, v) in enumerate(points, start=1):
+            x, y = map(float, input(f"P{i} pixel=({u:.1f},{v:.1f}) 输入 X_mm Y_mm: ").split())
+            robot.append((x, y))
+
+        H = cv2.getPerspectiveTransform(np.float32(points), np.float32(robot))
+        transform = PixelToRobotTransform(
+            H, frame.shape[1], frame.shape[0], source="TopCamera.read()",
+            metadata={"point_count": 4, "points_pixel": points, "points_robot": robot},
+        )
+        transform.save(output)
+        output.with_suffix(".points.json").write_text(
+            json.dumps({"pixel": points, "robot": robot}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"[SAVE] {output}")
+    finally:
+        camera.release()
+        cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()

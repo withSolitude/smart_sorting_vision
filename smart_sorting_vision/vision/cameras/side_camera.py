@@ -93,18 +93,9 @@ class SideCamera:
 
     只保留左侧长条托盘。
 
-    当前 ROI：
-
-        x = 220 ~ 745
-        y = 105 ~ 720
-
-    得到：
-
-        width  = 525
-        height = 615
-
-    后续如果需要微调托盘范围，
-    只修改下面四个 ROI 参数。
+    正式 ROI、曝光、分辨率等参数统一由
+    config/runtime_config.yaml 提供；下面的类常量只作为未调用
+    configure() 时的最小兜底。
     """
 
     # ==========================================================
@@ -238,19 +229,20 @@ class SideCamera:
     ) -> None:
         """Apply the production side-camera profile from runtime_config.yaml."""
         cls.DEVICE = str(config["device"])
-        cls.WIDTH = int(config.get("width", cls.WIDTH))
-        cls.HEIGHT = int(config.get("height", cls.HEIGHT))
-        cls.FPS = int(config.get("fps", cls.FPS))
-        cls.FOURCC = str(config.get("fourcc", cls.FOURCC))
-        cls.BUFFER_SIZE = int(config.get("buffer_size", cls.BUFFER_SIZE))
+        cls.WIDTH = int(config["width"])
+        cls.HEIGHT = int(config["height"])
+        cls.FPS = int(config["fps"])
+        cls.FOURCC = str(config["fourcc"])
+        cls.BUFFER_SIZE = int(config["buffer_size"])
+        cls.WARMUP_FRAMES = int(config["warmup_frames"])
+        cls.RECONNECT_INTERVAL_S = float(config["reconnect_interval_s"])
 
-        roi = config.get("roi")
-        if roi is not None:
-            if not isinstance(roi, (list, tuple)) or len(roi) != 4:
-                raise ValueError("camera.side.roi 必须是 [x1, y1, x2, y2]")
-            cls.ROI_X1, cls.ROI_Y1, cls.ROI_X2, cls.ROI_Y2 = map(int, roi)
-            cls.ROI_WIDTH = cls.ROI_X2 - cls.ROI_X1
-            cls.ROI_HEIGHT = cls.ROI_Y2 - cls.ROI_Y1
+        roi = config["roi"]
+        if not isinstance(roi, (list, tuple)) or len(roi) != 4:
+            raise ValueError("camera.side.roi 必须是 [x1, y1, x2, y2]")
+        cls.ROI_X1, cls.ROI_Y1, cls.ROI_X2, cls.ROI_Y2 = map(int, roi)
+        cls.ROI_WIDTH = cls.ROI_X2 - cls.ROI_X1
+        cls.ROI_HEIGHT = cls.ROI_Y2 - cls.ROI_Y1
 
         if not (0 <= cls.ROI_X1 < cls.ROI_X2 <= cls.WIDTH):
             raise ValueError("camera.side.roi 的 X 范围超出图像")
