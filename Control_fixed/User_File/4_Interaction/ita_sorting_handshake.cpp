@@ -167,6 +167,10 @@ Request_Start_Work()
         return false;
     }
 
+    // 这里已经完成一次新的START握手。清除上一次掉线安全STOP留下的
+    // “显式停止”标志，避免后续普通机械故障被误判成操作员STOP。
+    Explicit_Stop_Request_Pending = false;
+
 
     // ========================================================
     // 清空上一轮

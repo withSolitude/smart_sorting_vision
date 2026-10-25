@@ -523,8 +523,9 @@ TIM_1000ms_Alive_PeriodElapsedCallback()
         .TIM_1000ms_Alive_PeriodElapsedCallback();
 
     // 视觉链路掉线不等于某个机械动作超时。
-    // 连续约3秒没有有效帧时，只安全停止当前分拣事务一次，不锁死整机；
-    // 视觉端恢复后发送心跳/STOP，再由实体按键或上位机显式START继续。
+    // 连续约3秒没有有效帧时，只安全停止当前分拣事务一次，不把握手状态
+    // 永久置为 ERROR。链路恢复后重新锁存一次 START，等待机械机构真正回到
+    // 安全位置，再自动进入下一件分拣；不会继续执行掉线时未完成的半件物料。
     if (Sorting_Handshake.Get_Running() &&
         Sorting_Vision_UART.Get_Status() == Sorting_Vision_UART_Status_DISABLE)
     {
@@ -537,8 +538,19 @@ TIM_1000ms_Alive_PeriodElapsedCallback()
     }
     else if (Sorting_Vision_UART.Get_Status() == Sorting_Vision_UART_Status_ENABLE)
     {
+        const bool recovered_from_link_loss = Vision_Link_Lost_Stop_Requested;
         Vision_Link_Lost_Seconds = 0U;
         Vision_Link_Lost_Stop_Requested = false;
+
+        // Request_Stop_Work() 已经把当前事务安全收敛到 STOPPED。
+        // 重新收到有效帧后只锁存 START，由10ms调度统一检查夹爪、XY、储物
+        // 机构的安全状态，避免在回位过程中直接启动下一件物料。
+        if (recovered_from_link_loss &&
+            Sorting_Handshake.Get_State() == Sorting_Handshake_State_STOPPED &&
+            !Sorting_Handshake.Get_Stop_Ack_Pending())
+        {
+            Sorting_Start_Request_Pending = true;
+        }
     }
 }
 

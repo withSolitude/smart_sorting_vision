@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import threading
 import time
-from pathlib import Path
 from typing import Optional
 
-import serial
+try:
+    import serial
+except ModuleNotFoundError:  # Windows 离线测试机可能没有安装 pyserial
+    serial = None
+
+_SERIAL_ERRORS = (
+    (serial.SerialException,) if serial is not None else ()
+) + (OSError, IOError)
 
 from communication.sorting_protocol import (
     FRAME_LEN,
@@ -31,6 +38,15 @@ class LinkStats:
 
     last_rx_time: float | None = None
     last_tx_time: float | None = None
+    reconnect_count: int = 0
+
+
+class LinkOfflineError(ConnectionError):
+    """串口设备暂时不可用。
+
+    该异常表示通信链路故障，不表示分拣业务故障。上层运行时应进入
+    离线恢复状态并继续尝试重连，而不是退出主程序。
+    """
 
 
 class STM32Link:
@@ -79,6 +95,11 @@ class STM32Link:
         self.rx_buffer = bytearray()
 
         self.stats = LinkStats()
+        self._lock = threading.RLock()
+        self._online = False
+        self.last_error: str | None = None
+        self.offline_since: float | None = None
+        self.connection_generation = 0
 
     # ============================================================
     # 生命周期
@@ -91,42 +112,95 @@ class STM32Link:
             and self.serial.is_open
         )
 
+    @property
+    def is_online(self) -> bool:
+        """返回串口当前是否已经打开且没有记录通信异常。"""
+        return self.is_open and self._online
+
+    @property
+    def last_rx_time(self) -> float | None:
+        return self.stats.last_rx_time
+
+    def _mark_offline(self, exc: BaseException | str) -> None:
+        """统一记录掉线，避免把串口异常传播成业务 ERROR。"""
+        self._online = False
+        self.last_error = str(exc)
+        if self.offline_since is None:
+            self.offline_since = time.monotonic()
+
+    def _serial_failure(self, action: str, exc: BaseException) -> LinkOfflineError:
+        self._mark_offline(exc)
+        try:
+            if self.serial is not None and self.serial.is_open:
+                self.serial.close()
+        except Exception:
+            pass
+        self.serial = None
+        return LinkOfflineError(f"STM32 {action} failed: {exc}")
+
     def open(self) -> None:
-        if self.is_open:
-            return
+        with self._lock:
+            if self.is_open:
+                self._online = True
+                return
 
-        self.serial = serial.Serial(
-            port=self.device,
-            baudrate=self.baudrate,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-            timeout=self.read_timeout,
-            write_timeout=self.write_timeout,
-        )
+            if serial is None:
+                raise LinkOfflineError(
+                    "当前 Python 环境缺少 pyserial，请在 Jetson 运行环境安装"
+                )
 
-        # 清掉程序启动前残留的数据
-        self.serial.reset_input_buffer()
-        self.serial.reset_output_buffer()
+            try:
+                self.serial = serial.Serial(
+                    port=self.device,
+                    baudrate=self.baudrate,
+                    bytesize=serial.EIGHTBITS,
+                    parity=serial.PARITY_NONE,
+                    stopbits=serial.STOPBITS_ONE,
+                    timeout=self.read_timeout,
+                    write_timeout=self.write_timeout,
+                )
 
-        self.rx_buffer.clear()
+                # 清掉程序启动前残留的数据；重连后也必须丢弃半帧，
+                # 让协议解析从一个完整帧重新开始。
+                self.serial.reset_input_buffer()
+                self.serial.reset_output_buffer()
+                self.rx_buffer.clear()
+            except _SERIAL_ERRORS as exc:
+                self.serial = None
+                raise self._serial_failure("open", exc) from exc
 
-        print(
-            f"[STM32] opened: "
-            f"{self.device} @ {self.baudrate}"
-        )
+            self._online = True
+            self.last_error = None
+            self.offline_since = None
+            self.connection_generation += 1
+            self.stats.reconnect_count += 1
+            print(f"[STM32] opened: {self.device} @ {self.baudrate}")
+
+    def reconnect_once(self) -> bool:
+        """尝试一次重连；失败只返回 False，不抛出业务异常。"""
+        with self._lock:
+            self.close()
+            try:
+                self.open()
+            except LinkOfflineError as exc:
+                print(f"[STM32][OFFLINE] reconnect failed: {exc}")
+                return False
+            print("[STM32][ONLINE] serial link recovered")
+            return True
 
     def close(self) -> None:
-        if self.serial is None:
-            return
+        with self._lock:
+            if self.serial is None:
+                self._online = False
+                return
 
-        try:
-            if self.serial.is_open:
-                self.serial.close()
-
-        finally:
-            self.serial = None
-            self.rx_buffer.clear()
+            try:
+                if self.serial.is_open:
+                    self.serial.close()
+            finally:
+                self.serial = None
+                self._online = False
+                self.rx_buffer.clear()
 
     def __enter__(self):
         self.open()
@@ -148,36 +222,32 @@ class STM32Link:
         self,
         frame: SortingFrame,
     ) -> bytes:
-        if not self.is_open:
-            raise RuntimeError(
-                "STM32Link 尚未打开"
-            )
+        with self._lock:
+            if not self.is_online:
+                raise LinkOfflineError("STM32Link 尚未连接")
 
-        assert self.serial is not None
+            assert self.serial is not None
+            raw = SortingProtocol.pack(frame)
 
-        raw = SortingProtocol.pack(
-            frame
-        )
+            try:
+                written = self.serial.write(raw)
+                self.serial.flush()
+            except _SERIAL_ERRORS as exc:
+                raise self._serial_failure("send", exc) from exc
 
-        written = self.serial.write(
-            raw
-        )
+            if written != len(raw):
+                exc = LinkOfflineError(
+                    "串口发送长度异常："
+                    f"{written}/{len(raw)}"
+                )
+                self._mark_offline(exc)
+                raise exc
 
-        if written != len(raw):
-            raise RuntimeError(
-                "串口发送长度异常："
-                f"{written}/{len(raw)}"
-            )
-
-        self.serial.flush()
-
-        now = time.monotonic()
-
-        self.stats.tx_bytes += written
-        self.stats.tx_frames += 1
-        self.stats.last_tx_time = now
-
-        return raw
+            now = time.monotonic()
+            self.stats.tx_bytes += written
+            self.stats.tx_frames += 1
+            self.stats.last_tx_time = now
+            return raw
 
     # ============================================================
     # 接收
@@ -186,34 +256,28 @@ class STM32Link:
     def _read_available_bytes(
         self,
     ) -> bytes:
-        if not self.is_open:
-            raise RuntimeError(
-                "STM32Link 尚未打开"
-            )
+        with self._lock:
+            if not self.is_online:
+                raise LinkOfflineError("STM32Link 尚未连接")
 
-        assert self.serial is not None
+            assert self.serial is not None
+            try:
+                waiting = int(self.serial.in_waiting)
+            except _SERIAL_ERRORS as exc:
+                raise self._serial_failure("read", exc) from exc
 
-        waiting = int(
-            self.serial.in_waiting
-        )
+            if waiting <= 0:
+                return b""
 
-        if waiting <= 0:
-            return b""
+            try:
+                data = self.serial.read(waiting)
+            except _SERIAL_ERRORS as exc:
+                raise self._serial_failure("read", exc) from exc
 
-        data = self.serial.read(
-            waiting
-        )
-
-        if data:
-            self.stats.rx_bytes += len(
-                data
-            )
-
-            self.stats.last_rx_time = (
-                time.monotonic()
-            )
-
-        return data
+            if data:
+                self.stats.rx_bytes += len(data)
+                self.stats.last_rx_time = time.monotonic()
+            return data
 
     def _drop_until_header(
         self,

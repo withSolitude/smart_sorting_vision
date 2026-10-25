@@ -43,9 +43,11 @@ r=SortingRuntime(FakeCam(), FakeCam(), FakeTop(), FakeSide(), StorageManager(6),
     recognition_ready_timeout_s=30, side_recognition_timeout_s=10, sort_done_timeout_s=30)
 r.start()
 r.run_once()
-assert r.state == RuntimeState.WAIT_PICK_ACK
+assert r.state == RuntimeState.WAIT_PICK_YAW_BRANCH_ACK
 pick=r.current_pick_command
 assert pick is not None
+r.process_message(SortingFrame(mode=Mode.MCU_PICK_YAW_BRANCH_ACK, box_id=0))
+assert r.state == RuntimeState.WAIT_PICK_ACK
 r.process_message(SortingFrame(mode=Mode.MCU_PICK_TARGET_ACK, x_mm=pick.x_mm, y_mm=pick.y_mm, yaw_deg=pick.yaw_deg))
 assert r.state == RuntimeState.WAIT_RECOGNITION_READY
 r.process_message(SortingFrame(mode=Mode.MCU_RECOGNITION_READY, x_mm=pick.x_mm, y_mm=pick.y_mm))

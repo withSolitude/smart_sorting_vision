@@ -6,10 +6,11 @@ import json
 import signal
 import sys
 import threading
+import time
 
 ROOT = Path(__file__).resolve().parent
 
-from communication.stm32_link import STM32Link
+from communication.stm32_link import LinkOfflineError, STM32Link
 from communication.sorting_protocol import SortingFrame, Mode
 from runtime.app_config import load_runtime_config
 from runtime.sorting_runtime import SortingRuntime
@@ -139,7 +140,15 @@ class SmartSortingApp:
             device=self.config["stm32"]["device"],
             baudrate=self.config["stm32"]["baud"],
         )
-        self.stm32.open()
+        # USB-UART 设备可能比 Jetson 进程晚几秒枚举。启动阶段持续等待，
+        # 不把一次设备枚举失败误判成程序故障。
+        while True:
+            try:
+                self.stm32.open()
+                break
+            except LinkOfflineError as exc:
+                print(f"[STM32][WAIT] {exc}; retry in 1s")
+                time.sleep(1.0)
         print("[OK] STM32")
 
         # 上位机进程一启动就先发一次STOP，尽快终止MCU可能残留的上一轮动作。
@@ -446,6 +455,9 @@ class SmartSortingApp:
             descent_drift_compensator=descent_drift_compensator,
             branch1_axis_correction_deg=branch1_axis_correction_deg,
             retry_interval_s=runtime_cfg.get("retry_interval_s", 0.25),
+            link_reconnect_interval_s=runtime_cfg.get("link_reconnect_interval_s", 1.0),
+            heartbeat_interval_s=runtime_cfg.get("heartbeat_interval_s", 0.5),
+            link_dead_timeout_s=runtime_cfg.get("link_dead_timeout_s", 3.0),
             minimum_items_before_empty_finish=runtime_cfg.get(
                 "minimum_items_before_empty_finish", 12
             ),
@@ -469,11 +481,30 @@ class SmartSortingApp:
         # --------------------------------------------------------
         sync_cfg = runtime_cfg.get("startup_sync", {}) or {}
         if bool(sync_cfg.get("enabled", True)):
-            self.runtime.synchronize_startup(
-                timeout_s=sync_cfg.get("timeout_s", 15.0),
-                retry_interval_s=sync_cfg.get("retry_interval_s", 0.25),
-                poll_sleep_s=sync_cfg.get("poll_sleep_s", 0.010),
-            )
+            while True:
+                try:
+                    self.runtime.synchronize_startup(
+                        timeout_s=sync_cfg.get("timeout_s", 15.0),
+                        retry_interval_s=sync_cfg.get("retry_interval_s", 0.25),
+                        poll_sleep_s=sync_cfg.get("poll_sleep_s", 0.010),
+                    )
+                    break
+                except LinkOfflineError as exc:
+                    # 上电同步也采用可恢复策略；重新打开串口后继续发送 STOP，
+                    # 直到 MCU 回报真正安全的 MCU_STOP_ACK。
+                    print(f"[SYNC][WAIT] {exc}; reconnect and retry")
+                    self.stm32.reconnect_once()
+                    time.sleep(1.0)
+                except RuntimeError as exc:
+                    # 只有同步超时/串口异常可重试；配置或协议编程错误必须
+                    # 立即暴露，避免用无限重试掩盖真正的软件缺陷。
+                    text = str(exc).lower()
+                    recoverable = "timeout" in text or "serial" in text or "safe mcu_stop_ack" in text
+                    if not recoverable:
+                        raise
+                    print(f"[SYNC][WAIT] {exc}; reconnect and retry")
+                    self.stm32.reconnect_once()
+                    time.sleep(1.0)
             print("[OK] MCU synchronized")
         else:
             print("[WARN] MCU startup synchronization disabled")

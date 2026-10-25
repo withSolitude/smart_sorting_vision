@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from typing import Optional
 
 import cv2
@@ -223,6 +224,9 @@ class SideCamera:
 
     WARMUP_FRAMES = 10
 
+    # 运行中 USB 相机掉线时的重连节流周期，避免每帧重复打开设备。
+    RECONNECT_INTERVAL_S = 0.5
+
     # ==========================================================
     # 12. 运行时配置入口
     # ==========================================================
@@ -284,6 +288,9 @@ class SideCamera:
         self.cap: Optional[
             cv2.VideoCapture
         ] = None
+        self._online = False
+        self._last_error: str | None = None
+        self._next_reconnect_at = 0.0
 
     # ==========================================================
     # 13. 设置单个 V4L2 参数
@@ -810,11 +817,47 @@ class SideCamera:
                         "阶段读取失败"
                     )
 
+            self._online = True
+            self._last_error = None
+
         except Exception:
 
             self.release()
 
             raise
+
+    @property
+    def is_online(self) -> bool:
+        """返回最近一次读帧是否成功，供 Runtime 判断是否暂停分拣。"""
+        return bool(self._online and self.cap is not None and self.cap.isOpened())
+
+    @property
+    def last_error(self) -> str | None:
+        """返回最近一次相机错误，便于记录掉线原因。"""
+        return self._last_error
+
+    def _try_reconnect(self) -> bool:
+        """以固定间隔重开相机，成功后由下一次读帧恢复业务。"""
+        now = time.monotonic()
+        if now < self._next_reconnect_at:
+            return False
+        self._next_reconnect_at = now + self.RECONNECT_INTERVAL_S
+        try:
+            self.release()
+            self.open()
+            print(f"[CAMERA][SIDE] 已重新连接: {self.device}")
+            return True
+        except Exception as exc:
+            self._online = False
+            self._last_error = str(exc)
+            print(f"[CAMERA][SIDE] 掉线，等待重连: {exc}")
+            return False
+
+    def reconnect_once(self) -> bool:
+        """供 Runtime 在暂停状态调用的一次重连尝试，不读取业务图像。"""
+        if self.is_online:
+            return True
+        return self._try_reconnect()
 
     # ==========================================================
     # 20. 读取完整画面
@@ -880,7 +923,7 @@ class SideCamera:
 
     def read(
         self,
-    ) -> np.ndarray:
+    ) -> np.ndarray | None:
 
         """
         正式视觉程序统一调用这个函数。
@@ -889,7 +932,22 @@ class SideCamera:
         而是左侧长条托盘 ROI。
         """
 
-        frame = self.read_full()
+        # 正式运行期间把读帧失败转换成离线状态，避免异常直接终止主线程。
+        try:
+            frame = self.read_full()
+        except Exception as exc:
+            self._online = False
+            self._last_error = str(exc)
+            self.release()
+            if not self._try_reconnect():
+                return None
+            try:
+                frame = self.read_full()
+            except Exception as retry_exc:
+                self._online = False
+                self._last_error = str(retry_exc)
+                self.release()
+                return None
 
         roi = frame[
             self.ROI_Y1:self.ROI_Y2,
@@ -913,6 +971,8 @@ class SideCamera:
                 f"expected = {expected_shape}"
             )
 
+        self._online = True
+        self._last_error = None
         return roi
 
     # ==========================================================
@@ -1080,6 +1140,8 @@ class SideCamera:
             self.cap.release()
 
             self.cap = None
+
+        self._online = False
 
     close = release
 

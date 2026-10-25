@@ -310,10 +310,17 @@ storage:
   box_count: 6
 
 runtime:
-  # 命令丢包时的周期重发间隔。ACK/READY/DONE 的绝对截止时间不会因重发而延长。
+  # 命令丢包时的周期重发间隔。动作超时只触发提示和重发，不把整场锁死。
   retry_interval_s: 0.25
 
-  # 上位机 <-> STM32 握手超时。达到阈值后进入 ERROR 并发送 STOP。
+  # MCU/USB-UART 掉线恢复参数。串口异常或心跳连续丢失时，Runtime
+  # 会暂停当前周期、后台重连，收到安全 STOP_ACK 后从新顶部周期继续。
+  link_reconnect_interval_s: 1.0
+  heartbeat_interval_s: 0.5
+  link_dead_timeout_s: 3.0
+
+  # 上位机 <-> STM32 动作等待提示阈值。达到阈值后继续重发并等待；
+  # 真正掉线由 heartbeat/link_dead_timeout_s 判定。
   pick_ack_timeout_s: 1.5
   sort_ack_timeout_s: 1.5
   recognition_ready_timeout_s: 18.0

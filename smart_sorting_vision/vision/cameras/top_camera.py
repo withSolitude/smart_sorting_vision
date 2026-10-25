@@ -203,6 +203,10 @@ class TopCamera:
 
     WARMUP_FRAMES = 10
 
+    # 运行中如果 USB 相机被拔出，按这个间隔尝试恢复，避免每一帧都阻塞
+    # 打开设备。真正的比赛状态由 Runtime 根据 is_online 决定是否暂停。
+    RECONNECT_INTERVAL_S = 0.5
+
     # ============================================================
     # FPS验证容差
     # ============================================================
@@ -275,6 +279,9 @@ class TopCamera:
         self._cap: cv2.VideoCapture | None = None
 
         self._opened = False
+        self._online = False
+        self._last_error: str | None = None
+        self._next_reconnect_at = 0.0
 
         # --------------------------------------------------------
         # 标定参数
@@ -1109,12 +1116,47 @@ class TopCamera:
                     )
 
             self._opened = True
+            self._online = True
+            self._last_error = None
 
         except Exception:
 
             self.release()
 
             raise
+
+    @property
+    def is_online(self) -> bool:
+        """返回最近一次读帧是否成功；掉线时由 Runtime 负责暂停业务。"""
+        return bool(self._online and self._opened and self._cap is not None and self._cap.isOpened())
+
+    @property
+    def last_error(self) -> str | None:
+        """返回最近一次相机错误，供日志和掉线诊断使用。"""
+        return self._last_error
+
+    def _try_reconnect(self) -> bool:
+        """以节流方式重新打开 USB 相机，成功后由下一次 read 返回图像。"""
+        now = time.monotonic()
+        if now < self._next_reconnect_at:
+            return False
+        self._next_reconnect_at = now + self.RECONNECT_INTERVAL_S
+        try:
+            self.release()
+            self.open()
+            print(f"[CAMERA][TOP] 已重新连接: {self.DEVICE}")
+            return True
+        except Exception as exc:
+            self._online = False
+            self._last_error = str(exc)
+            print(f"[CAMERA][TOP] 掉线，等待重连: {exc}")
+            return False
+
+    def reconnect_once(self) -> bool:
+        """供 Runtime 在暂停状态调用的一次重连尝试，不读取或丢弃业务图像。"""
+        if self.is_online:
+            return True
+        return self._try_reconnect()
 
     # ============================================================
     # 原始完整图
@@ -1257,11 +1299,24 @@ class TopCamera:
 
     def read(
         self,
-    ) -> np.ndarray:
-
-        frame = (
-            self.read_undistorted()
-        )
+    ) -> np.ndarray | None:
+        # 正式运行期间读帧失败只报告“相机离线”，不把异常抛出到主线程。
+        # Runtime 会据此暂停当前动作，并在相机恢复后继续工作。
+        try:
+            frame = self.read_undistorted()
+        except Exception as exc:
+            self._online = False
+            self._last_error = str(exc)
+            self.release()
+            if not self._try_reconnect():
+                return None
+            try:
+                frame = self.read_undistorted()
+            except Exception as retry_exc:
+                self._online = False
+                self._last_error = str(retry_exc)
+                self.release()
+                return None
 
         roi = frame[
             self.SAFE_ROI_Y1:
@@ -1300,6 +1355,8 @@ class TopCamera:
                 f"{roi.shape}"
             )
 
+        self._online = True
+        self._last_error = None
         return roi
 
     # ============================================================
@@ -1657,6 +1714,7 @@ class TopCamera:
         self._cap = None
 
         self._opened = False
+        self._online = False
 
     # 与 SideCamera / main.py 统一生命周期接口。
     close = release

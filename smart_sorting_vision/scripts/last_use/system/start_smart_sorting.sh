@@ -41,17 +41,21 @@ wait_device()
 
     echo "[WAIT] $NAME : $DEV" >> "$LOG_FILE"
 
-    for i in $(seq 1 30); do
+    # 设备枚举晚于桌面/USB初始化很常见。这里持续等待，不把暂时离线
+    # 当成程序错误；设备出现后再启动主程序，由主程序负责运行中重连。
+    local i=0
+    while true; do
+        i=$((i + 1))
         if [ -e "$DEV" ]; then
             echo "[OK] $NAME ready after ${i}s" >> "$LOG_FILE"
             return 0
         fi
 
+        if [ $((i % 5)) -eq 0 ]; then
+            echo "[WAIT] $NAME still offline after ${i}s" >> "$LOG_FILE"
+        fi
         sleep 1
     done
-
-    echo "[ERROR] $NAME not found after 30s" >> "$LOG_FILE"
-    return 1
 }
 
 
