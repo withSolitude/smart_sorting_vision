@@ -7,10 +7,11 @@
 // 所有待实机标定参数集中在这里。未确认标定前只读反馈，禁止运动。
 namespace XY_Config
 {
-inline FDCAN_HandleTypeDef *CAN_Bus() { return &hfdcan1; }
+// 两台 EMM 步进驱动器接在 CAN2；CAN1 保留给原有 DM4310 总线。
+inline FDCAN_HandleTypeDef *CAN_Bus() { return &hfdcan2; }
 constexpr uint8_t Address_A = 1U;
 constexpr uint8_t Address_B = 2U;
-constexpr uint32_t CAN_Baud = 1000000U; // 与 CAN1 的 DM4310、Emm 和 TTL-CAN 适配器共用
+constexpr uint32_t CAN_Baud = 1000000U; // CAN2、两台 EMM 和 TTL-CAN 适配器统一 1 Mbps
 #if defined(EMM_V5_HOST_TEST) && defined(XY_TEST_CALIBRATED)
 constexpr bool Mechanical_Calibration_Confirmed = true; // 仅主机回归测试
 #else
@@ -56,6 +57,18 @@ constexpr uint32_t Homing_Timeout_ms = 20000U;
 constexpr uint32_t Homing_Status_Poll_ms = 20U;
 constexpr float Homing_Origin_X_mm = 0.0f;
 constexpr float Homing_Origin_Y_mm = 0.0f;
+
+// 上电置零：两台电机反馈首次同时有效、停稳且没有堵转后，
+// 把“上电时的当前位置”记录为软件 XY 原点。
+// 这不是碰撞回零，也不会让电机自动运动；上电位置必须由机械人员先放到零点。
+#if defined(EMM_V5_HOST_TEST)
+// 旧主机回归用例显式测试“人工确认原点”互锁，避免自动置零改变测试前置条件。
+constexpr bool Power_On_Origin_Enabled = false;
+#else
+constexpr bool Power_On_Origin_Enabled = true;
+#endif
+constexpr float Power_On_Origin_X_mm = 0.0f;
+constexpr float Power_On_Origin_Y_mm = 0.0f;
 }
 
 #endif
