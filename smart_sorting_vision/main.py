@@ -309,10 +309,9 @@ class SmartSortingApp:
             preopen_command_min_mm=top_preopen.get("min_command_mm", None),
             preopen_command_max_mm=top_preopen.get("max_command_mm", None),
 
-            # 动态预开口 profile 元数据必须完整传入 TopPickPipeline。
-            # preopen_configured 缺失时其默认值是 False，
-            # ClawPreopenProfile.from_runtime_config() 会直接拒绝启动。
-            preopen_profile_kind=top_preopen.get("profile_kind", "cad_four_bar"),
+            # 动态预开口公式参数传入 TopPickPipeline；PC 只发送净开口(mm)。
+            # 保留旧参数名以兼容调试脚本；生产配置不再使用查表类型。
+            preopen_profile_kind=top_preopen.get("profile_kind", "linear"),
             preopen_configured=bool(top_preopen.get("configured", False)),
             preopen_closed_servo_deg=float(
                 top_preopen.get("closed_servo_deg", -35.0)
@@ -489,7 +488,7 @@ class SmartSortingApp:
                         poll_sleep_s=sync_cfg.get("poll_sleep_s", 0.010),
                     )
                     break
-                except LinkOfflineError as exc:
+                except (LinkOfflineError, OSError) as exc:
                     # 上电同步也采用可恢复策略；重新打开串口后继续发送 STOP，
                     # 直到 MCU 回报真正安全的 MCU_STOP_ACK。
                     print(f"[SYNC][WAIT] {exc}; reconnect and retry")

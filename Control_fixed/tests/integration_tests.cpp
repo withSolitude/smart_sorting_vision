@@ -78,7 +78,8 @@ static void test_jaw_true_disable_and_settle()
     j.XY_Motion.Arrive();
     jaw_step(j,2000);
     assert(j.Get_Disable_Ready());
-    assert(std::fabs(j.XY_Motion.X)<0.001f && std::fabs(j.XY_Motion.Y-20)<0.001f);
+    // 当前待机点与上电软件原点一致，回待机后应回到 (0,0)。
+    assert(std::fabs(j.XY_Motion.X)<0.001f && std::fabs(j.XY_Motion.Y)<0.001f);
     std::puts("PASS: Disable label cannot bypass actual standby XY, lift clearance or servo settling");
 }
 

@@ -35,7 +35,10 @@ volatile uint32_t DM_Test_TxErrorCnt = 0;
 volatile uint32_t DM_Test_RxErrorCnt = 0;
 
 
-
+uint8_t a =0;
+uint8_t b =0;
+uint8_t c =0;
+uint8_t d =0;
 
 bool volatile init_finished = false;
 uint32_t flag = 0;
@@ -310,6 +313,10 @@ void Task1ms_TIM7_Callback()
     // TIM_1ms_CAN_PeriodElapsedCallback();
 
     // DM_Motor.TIM_Send_PeriodElapsedCallback();
+    a = robot.Holding_Jaw.XY_Motion.Get_Power_On_Origin_Captured();
+    b = robot.Holding_Jaw.XY_Motion.Get_Position_Valid();
+    c = robot.Holding_Jaw.XY_Motion.Get_Fault();
+    d = robot.Holding_Jaw.XY_Motion.Get_Stop_Confirmed();
 }
 
 /**
@@ -426,6 +433,7 @@ void Task_Init()
 
 
     HAL_Delay(1000);
+    // robot.Holding_Jaw.XY_Motion.Move_To_mm(-5.0F,5.0F,5.0F,5.0F);
     // 不再上电自动Start：正式流程由PC1实体按键启动；
     // 保持STOPPED也允许Jetson执行独立XY标定命令。
 }
@@ -484,6 +492,10 @@ void Task_Loop()
 
     static GPIO_PinState last_raw_state = GPIO_PIN_RESET;
     static GPIO_PinState stable_state = GPIO_PIN_RESET;
+
+    // 上电时如果按键已经是高电平，不能把“上电持键/输入误高”误认为一次
+    // START。必须先观察到稳定松开，再接受下一次真正的按下沿。
+    static bool power_on_release_required = true;
 
     // 最近一次原始电平变化的时刻。
     static uint32_t raw_change_tick = 0U;
@@ -544,13 +556,18 @@ void Task_Loop()
             press_started_with_active_motion = was_active;
             long_stop_sent = false;
 
-            if (!was_running && !was_active)
+            if (!power_on_release_required && !was_running && !was_active)
             {
                 // 关键修正：
                 // START 在“稳定按下沿”立即锁存，而不是等稳定松开。
                 // Request_Sorting_Start() 内部仍会检查 STOPPED 和同步状态，
                 // 一旦请求被接受，机构暂时未 Ready 时会继续锁存等待。
                 robot.Request_Sorting_Start();
+            }
+            else if (power_on_release_required)
+            {
+                // 上电时按键已经是高电平，先忽略这一按，避免误启动回待机。
+                press_started_with_active_motion = false;
             }
             // RUNNING或标定期间：短按不做任何事；
             // 只有后面的 1.5s 长按逻辑才可能 STOP。
@@ -561,6 +578,7 @@ void Task_Loop()
         else
         {
             // 松开只负责结束本次按键周期，绝不在这里产生 START。
+            power_on_release_required = false;
             press_started_with_active_motion = false;
             long_stop_sent = false;
         }

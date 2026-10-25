@@ -123,15 +123,14 @@ vision:
       dynamic_preopen:
         enabled: true
         configured: true
-        profile_kind: cad_four_bar
-        hardware_validated: false
-        # 新夹爪开合舵机：-15°近闭合，-95°待机张开；不是Yaw角。
+        # 线性公式：angle = closed + (standby - closed) * opening / max_opening。
+        # 新夹爪开合舵机：-35°闭合，-95°待机张开；不是Yaw角。
         closed_servo_deg: -35.0
         standby_servo_deg: -95.0
         # command 是两片硅胶内侧之间的目标净开口。
         # 物体宽度 + 总余量；薄硅胶安装后先使用5mm（两侧合计）。
         margin_mm: 6.0
-        # 新CAD四连杆表对应的安全协议范围；角度换算表编译在STM32头文件中。
+        # 安全协议范围；STM32 与 PC 使用同一条线性公式。
         min_command_mm: 0.9
         max_command_mm: 46.5
 
@@ -337,8 +336,8 @@ runtime:
   side_empty_retry_hold_s: 0.6
   side_empty_retry_min_frames: 5
 
-  # 相机无帧与“识别不稳定”分离。连续取不到新图像达到阈值才属于相机故障，
-  # 触发 ERROR + STOP；同时可防止 Side 相机冻结后使用旧票数分箱。
+  # 相机无帧与“识别不稳定”分离。连续取不到新图像达到阈值才判定相机掉线，
+  # 暂停当前周期并尝试恢复相机；恢复后重新同步 STM32，不把整场锁死为 ERROR。
   camera_watchdog:
     top_no_frame_timeout_s: 2.0
     side_no_frame_timeout_s: 2.0

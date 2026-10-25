@@ -323,7 +323,7 @@ class SortingRuntime:
         if self._rx_thread is None or not self._rx_thread.is_alive():
             try:
                 return self.stm32.poll()
-            except LinkOfflineError as exc:
+            except (LinkOfflineError, OSError) as exc:
                 self._mark_link_offline(str(exc))
                 return []
 
@@ -445,7 +445,7 @@ class SortingRuntime:
             self.stm32.send_frame(SortingFrame(mode=Mode.STOP))
             print("[LINK][RECOVERY] STOP sent")
             self._next_reconnect_stop_at = now + self.retry_interval_s
-        except LinkOfflineError as exc:
+        except (LinkOfflineError, OSError) as exc:
             self._mark_link_offline(str(exc))
 
     def _send_heartbeat_if_due(self) -> None:
@@ -461,7 +461,7 @@ class SortingRuntime:
         try:
             self.stm32.send_frame(make_heartbeat())
             self._last_heartbeat_sent_at = now
-        except LinkOfflineError as exc:
+        except (LinkOfflineError, OSError) as exc:
             self._mark_link_offline(str(exc))
 
     def _check_link_watchdog(self) -> None:
@@ -602,7 +602,7 @@ class SortingRuntime:
     def _send_command(self, frame: SortingFrame, *, label: str, retry: bool = False) -> bool:
         try:
             self.stm32.send_frame(frame)
-        except LinkOfflineError as exc:
+        except (LinkOfflineError, OSError) as exc:
             # 发送失败属于链路掉线，保留主循环并转入自动恢复状态。
             self._mark_link_offline(f"{label} send failed: {exc}")
             return False
@@ -735,7 +735,7 @@ class SortingRuntime:
             return
         try:
             self.stm32.send_frame(SortingFrame(mode=Mode.STOP))
-        except LinkOfflineError as exc:
+        except (LinkOfflineError, OSError) as exc:
             self._mark_link_offline(f"STOP send failed: {exc}")
         except Exception as exc:
             print(f"[Runtime] STOP send failed: {exc}")
@@ -1006,7 +1006,8 @@ class SortingRuntime:
         }
 
         # 侧面视觉超时采用“多数票兜底”，不再直接把整机置为 ERROR。
-        # 其他 ACK/READY/DONE 控制链超时仍保持原来的 fail-fast 安全策略。
+        # 其他 ACK/READY/DONE 控制链超时同样只记录提示并持续重发；
+        # 真正的通信掉线由心跳和串口状态单独判定。
         if self.state == RuntimeState.WAIT_SIDE_OBJECT:
             elapsed = time.monotonic() - self.state_entered_at
             if elapsed <= self.side_recognition_timeout_s:
@@ -1057,9 +1058,10 @@ class SortingRuntime:
                 self.state_entered_at = time.monotonic()
                 return
 
-            # 完全没有取得相机帧属于真正的相机/采集异常，保留原来的 ERROR。
+            # 完全没有取得相机帧属于相机离线/采集异常，也走可恢复的暂停，
+            # 不把一次采集超时永久锁死为 ERROR。
             if self._side_frames_seen == 0:
-                self._fail("side recognition timeout: side camera unavailable/no frames")
+                self._pause_for_camera("side", elapsed)
                 return
 
             # 有帧但始终没有物体：优先走原有掉落重抓恢复链，而不是终止。

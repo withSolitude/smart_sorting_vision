@@ -202,7 +202,8 @@ def test_send_failure_does_not_commit_inventory():
     # 只让 SORT_RESULT 发送失败。
     link.fail_send = True
     recognize_side(r)
-    assert r.state == RuntimeState.ERROR
+    # 直接抛出串口 OSError 也必须按链路掉线恢复，不能锁死业务状态。
+    assert r.state == RuntimeState.LINK_OFFLINE
     assert storage.boxes[0].count == 0
     assert storage.get_pending_reservations() == []
 

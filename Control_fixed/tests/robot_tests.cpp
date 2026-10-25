@@ -84,7 +84,8 @@ static void test_fault_stopped_ack_and_origin_recovery()
     assert(!r.Sorting_Handshake.Get_Stop_Ack_Pending());
     assert(sent_count(Sorting_Vision_Mode_MCU_STOP_ACK)==1U);
     assert(!r.Request_Sorting_Start());
-    assert(r.Confirm_XY_Origin_mm(0,20)==HAL_OK);step(r,1000);
+    // 当前软件原点与待机点均为 (0,0)。
+    assert(r.Confirm_XY_Origin_mm(0,0)==HAL_OK);step(r,1000);
     assert(r.Request_Sorting_Start());step(r,30);
     assert(r.Get_Sorting_Running());
     std::puts("PASS: faulted but stopped axes can synchronize STOP while START requires explicit origin recovery");

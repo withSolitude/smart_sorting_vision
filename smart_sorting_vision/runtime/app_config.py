@@ -132,8 +132,7 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
                 "vision.top.descent_drift_compensation.relative_angle_deg 必须在 [-360, 360]"
             )
 
-    # Dynamic claw preopen is configured only in this YAML. The dense
-    # millimetre-to-servo lookup is compiled into the STM32 header.
+    # 动态预开口只使用 YAML 中的线性公式参数；PC 和 STM32 必须保持一致。
     preopen = (
         cfg["vision"]["top"].get("grasp_orientation", {}).get("dynamic_preopen", {}) or {}
     )
@@ -141,8 +140,6 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
         try:
             if preopen.get("configured") is not True:
                 raise ValueError("configured 必须为 true")
-            if preopen.get("profile_kind") not in ("cad_four_bar", "measured"):
-                raise ValueError("profile_kind 必须为 cad_four_bar 或 measured")
             margin = float(preopen["margin_mm"])
             minimum = float(preopen["min_command_mm"])
             maximum = float(preopen["max_command_mm"])

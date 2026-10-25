@@ -203,9 +203,10 @@ class TopPickPipeline:
         preopen_margin_mm: float = 6.0,
         preopen_command_min_mm: float | None = None,
         preopen_command_max_mm: float | None = None,
-        preopen_profile_kind: str = "cad_four_bar",
+        # 旧调试脚本仍会传入该参数；公式配置不会读取它。
+        preopen_profile_kind: str = "linear",
         preopen_configured: bool = False,
-        preopen_closed_servo_deg: float = -15.0,
+        preopen_closed_servo_deg: float = -35.0,
         preopen_standby_servo_deg: float = -95.0,
         gripper_collision_enabled: bool = True,
         gripper_finger_length_mm: float = 20.0,
@@ -330,6 +331,7 @@ class TopPickPipeline:
             None if preopen_command_max_mm is None else float(preopen_command_max_mm)
         )
         self.claw_preopen_profile = ClawPreopenProfile.from_runtime_config({
+            # profile_kind 仅为旧调用方保留，正式公式不依赖查表类型。
             "profile_kind": preopen_profile_kind,
             "configured": preopen_configured,
             "margin_mm": preopen_margin_mm,
@@ -340,13 +342,11 @@ class TopPickPipeline:
         })
         if not self.dynamic_preopen_enabled:
             raise ValueError("New claw requires configured dynamic preopen; fixed legacy fallback is disabled")
-        # Net opening, margin and limits must come from the same profile.
-        # YAML is the only PC-side production configuration. The dense lookup
-        # remains compiled into the MCU header, because STM32 does not read YAML.
+        # PC 与 STM32 都使用同一组线性公式参数；PC 只负责发送净开口(mm)。
         self.preopen_margin_mm = self.claw_preopen_profile.margin_mm
         self.preopen_command_min_mm = self.claw_preopen_profile.min_command_mm
         self.preopen_command_max_mm = self.claw_preopen_profile.max_command_mm
-        print(f"[CLAW] {self.claw_preopen_profile.kind} preopen profile: {self.preopen_command_min_mm:.1f}.."
+        print(f"[CLAW] linear preopen formula: {self.preopen_command_min_mm:.1f}.."
               f"{self.preopen_command_max_mm:.1f} mm, margin={self.preopen_margin_mm:.1f} mm")
         self.gripper_debug_log_rejections = bool(gripper_debug_log_rejections)
         self.gripper_footprint = GripperFootprintModel(

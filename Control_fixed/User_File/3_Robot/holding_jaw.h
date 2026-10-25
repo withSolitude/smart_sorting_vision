@@ -383,7 +383,7 @@ private:
         0.0f;
 
     float Disable_Y_mm =
-        20.0f;
+        0.0f;
 
 
     // =================================================
@@ -413,7 +413,7 @@ private:
 
 
     float Lift_Servo_Motor_Angle_Disable =
-        40.0f * PI / 180.0f;
+        30.0f * PI / 180.0f;
 
     float Claw_Servo_Motor_Angle_Disable =
         ClawPreopen::kStandbyAngleDeg * PI / 180.0f;
@@ -432,12 +432,8 @@ private:
         // ClawPreopen::kStandbyAngleDeg * PI / 180.0f;
 
     // --------------------------------------------------------
-    // 新夹爪动态预开口：claw_preopen_profile.h 中的 CAD 四连杆净开口表。
-    // -35° 正式闭合、-95° 待机张开；角度越负越张开。控制接口仍使用 rad。
-    // 当前 claw_preopen_profile.h 会将 -35° 重新定义为 0mm 实际闭合基准，
-    // 再把上位机下发的有效净开口转换回旧 CAD 表坐标后插值。
-    // 下面旧 CAD 参数仅留作历史记录，不参与任何预开口计算。
-    // 历史说明：基于旧夹爪CAD几何的“有效净开口(mm)” -> 舵机角度映射
+    // 新夹爪动态预开口：使用 claw_preopen_profile.h 中的线性公式。
+    // -35°闭合、-95°待机张开；角度越负越张开。控制接口仍使用 rad。
     // --------------------------------------------------------
     // 旧版问题：直接把 CAD 两个接触参考点的“绝对间距”当作夹爪净开口。
     // 这样 40° 时仍得到约31.02mm，并把上位机小于37.8mm的命令全部
@@ -473,34 +469,6 @@ private:
     // 37.8mm 下限导致大量物体全部落在35°附近。
     bool Claw_Dynamic_Preopen_Enabled =
         true;
-
-    float Claw_CAD_Gear_Center_Distance_mm =
-        26.012459f;
-
-    float Claw_CAD_Contact_Rx_mm =
-        38.943000f;
-
-    float Claw_CAD_Contact_Ry_mm =
-        2.505842f;
-
-    float Claw_CAD_Reference_Clip_Angle_Deg =
-        35.0f;
-
-    // 0° 与现有 Release 一致，允许大物体保持完全打开。
-    float Claw_Preopen_Min_Angle_Deg =
-        0.0f;
-
-    // 预收缩最多到35°，仍给40°正式夹紧保留5°动作余量。
-    float Claw_Preopen_Max_Angle_Deg =
-        35.0f;
-
-    // 以下是“相对40°闭合参考”的有效净开口，而非旧版CAD绝对间距。
-    float Claw_Preopen_Min_Opening_mm =
-        6.8f;
-
-    float Claw_Preopen_Max_Opening_mm =
-        48.8f;
-
 
     // --------------------------------------------------------
     // 识别托盘放料下降角

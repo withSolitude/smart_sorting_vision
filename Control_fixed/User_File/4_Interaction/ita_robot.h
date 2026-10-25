@@ -238,7 +238,6 @@ private:
         false;
 
     uint16_t Pick_Start_Wait_Count = 0;
-    static constexpr uint16_t Pick_Start_Timeout_10ms = 300;
 
 
     // ========================================================
@@ -338,7 +337,6 @@ private:
     Struct_Sorting_Result_Request Pending_Sort_Request{};
     bool Sort_Start_Pending = false;
     uint16_t Sort_Start_Wait_Count = 0;
-    static constexpr uint16_t Sort_Start_Timeout_10ms = 300;
 
     // XY标定独立运动状态
     bool Calib_Action_Active = false;
@@ -376,7 +374,6 @@ private:
     bool Storage_Test_Done_Notify_Pending = false;
     uint8_t Storage_Test_Box_ID = 0U;
     uint16_t Storage_Test_Start_Wait_Count = 0U;
-    static constexpr uint16_t Storage_Test_Start_Timeout_10ms = 300U;
 
 
     // ========================================================

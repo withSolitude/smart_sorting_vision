@@ -1689,8 +1689,7 @@ Class_Holding_Jaw::Start_Grap(
     Grap_Target_Preopen_mm = Target_Preopen_mm;
     Grap_Target_Preopen_Valid = Target_Preopen_Valid;
 
-    // 共用查表提供保守的“内侧开口量 -> 夹爪舵机角度”映射。
-    // 旧版 Claw_CAD_*/Claw_Preopen_* 几何常数已不再使用。
+    // 使用统一线性公式完成“内侧开口量 -> 夹爪舵机角度”换算。
     Grap_Target_Pre_Clip_Angle = preopen_deg * PI / 180.0f;
 
 

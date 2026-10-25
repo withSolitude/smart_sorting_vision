@@ -794,7 +794,12 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
 
     if (Storage_Test_Start_Pending)
     {
-        ++Storage_Test_Start_Wait_Count;
+        // HAL_BUSY 只表示当前驱动暂时不能接收新动作，不等于通信掉线。
+        // 计数仅用于调试，采用饱和递增，不能再把等待时间当成业务错误。
+        if (Storage_Test_Start_Wait_Count < UINT16_MAX)
+        {
+            ++Storage_Test_Start_Wait_Count;
+        }
 
         const HAL_StatusTypeDef status =
             Sorting_Storage.Start_Sort(Storage_Test_Box_ID);
@@ -805,16 +810,15 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
             Storage_Test_Start_Wait_Count = 0U;
             Storage_Test_Action_Active = true;
         }
-        else if (status == HAL_ERROR ||
-                 Storage_Test_Start_Wait_Count >=
-                     Storage_Test_Start_Timeout_10ms)
+        else if (status == HAL_ERROR)
         {
             Storage_Test_Start_Pending = false;
             Storage_Test_Start_Wait_Count = 0U;
             Storage_Test_Box_ID = 0U;
             Sorting_Handshake.Notify_Error(2U);
         }
-        // HAL_BUSY：允许短暂等待DM完成启动/状态切换。
+        // HAL_BUSY：持续等待DM完成启动/状态切换；通信掉线由上位机心跳
+        // 和串口链路状态判定，不能用本地等待计数误报 ERROR。
     }
 
     // 独立XY标定请求。只移动两根直线轴，不执行夹取/储物。
@@ -867,7 +871,7 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
                 Calib_Move_Speed_mm_s, Calib_Move_Speed_mm_s);
             if (status == HAL_OK)
                 Calib_Start_Pending = false;
-            else if (status != HAL_BUSY || Calib_Move_Count >= Pick_Start_Timeout_10ms)
+            else if (status != HAL_BUSY)
             {
                 Calib_Action_Active = false;
                 Calib_Start_Pending = false;
@@ -1217,15 +1221,11 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
 
     if (Pick_Start_Pending)
     {
-        ++Pick_Start_Wait_Count;
-        if (Pick_Start_Wait_Count >= Pick_Start_Timeout_10ms)
+        // HAL_BUSY 只表示夹爪/XY 尚未准备好，不能把它当作通信超时。
+        // 计数保留给调试观察，并在最大值处饱和。
+        if (Pick_Start_Wait_Count < UINT16_MAX)
         {
-            Pick_Start_Pending = false;
-            Pick_Start_Wait_Count = 0;
-            Pending_Pick_Request = Struct_Sorting_Pick_Request{};
-            Sorting_Handshake.Notify_Error(
-                Sorting_Vision_Error_Grap_Start_Timeout);
-            return;
+            ++Pick_Start_Wait_Count;
         }
 
         const HAL_StatusTypeDef status =
@@ -1285,10 +1285,8 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
                 );
         }
 
-        // HAL_BUSY:
-        //
-        // 什么都不做，
-        // 下一次10ms继续尝试。
+        // HAL_BUSY：保留请求，下一次10ms继续尝试；真正的XY/舵机/TOF
+        // 故障由Holding_Jaw自己的反馈和安全超时报告。
     }
 
 
@@ -1319,7 +1317,11 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
 
     if (Sort_Start_Pending)
     {
-        ++Sort_Start_Wait_Count;
+        // HAL_BUSY 不是链路掉线，只保留请求并继续尝试。
+        if (Sort_Start_Wait_Count < UINT16_MAX)
+        {
+            ++Sort_Start_Wait_Count;
+        }
         const HAL_StatusTypeDef status = Sorting_Storage.Start_Sort(
             Pending_Sort_Request.Box_ID);
 
@@ -1329,8 +1331,7 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
             Sort_Start_Wait_Count = 0;
             Sort_Action_Active = true;
         }
-        else if (status == HAL_ERROR ||
-                 Sort_Start_Wait_Count >= Sort_Start_Timeout_10ms)
+        else if (status == HAL_ERROR)
         {
             Sort_Start_Pending = false;
             Sort_Start_Wait_Count = 0;
@@ -1338,7 +1339,8 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
             Sort_Target_Box_ID = 0;
             Sorting_Handshake.Notify_Error(2U);
         }
-        // HAL_BUSY: 允许短暂重试，避免DM/UART瞬态导致已ACK任务直接丢失。
+        // HAL_BUSY：持续重试，避免DM/UART瞬态把已ACK任务变成永久 ERROR；
+        // 若驱动反馈真正异常，Start_Sort 会返回 HAL_ERROR 并走故障链。
     }
 
 
