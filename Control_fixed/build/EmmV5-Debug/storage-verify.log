@@ -1,0 +1,7 @@
+CMake Error: The current CMakeCache.txt directory E:/gongxun/code/mcu/Control_fixed/build/EmmV5-Debug/CMakeCache.txt is different than the directory c:/Users/Lenovo/Desktop/Control_fixed/build/EmmV5-Debug where CMakeCache.txt was created. This may result in binaries being created in the wrong place. If you are not sure, reedit the CMakeCache.txt
+CMake Error: Not a file: C:\Users\Lenovo\Desktop\Control_fixed\build\EmmV5-Debug\CMakeFiles\VerifyGlobs.cmake
+CMake Error: Error processing file: C:\Users\Lenovo\Desktop\Control_fixed\build\EmmV5-Debug\CMakeFiles\VerifyGlobs.cmake
+[0/2] Re-checking globbed directories...
+FAILED: C:/Users/Lenovo/Desktop/Control_fixed/build/EmmV5-Debug/CMakeFiles/cmake.verify_globs 
+E:\STM32CubeCLT_1.19.0\CMake\bin\cmake.exe -P C:\Users\Lenovo\Desktop\Control_fixed\build\EmmV5-Debug\CMakeFiles\VerifyGlobs.cmake
+ninja: error: rebuilding 'build.ninja': subcommand failed

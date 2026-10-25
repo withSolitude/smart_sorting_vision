@@ -1,0 +1,36 @@
+[0/2] Re-checking globbed directories...
+[1/5] Building CXX object CMakeFiles/Control.dir/User_File/3_Robot/xy_motion.cpp.obj
+[2/5] Building CXX object CMakeFiles/Control.dir/User_File/5_Task/tsk_config_and_callback.cpp.obj
+[3/5] Building CXX object CMakeFiles/Control.dir/User_File/3_Robot/holding_jaw.cpp.obj
+[4/5] Building CXX object CMakeFiles/Control.dir/User_File/4_Interaction/ita_robot.cpp.obj
+In file included from C:/Users/Lenovo/Desktop/Control_fixed/cmake/stm32cubemx/../../Drivers/CMSIS/Include/cmsis_compiler.h:54,
+                 from C:/Users/Lenovo/Desktop/Control_fixed/Drivers/CMSIS/DSP/Include/arm_math.h:310,
+                 from C:/Users/Lenovo/Desktop/Control_fixed/User_File/1_Middleware/2_Algorithm/Basic/alg_basic.h:19,
+                 from C:/Users/Lenovo/Desktop/Control_fixed/User_File/1_Middleware/2_Algorithm/Slope/alg_slope.h:18,
+                 from C:/Users/Lenovo/Desktop/Control_fixed/User_File/4_Interaction/ita_robot.h:9,
+                 from C:/Users/Lenovo/Desktop/Control_fixed/User_File/4_Interaction/ita_robot.cpp:5:
+C:/Users/Lenovo/Desktop/Control_fixed/cmake/stm32cubemx/../../Drivers/CMSIS/Include/cmsis_gcc.h:146:31: warning: 'const __cmsis_start()::__copy_table_t __copy_table_start__', declared using local type 'const __cmsis_start()::__copy_table_t', is used but never defined [-fpermissive]
+  146 |   extern const __copy_table_t __copy_table_start__;
+      |                               ^~~~~~~~~~~~~~~~~~~~
+C:/Users/Lenovo/Desktop/Control_fixed/cmake/stm32cubemx/../../Drivers/CMSIS/Include/cmsis_gcc.h:147:31: warning: 'const __cmsis_start()::__copy_table_t __copy_table_end__', declared using local type 'const __cmsis_start()::__copy_table_t', is used but never defined [-fpermissive]
+  147 |   extern const __copy_table_t __copy_table_end__;
+      |                               ^~~~~~~~~~~~~~~~~~
+C:/Users/Lenovo/Desktop/Control_fixed/cmake/stm32cubemx/../../Drivers/CMSIS/Include/cmsis_gcc.h:148:31: warning: 'const __cmsis_start()::__zero_table_t __zero_table_start__', declared using local type 'const __cmsis_start()::__zero_table_t', is used but never defined [-fpermissive]
+  148 |   extern const __zero_table_t __zero_table_start__;
+      |                               ^~~~~~~~~~~~~~~~~~~~
+C:/Users/Lenovo/Desktop/Control_fixed/cmake/stm32cubemx/../../Drivers/CMSIS/Include/cmsis_gcc.h:149:31: warning: 'const __cmsis_start()::__zero_table_t __zero_table_end__', declared using local type 'const __cmsis_start()::__zero_table_t', is used but never defined [-fpermissive]
+  149 |   extern const __zero_table_t __zero_table_end__;
+      |                               ^~~~~~~~~~~~~~~~~~
+[5/5] Linking CXX executable Control.elf
+Memory region         Used Size  Region Size  %age Used
+         DTCMRAM:       18656 B       320 KB      5.69%
+          RAM_D1:           0 B       320 KB      0.00%
+          RAM_D2:           0 B       320 KB      0.00%
+          RAM_D3:           0 B       320 KB      0.00%
+         ITCMRAM:           0 B       320 KB      0.00%
+           FLASH:      118808 B         1 MB     11.33%
+
+   text	   data	    bss	    dec	    hex	filename
+
+ 115436	   3372	  15280	 134088	  20bc8	C:/Users/Lenovo/Desktop/Control_fixed/build/EmmV5-Debug/Control.elf
+

@@ -1,0 +1,24 @@
+-- The C compiler identification is GNU 13.3.1
+-- The CXX compiler identification is GNU 13.3.1
+-- The ASM compiler identification is GNU
+-- Found assembler: E:/STM32CubeCLT_1.19.0/GNU-tools-for-STM32/bin/arm-none-eabi-gcc.exe
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: E:/STM32CubeCLT_1.19.0/GNU-tools-for-STM32/bin/arm-none-eabi-gcc.exe - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: E:/STM32CubeCLT_1.19.0/GNU-tools-for-STM32/bin/arm-none-eabi-g++.exe - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- SPI not enabled -> exclude SPI/BMI088/WS2812 modules
+-- OCTOSPI not enabled -> exclude OSPI/W25Q64 modules
+-- USB CDC not enabled -> exclude USB/VOFA modules
+-- ADC not enabled -> exclude ADC/Power modules
+-- IWDG not enabled -> exclude WDG module
+-- FDCAN enabled -> keep CAN driver and Motor_DM for DM4310
+-- CMSIS DSP library found: E:/gongxun/code/mcu/Control_fixed/Drivers/CMSIS/DSP/Lib/GCC/libarm_cortexM7lfsp_math.a
+-- Configuring done (4.3s)
+-- Generating done (0.1s)
+-- Build files have been written to: E:/gongxun/code/mcu/Control_fixed/build/Integration-Debug
