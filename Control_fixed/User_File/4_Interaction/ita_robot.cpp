@@ -61,7 +61,8 @@ void Class_Robot::Init()
     Vision_Link_Lost_Seconds = 0U;
     Vision_Link_Lost_Stop_Requested = false;
     Holding_Jaw.Init();
-    Sorting_Storage.Init(&hfdcan1,0x01,0x00,&huart4,4);
+    // 当前托盘翻转舵机使用 UART4 的设备 ID 0。
+    Sorting_Storage.Init(&hfdcan1,0x01,0x00,&huart4,0);
 
     // ========================================================
     // 握手状态初始化

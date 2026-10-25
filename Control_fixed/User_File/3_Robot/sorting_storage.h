@@ -675,7 +675,7 @@ private:
     // ========================================================
 
     uint16_t Tray_Servo_PWM_Disable =
-        1480;
+        1260; // 当前实机标定的托盘待机 PWM，调试舵机时只改这里
 
 
     uint16_t Tray_Servo_PWM_Flip =
