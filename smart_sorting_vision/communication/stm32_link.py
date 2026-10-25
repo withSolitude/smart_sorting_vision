@@ -61,7 +61,7 @@ class STM32Link:
         5. 自动寻找帧头并重新同步
         6. 解析固定 10 字节协议
         7. 统计收发状态
-        8. 提供 wait_for_mode() 给后续状态机使用
+        8. 提供 wait_for_mode() 给调试脚本使用；正式流程由 SortingRuntime 管理
 
     注意：
         本类只负责通信，不负责业务状态机。
@@ -404,7 +404,7 @@ class STM32Link:
         阻塞等待指定 Mode。
 
         适合调试或简单握手。
-        正式 SortingStateMachine 后面会改成完全非阻塞。
+        正式比赛流程使用 SortingRuntime 的非阻塞状态机。
         """
 
         deadline = (
