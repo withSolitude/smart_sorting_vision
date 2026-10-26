@@ -16,11 +16,11 @@ camera:
     warmup_frames: 10  # 打开相机后丢弃的预热帧数。
     reconnect_interval_s: 0.5  # 相机掉线后的重连间隔（秒）。
     fps_tolerance: 1.0  # 实测帧率允许偏差（帧/秒）。
-    safe_roi: [580, 120, 1330, 927]   # x1, y1, x2, y2，基于去畸变完整图
-    safe_roi_polygon: null              # 手工点选的托盘边界；填写完整图坐标点集后启用
+    safe_roi: [0, 0, 1920, 1080]   # x1, y1, x2, y2，基于去畸变完整图
+    safe_roi_polygon: [[558, 35], [556, 967], [1190, 974], [1235, 890], [1286, 821], [1354, 773], [1409, 748], [1613, 750], [1632, 40]]  # 手工点选的托盘边界；填写完整图坐标点集后启用
     controls:
       auto_exposure: 1  # V4L2曝光模式：1=手动模式（关闭自动曝光），3=光圈优先模式（自动曝光）。
-      exposure_time_absolute: 100  # 手动曝光时间；自动曝光关闭时生效。
+      exposure_time_absolute: 105  # 手动曝光时间；自动曝光关闭时生效。
       gain: 0  # 相机增益；过大会放大噪声。
       white_balance_automatic: 0  # 自动白平衡开关，1 开启，0 关闭。
       white_balance_temperature: 5400  # 手动白平衡色温（K）。
@@ -30,7 +30,7 @@ camera:
       hue: 0  # 色调偏移值。
       gamma: 100  # Gamma 调节值；通常 100 表示默认。
       power_line_frequency: 1  # 防频闪频率，按现场电源选择。
-      sharpness: 8  # 锐度调节值。
+      sharpness: 1  # 锐度调节值。
       backlight_compensation: 0  # 背光补偿开关或等级。
 
   side:
@@ -42,16 +42,16 @@ camera:
     buffer_size: 1  # V4L2 缓冲帧数；1 可降低识别延迟。
     warmup_frames: 10  # 打开相机后丢弃的预热帧数。
     reconnect_interval_s: 0.5  # 相机掉线后的重连间隔（秒）。
-    roi: [0, 0, 837, 720]             # 最终实测侧面机械ROI
-    roi_polygon: null                  # 手工点选的托盘边界；填写完整图坐标点集后启用
+    roi: [0, 0, 1280, 720]             # 最终实测侧面机械ROI
+    roi_polygon: [[1049, 51], [776, 47], [552, 77], [405, 203], [303, 348], [373, 488], [374, 492], [471, 609], [630, 682], [822, 710], [982, 694], [1078, 583], [1132, 449], [1117, 331]]  # 手工点选的托盘边界；填写完整图坐标点集后启用
     controls:
       auto_exposure: 1  # V4L2曝光模式：1=手动模式（关闭自动曝光），3=光圈优先模式（自动曝光）。
-      exposure_time_absolute: 185  # 手动曝光时间；自动曝光关闭时生效。
+      exposure_time_absolute: 85  # 手动曝光时间；自动曝光关闭时生效。
       gain: 0  # 相机增益；过大会放大噪声。
       white_balance_automatic: 0  # 自动白平衡开关，1 开启，0 关闭。
       white_balance_temperature: 4650  # 手动白平衡色温（K）。
       brightness: -3  # 亮度调节值。
-      contrast: 38  # 对比度调节值。
+      contrast: 30  # 对比度调节值。
       saturation: 55  # 饱和度调节值。
       hue: 0  # 色调偏移值。
       gamma: 100  # Gamma 调节值；通常 100 表示默认。
