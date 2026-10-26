@@ -19,7 +19,7 @@ camera:
     safe_roi: [580, 120, 1330, 927]   # x1, y1, x2, y2，基于去畸变完整图
     safe_roi_polygon: null              # 手工点选的托盘边界；填写完整图坐标点集后启用
     controls:
-      auto_exposure: 1  # 自动曝光开关，1 开启，0 关闭。
+      auto_exposure: 1  # V4L2曝光模式：1=手动模式（关闭自动曝光），3=光圈优先模式（自动曝光）。
       exposure_time_absolute: 100  # 手动曝光时间；自动曝光关闭时生效。
       gain: 0  # 相机增益；过大会放大噪声。
       white_balance_automatic: 0  # 自动白平衡开关，1 开启，0 关闭。
@@ -45,7 +45,7 @@ camera:
     roi: [0, 0, 837, 720]             # 最终实测侧面机械ROI
     roi_polygon: null                  # 手工点选的托盘边界；填写完整图坐标点集后启用
     controls:
-      auto_exposure: 1  # 自动曝光开关，1 开启，0 关闭。
+      auto_exposure: 1  # V4L2曝光模式：1=手动模式（关闭自动曝光），3=光圈优先模式（自动曝光）。
       exposure_time_absolute: 185  # 手动曝光时间；自动曝光关闭时生效。
       gain: 0  # 相机增益；过大会放大噪声。
       white_balance_automatic: 0  # 自动白平衡开关，1 开启，0 关闭。
