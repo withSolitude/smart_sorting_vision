@@ -16,7 +16,7 @@ camera:
     warmup_frames: 10  # 打开相机后丢弃的预热帧数。
     reconnect_interval_s: 0.5  # 相机掉线后的重连间隔（秒）。
     fps_tolerance: 1.0  # 实测帧率允许偏差（帧/秒）。
-    safe_roi: [0, 0, 1920, 1080]   # x1, y1, x2, y2，基于去畸变完整图
+    safe_roi: [556, 35, 1633, 975]   # x1, y1, x2, y2，基于去畸变完整图；为托盘多边形外接矩形。
     safe_roi_polygon: [[558, 35], [556, 967], [1190, 974], [1235, 890], [1286, 821], [1354, 773], [1409, 748], [1613, 750], [1632, 40]]  # 手工点选的托盘边界；填写完整图坐标点集后启用
     controls:
       auto_exposure: 1  # V4L2曝光模式：1=手动模式（关闭自动曝光），3=光圈优先模式（自动曝光）。
@@ -30,7 +30,7 @@ camera:
       hue: 0  # 色调偏移值。
       gamma: 100  # Gamma 调节值；通常 100 表示默认。
       power_line_frequency: 1  # 防频闪频率，按现场电源选择。
-      sharpness: 1  # 锐度调节值。
+      sharpness: 3  # 锐度调节值。
       backlight_compensation: 0  # 背光补偿开关或等级。
 
   side:
