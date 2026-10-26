@@ -433,7 +433,7 @@ void Task_Init()
 
 
     HAL_Delay(1000);
-    // robot.Holding_Jaw.XY_Motion.Move_To_mm(-5.0F,5.0F,5.0F,5.0F);
+    // robot.Holding_Jaw.XY_Motion.Move_To_mm(-170.0F,0.0F,15.0F,15.0F);
     // 不再上电自动Start：正式流程由PC1实体按键启动；
     // 保持STOPPED也允许Jetson执行独立XY标定命令。
 }

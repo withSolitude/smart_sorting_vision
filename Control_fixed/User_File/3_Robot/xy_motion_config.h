@@ -15,19 +15,19 @@ constexpr uint32_t CAN_Baud = 1000000U; // CAN2、两台 EMM 和 TTL-CAN 适配�
 #if defined(EMM_V5_HOST_TEST) && defined(XY_TEST_CALIBRATED)
 constexpr bool Mechanical_Calibration_Confirmed = true; // 仅主机回归测试
 #else
-constexpr bool Mechanical_Calibration_Confirmed = false; // 实机标定后改 true
+constexpr bool Mechanical_Calibration_Confirmed = true; // 实机标定后改 true
 #endif
 
 // +45° 表示机构 U 轴相对视觉 +X 逆时针旋转；顺时针请改 -45°。
-constexpr double Frame_Rotation_Deg = 45.0;
+constexpr double Frame_Rotation_Deg = 0.0;
 constexpr double Pi = 3.14159265358979323846;
 
 // CoreXY: A=U+V, B=U-V。正的电机坐标对应协议 CW(方向0)。
 // 换向时只改这里，不能在视觉侧和电控侧重复换向。
 constexpr int Direction_A = 1;
 constexpr int Direction_B = 1;
-constexpr double Travel_Per_Rev_A_mm = 40.0; // 待标定！不是已知硬件参数
-constexpr double Travel_Per_Rev_B_mm = 40.0; // 带轮齿数*带距/减速比
+constexpr double Travel_Per_Rev_A_mm = Pi * 12.0; // 待标定！不是已知硬件参数
+constexpr double Travel_Per_Rev_B_mm = Pi * 12.0; // 带轮齿数*带距/减速比
 constexpr uint16_t Full_Steps_Per_Rev = 200U; // MotType=1.8deg
 constexpr uint16_t Microsteps = 16U;         // 电机 MStep 必须一致
 constexpr uint32_t Pulses_Per_Rev = Full_Steps_Per_Rev * Microsteps;
@@ -35,10 +35,10 @@ constexpr uint16_t Max_RPM = 300U;
 constexpr uint8_t Acceleration = 0U; // 0=恒速；两轴按位移比例分配转速
 
 // 沿用当前视觉协议工作区；新结构调试时必须重新测量。
-constexpr float X_Min_mm = -77.0f;
-constexpr float X_Max_mm = 0.0f;
-constexpr float Y_Min_mm = 0.0f;
-constexpr float Y_Max_mm = 55.0f;
+constexpr float X_Min_mm = -770.0f;
+constexpr float X_Max_mm = 700.0f;
+constexpr float Y_Min_mm = -800.0f;
+constexpr float Y_Max_mm = 550.0f;
 constexpr double Position_Tolerance_mm = 0.30;
 constexpr double Stopped_RPM = 2.0;
 constexpr uint32_t Feedback_Timeout_ms = 150U;

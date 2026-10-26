@@ -383,7 +383,7 @@ private:
         0.0f;
 
     float Disable_Y_mm =
-        0.0f;
+        -30.0f;
 
 
     // =================================================
@@ -409,11 +409,11 @@ private:
     // float Claw_Servo_Motor_Angle_Disable =
     //     0.0f * PI / 180.0f;
     float Yaw_Servo_Motor_Angle_Disable =
-        110.0f * PI / 180.0f;
+        20.0f * PI / 180.0f;
 
 
     float Lift_Servo_Motor_Angle_Disable =
-        30.0f * PI / 180.0f;
+        28.0f * PI / 180.0f;
 
     float Claw_Servo_Motor_Angle_Disable =
         ClawPreopen::kStandbyAngleDeg * PI / 180.0f;
@@ -668,6 +668,11 @@ private:
 
     volatile Enum_Grap_Move_Status Grap_Move_Status =
         Enum_Grap_Move_Disable;
+
+    // 上电后先保持待机状态，等 XY 反馈建立并且舵机待机命令发送完成，
+    // 再自动进入 Return 流程移动到 Disable_X_mm/Disable_Y_mm。
+    // 这里不改变 XY 坐标角度；Frame_Rotation_Deg 仍由 xy_motion_config.h 控制。
+    bool Power_On_Disable_Pending = true;
 
 
     // ========================================================

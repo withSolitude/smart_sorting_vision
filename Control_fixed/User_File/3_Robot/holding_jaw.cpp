@@ -55,6 +55,9 @@ void Class_Holding_Jaw::Init()
     Grap_Move_Status =
         Enum_Grap_Move_Disable;
 
+    // 复位后每次都重新执行一次“反馈有效后自动回 Disable”。
+    Power_On_Disable_Pending = true;
+
 
     Grap_Move_Count =
         0;
@@ -441,6 +444,40 @@ TIM_100ms_PeriodElapsedCallback()
     // ========================================================
 
     Grap_Move();
+
+    // ========================================================
+    // 上电自动回到 Disable XY 坐标
+    //
+    // XY_Motion.Init() 后必须先收到两台 EMM 的有效反馈，
+    // 上电软件原点才会建立。此时不能在 Init() 里直接调用
+    // Move_To_mm()，否则会因为 Position_Valid=false 被拒绝。
+    // 等舵机待机命令稳定、XY反馈有效后再走统一 Return 状态机，
+    // 这样与STOP/故障回位使用完全相同的角度和速度参数。
+    // ========================================================
+    if (Power_On_Disable_Pending &&
+        Grap_Move_Status == Enum_Grap_Move_Disable)
+    {
+        if (Get_Disable_Ready())
+        {
+            // 上电时已经在 Disable，清掉一次性请求，不再重复下发移动。
+            Power_On_Disable_Pending = false;
+        }
+        else if (XY_Motion.Get_Position_Valid() &&
+                 !XY_Motion.Get_Fault() &&
+                 Motion_Configuration_Valid() &&
+                 Get_Stop_Ready())
+        {
+            // Request_Return_To_Disable() 内部会把状态切换到 Return，
+            // 下一次100ms回调由 Outputs()发送 XY 的 Disable 坐标。
+            const HAL_StatusTypeDef status = Request_Return_To_Disable();
+            if (status == HAL_OK)
+            {
+                Power_On_Disable_Pending = false;
+            }
+            // HAL_BUSY 表示反馈/舵机仍在稳定，下一周期继续尝试；
+            // HAL_ERROR 也保留请求，避免一次时序抖动导致永远不回位。
+        }
+    }
 }
 
 
