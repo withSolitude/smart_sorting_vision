@@ -32,21 +32,38 @@ def main() -> None:
         def on_click(event, x, y, _flags, _param):
             if event == cv2.EVENT_LBUTTONDOWN and len(points) < 4:
                 points.append((float(x), float(y)))
+                print(f"[PIXEL] P{len(points)} = ({float(x):.1f}, {float(y):.1f})")
 
         window = "pixel to robot: click 4 points"
-        cv2.namedWindow(window)
+        cv2.namedWindow(window, cv2.WINDOW_NORMAL)
         cv2.setMouseCallback(window, on_click)
-        while len(points) < 4:
+        while True:
             view = frame.copy()
             for i, (u, v) in enumerate(points, start=1):
                 cv2.circle(view, (round(u), round(v)), 6, (0, 0, 255), 2)
                 cv2.putText(view, f"P{i}", (round(u) + 8, round(v) - 8),
                             cv2.FONT_HERSHEY_SIMPLEX, .6, (0, 255, 255), 2)
-            cv2.putText(view, f"click {len(points) + 1}/4; Q quit", (15, 28),
+            if len(points) < 4:
+                instruction = f"click {len(points) + 1}/4; R clear; Backspace undo; Q quit"
+            else:
+                instruction = "4/4 complete; Enter continue; R clear; Backspace undo; Q quit"
+            cv2.putText(view, instruction, (15, 28),
                         cv2.FONT_HERSHEY_SIMPLEX, .65, (0, 255, 0), 2)
             cv2.imshow(window, view)
-            if cv2.waitKey(20) & 0xFF in (ord("q"), 27):
+            key = cv2.waitKey(20) & 0xFF
+            if key in (ord("q"), ord("Q"), 27):
                 return
+            if key in (ord("r"), ord("R")):
+                points.clear()
+                print("[PIXEL] 已清空，重新点击 4 个点")
+                continue
+            if key in (8, 127):
+                if points:
+                    removed = points.pop()
+                    print(f"[PIXEL] 撤销 P{len(points) + 1}: {removed}")
+                continue
+            if len(points) == 4 and key in (10, 13):
+                break
 
         robot = []
         for i, (u, v) in enumerate(points, start=1):
