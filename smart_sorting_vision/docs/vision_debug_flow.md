@@ -155,20 +155,28 @@ python scripts/debug/test_top_pick_pipeline.py
 
 ## 7. 侧面识别调试
 
-先用空托盘背景验证物体存在性，再验证颜色、二维码和形状：
+侧面流程先把完整机械 ROI 送入形状分类 YOLO。模型必须包含 `no_object`
+空背景类别；只有模型确认是真实形状后，才进入颜色和二维码识别。背景差分仅
+作为已有物体的裁剪辅助，不能再决定“有没有物体”：
 
 ```bash
-python scripts/debug/test_side_all.py
+python scripts/debug/test_side_sort_pipeline.py
 ```
 
 调试顺序：
 
-1. 空托盘不应被判成有物体；
-2. 单个物体放在托盘中心，确认存在性窗口；
-3. 分别测试每种颜色；
-4. 测试有二维码、无二维码和反光二维码；
-5. 测试每种形状及不同朝向；
+1. 在 `data/datasets/side_cls/v1/{train,val,test}/no_object/` 保存不同环境下的空托盘完整 ROI；
+2. 同样保存每种形状的完整 ROI，再训练侧面分类模型；
+3. 把模型类别名 `no_object`（或配置中的其它空背景名）写入 `no_object_labels`；
+4. 空托盘测试应直接输出 `no_object`，跳过颜色/二维码，发送 RETRY_PICK 回到 Disable 后重新开始顶部识别；
+5. 有物体时分别测试每种颜色、有/无二维码、反光二维码和每种形状；
 6. 最后再调 `vision.side.consensus` 的窗口和通过帧数。
+
+只检查形状和空背景时可运行：
+
+```bash
+python scripts/debug/test_side_shape.py
+```
 
 颜色、二维码和形状的阈值只写在 YAML 或其明确引用的模型配置中；不要在多个分类脚本中复制同一阈值。
 

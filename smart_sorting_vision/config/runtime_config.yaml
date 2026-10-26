@@ -1,154 +1,154 @@
-config_version: 2
+config_version: 2  # 配置文件格式版本；代码升级配置结构时同步递增。
 
 stm32:
-  device: /dev/ttyCH341USB0
-  baud: 115200
+  device: /dev/ttyCH341USB0  # Jetson 上 STM32 的串口设备路径。
+  baud: 115200  # UART 波特率，必须与下位机串口设置一致。
 
 # 正式运行只从这里读取相机映射。设备名必须在 Jetson 现场用 ls -l /dev/v4l/by-id/ 核对。
 camera:
   top:
-    device: /dev/v4l/by-id/usb-icSpring_icspring_camera_20240307110322-video-index0
-    width: 1920
-    height: 1080
-    fps: 30
-    fourcc: MJPG
-    buffer_size: 1
-    warmup_frames: 10
-    reconnect_interval_s: 0.5
-    fps_tolerance: 1.0
+    device: /dev/v4l/by-id/usb-icSpring_icspring_camera_20240307110322-video-index0  # 顶部相机设备名。
+    width: 1920  # 顶部相机采集宽度（像素）。
+    height: 1080  # 顶部相机采集高度（像素）。
+    fps: 30  # 顶部相机目标帧率。
+    fourcc: MJPG  # 视频编码格式；必须是相机支持的格式。
+    buffer_size: 1  # V4L2 缓冲帧数；1 可降低实时控制延迟。
+    warmup_frames: 10  # 打开相机后丢弃的预热帧数。
+    reconnect_interval_s: 0.5  # 相机掉线后的重连间隔（秒）。
+    fps_tolerance: 1.0  # 实测帧率允许偏差（帧/秒）。
     safe_roi: [580, 120, 1330, 927]   # x1, y1, x2, y2，基于去畸变完整图
     safe_roi_polygon: null              # 手工点选的托盘边界；填写完整图坐标点集后启用
     controls:
-      auto_exposure: 1
-      exposure_time_absolute: 100
-      gain: 0
-      white_balance_automatic: 0
-      white_balance_temperature: 5400
-      brightness: 0
-      contrast: 30
-      saturation: 55
-      hue: 0
-      gamma: 100
-      power_line_frequency: 1
-      sharpness: 8
-      backlight_compensation: 0
+      auto_exposure: 1  # 自动曝光开关，1 开启，0 关闭。
+      exposure_time_absolute: 100  # 手动曝光时间；自动曝光关闭时生效。
+      gain: 0  # 相机增益；过大会放大噪声。
+      white_balance_automatic: 0  # 自动白平衡开关，1 开启，0 关闭。
+      white_balance_temperature: 5400  # 手动白平衡色温（K）。
+      brightness: 0  # 亮度调节值。
+      contrast: 30  # 对比度调节值。
+      saturation: 55  # 饱和度调节值。
+      hue: 0  # 色调偏移值。
+      gamma: 100  # Gamma 调节值；通常 100 表示默认。
+      power_line_frequency: 1  # 防频闪频率，按现场电源选择。
+      sharpness: 8  # 锐度调节值。
+      backlight_compensation: 0  # 背光补偿开关或等级。
 
   side:
-    device: /dev/v4l/by-id/usb-icSpring_icspring_camera-video-index0
-    width: 1280
-    height: 720
-    fps: 30
-    fourcc: MJPG
-    buffer_size: 1
-    warmup_frames: 10
-    reconnect_interval_s: 0.5
+    device: /dev/v4l/by-id/usb-icSpring_icspring_camera-video-index0  # 侧面相机设备名。
+    width: 1280  # 侧面相机采集宽度（像素）。
+    height: 720  # 侧面相机采集高度（像素）。
+    fps: 30  # 侧面相机目标帧率。
+    fourcc: MJPG  # 视频编码格式；必须是相机支持的格式。
+    buffer_size: 1  # V4L2 缓冲帧数；1 可降低识别延迟。
+    warmup_frames: 10  # 打开相机后丢弃的预热帧数。
+    reconnect_interval_s: 0.5  # 相机掉线后的重连间隔（秒）。
     roi: [0, 0, 837, 720]             # 最终实测侧面机械ROI
     roi_polygon: null                  # 手工点选的托盘边界；填写完整图坐标点集后启用
     controls:
-      auto_exposure: 1
-      exposure_time_absolute: 185
-      gain: 0
-      white_balance_automatic: 0
-      white_balance_temperature: 4650
-      brightness: -3
-      contrast: 38
-      saturation: 55
-      hue: 0
-      gamma: 100
-      power_line_frequency: 1
-      sharpness: 1
-      backlight_compensation: 0
+      auto_exposure: 1  # 自动曝光开关，1 开启，0 关闭。
+      exposure_time_absolute: 185  # 手动曝光时间；自动曝光关闭时生效。
+      gain: 0  # 相机增益；过大会放大噪声。
+      white_balance_automatic: 0  # 自动白平衡开关，1 开启，0 关闭。
+      white_balance_temperature: 4650  # 手动白平衡色温（K）。
+      brightness: -3  # 亮度调节值。
+      contrast: 38  # 对比度调节值。
+      saturation: 55  # 饱和度调节值。
+      hue: 0  # 色调偏移值。
+      gamma: 100  # Gamma 调节值；通常 100 表示默认。
+      power_line_frequency: 1  # 防频闪频率，按现场电源选择。
+      sharpness: 1  # 锐度调节值。
+      backlight_compensation: 0  # 背光补偿开关或等级。
 
 # 使用工程根目录相对路径，禁止再写 /home/nvidia/...。
 model:
   top:
-    path: outputs/training/top_seg/top_seg_v1_aug/weights/best.engine
-    conf: 0.35
-    imgsz: 832
-    device: 0
+    path: outputs/training/top_seg/top_seg_v1_aug/weights/best.engine  # 资源或模型路径；相对工程根目录解析。
+    conf: 0.35  # 模型置信度阈值。
+    imgsz: 832  # 模型输入尺寸（像素）。
+    device: 0  # 相机设备路径或推理设备编号。
   side:
-    path: outputs/training/side_cls/school_test/weights/best.engine
-    imgsz: 224
-    device: 0
-    confidence_threshold: 0.7
-    topk: 3
+    path: outputs/training/side_cls/school_test/weights/best.engine  # 必须替换为“完整侧面ROI+no_object空背景”分类模型；相对工程根目录解析。
+    imgsz: 224  # 模型输入尺寸（像素）。
+    device: 0  # 相机设备路径或推理设备编号。
+    confidence_threshold: 0.7  # 侧面形状/空背景分类的最低置信度。
+    topk: 3  # 保留的最高概率类别数量。
 
 calibration:
-  top_intrinsics: data/calibration/top_camera/top_camera_intrinsics.npz
-  pixel_to_robot: data/calibration/top_camera/robot_mapping/pixel_to_robot.json
-  side_background: data/calibration/side_camera/side_mechanical_roi_background.png
+  top_intrinsics: data/calibration/top_camera/top_camera_intrinsics.npz  # 顶部相机内参文件路径。
+  pixel_to_robot: data/calibration/top_camera/robot_mapping/pixel_to_robot.json  # 像素到机械 XY 的标定文件路径。
+  side_background: data/calibration/side_camera/side_mechanical_roi_background.png  # 侧面颜色/二维码裁剪辅助使用的空背景；不再用于判断是否有物体。
   top_camera:
-    image_dir: data/calibration/top_camera/images
-    chessboard_size: [6, 9]
+    image_dir: data/calibration/top_camera/images  # 标定图片目录。
+    chessboard_size: [6, 9]  # 棋盘格内角点数量 [列, 行]。
     square_size_mm: 5.2  # 必须按实际棋盘格测量值修改
-    min_valid_images: 12
-    warning_error_px: 0.8
+    min_valid_images: 12  # 标定至少需要的有效图片数量。
+    warning_error_px: 0.8  # 标定误差警告阈值（像素）。
   side_background_capture:
-    settle_frames: 15
-    frame_count: 30
+    settle_frames: 15  # 采集背景前等待的稳定帧数。
+    frame_count: 30  # 用于生成背景的采样帧数。
 
 mechanics:
   # 用户实测工作范围。虽然 X 的运动描述是“0 到 -77”，数值区间统一按 [min, max] 存储。
   workspace_mm:
-    x: [-75.0, 0.0]
-    y: [0.0, 50.0]
+    x: [-75.0, 0.0]  # X 轴工作范围 [最小值, 最大值]（mm）。
+    y: [0.0, 50.0]  # Y 轴工作范围 [最小值, 最大值]（mm）。
   # 当前没有提供夹爪外形和机械禁入区，因此不擅自缩小工作范围。
-  forbidden_zones_mm: []
-  allowed_polygon_mm: []
+  forbidden_zones_mm: []  # 机械禁入区域列表（mm）。
+  allowed_polygon_mm: []  # 允许抓取的机械区域多边形（mm）。
   #allowed_polygon_mm: [[-86.09, 43.88], [-88.24, -15.83], [-20.76, -20.51], [-22.22, 46.07]]
 
 vision:
   top:
-    obstacle_margin_px: 12
-    border_margin_px: 12
-    min_safe_area_px: 50
-    min_clearance_px: 3.0
+    obstacle_margin_px: 12  # 目标周围的障碍安全余量（像素）。
+    border_margin_px: 12  # 图像边缘安全余量（像素）。
+    min_safe_area_px: 50  # 安全区域最小面积（像素）。
+    min_clearance_px: 3.0  # 抓取点最小安全间隙（像素）。
 
     # 动态抓取Yaw。这里的角度是“夹爪闭合轴在机械XY坐标系中的方向”，
     # 上位机不直接假设舵机安装零位。下位机再把该方向换算成真实舵机角度。
     grasp_orientation:
-      enabled: true
+      enabled: true  # 是否启用动态抓取方向规划。
       # 兼容旧配置；正式通用规划已不再仅靠“长方形长短轴”决定抓取。
-      grip_long_sides: true
+      grip_long_sides: true  # 是否优先沿物体长边规划夹取。
       # 兼容旧配置/调试显示；三角形、方形、五边形等由 antipodal 几何统一处理。
-      min_aspect_ratio: 1.15
-      default_grasp_axis_robot_deg: -85.0
+      min_aspect_ratio: 1.15  # 长短轴判定的最小长宽比。
+      default_grasp_axis_robot_deg: -85.0  # 没有可靠方向时使用的机械抓取轴角度（度）。
       # 视觉规划的“物体短轴”与实机夹爪闭合轴之间的常量对齐修正。
       # 先保持0.0；运行 calibrate_real_grasp_yaw_alignment.py 手动对齐后，
       # 将其输出的 selected_offset_deg 填到这里。不要改下位机Yaw标定参数。
-      yaw_alignment_offset_deg: 0.0
+      yaw_alignment_offset_deg: 0.0  # 视觉抓取轴到实机夹爪轴的角度修正（度）。
       # 多帧方向抖动超过该值，不输出READY。
-      max_yaw_spread_deg: 12.0
+      max_yaw_spread_deg: 12.0  # 多帧方向允许的最大抖动（度）。
 
       # 通用平行夹爪几何规划：三角形、四边形、五边形、六边形等统一处理。
       # 先找凸包的 antipodal 支撑对，再在“接近最小夹持宽度”的候选中
       # 优先 edge-edge，其次 edge-vertex（例如三角形），最后 vertex-vertex。
-      width_slack_ratio: 0.15
-      support_tolerance_px: 3.0
-      min_contact_span_px: 6.0
+      width_slack_ratio: 0.15  # 夹持宽度候选的相对放宽比例。
+      support_tolerance_px: 3.0  # 支撑点几何容差（像素）。
+      min_contact_span_px: 6.0  # 最小接触跨度（像素）。
       # 只有真正接近圆形时才使用固定Yaw；普通正多边形仍使用真实边。
-      circle_circularity_threshold: 0.985
-      circle_min_vertices: 8
+      circle_circularity_threshold: 0.985  # 判定为圆形的圆度阈值。
+      circle_min_vertices: 8  # 圆形轮廓的最少顶点数。
       # 真实夹爪开口上下限（mm）。当前未知时保持 null；填入后正式流水线会硬拒绝超范围抓取。
-      min_opening_mm: null
-      max_opening_mm: null
+      min_opening_mm: null  # 夹爪最小允许开口（mm）。
+      max_opening_mm: null  # 夹爪最大允许开口（mm）。
 
       # 动态预收缩：视觉使用“当前夹取方向上的真实夹持宽度”计算预开口。
       # command = grasp_width_mm + margin_mm；圆形/几何回退无法可靠估宽时，
       # 不发送该命令，下位机自动使用旧固定 10° 预收缩。
       dynamic_preopen:
-        enabled: true
-        configured: true
+        enabled: true  # 是否根据物体宽度计算夹爪预开口。
+        configured: true  # 是否已经完成动态预开口标定。
         # 线性公式：angle = closed + (standby - closed) * opening / max_opening。
         # 新夹爪开合舵机：-35°闭合，-95°待机张开；不是Yaw角。
-        closed_servo_deg: -35.0
-        standby_servo_deg: -95.0
+        closed_servo_deg: -35.0  # 夹爪闭合舵机角度（度）。
+        standby_servo_deg: -95.0  # 夹爪待机张开舵机角度（度）。
         # command 是两片硅胶内侧之间的目标净开口。
         # 物体宽度 + 总余量；薄硅胶安装后先使用5mm（两侧合计）。
-        margin_mm: 6.0
+        margin_mm: 6.0  # 物体宽度之外增加的安全余量（mm）。
         # 安全协议范围；STM32 与 PC 使用同一条线性公式。
-        min_command_mm: 0.9
-        max_command_mm: 46.5
+        min_command_mm: 0.9  # 预开口命令最小值（mm）。
+        max_command_mm: 46.5  # 预开口命令最大值（mm）。
 
     # Yaw-TCP 偏心补偿。
     # H 是在 CALIB_MOVE/待机 Yaw 姿态下建立的；旧代码240°会被驱动夹到+135°，
@@ -156,16 +156,16 @@ vision:
     # TCP 圆拟合来自 2026-09-12 的5点复测：r≈19.698mm，拟合RMSE≈0.423mm。
     # 当前进入真实物体空抓对心阶段，正式启用；如需回退，将 enabled 改回 false。
     yaw_tcp_compensation:
-      enabled: true
+      enabled: true  # 是否启用Yaw-TCP偏心补偿。
 
-      reference_axis_deg: -56.788489
-      offset_axis0_mm: [0.23628793,15.44517776]
+      reference_axis_deg: -56.788489  # TCP 标定参考闭合轴角度（度）。
+      offset_axis0_mm: [0.23628793,15.44517776]  # 参考姿态下 TCP 偏移 [X, Y]（mm）。
 
       # 沿夹爪闭合轴左右修正
-      closing_bias_mm: 0.0
+      closing_bias_mm: 0.0  # 沿夹爪闭合方向的中心修正（mm）。
 
       # 垂直于闭合轴，沿夹爪前后修正
-      longitudinal_bias_mm: 0.0
+      longitudinal_bias_mm: 0.0  # 沿夹爪前后方向的中心修正（mm）。
 
       # ======================================================
       # branch=1 专用微调
@@ -183,278 +183,274 @@ vision:
       #   只修另一物理侧的抓取中心前后偏差。
       #   正值沿真实夹爪闭合轴 +90° 方向移动，负值反向。
       # ======================================================
-      branch1_axis_correction_deg: 0.0
-      branch1_closing_bias_mm: 10.0
-      branch1_longitudinal_bias_mm: 10.0
+      branch1_axis_correction_deg: 0.0  # 第二物理抓取分支的角度修正（度）。
+      branch1_closing_bias_mm: 10.0  # 第二分支沿闭合方向的中心修正（mm）。
+      branch1_longitudinal_bias_mm: 10.0  # 第二分支沿前后方向的中心修正（mm）。
 
-      visual_to_command_matrix:
+      visual_to_command_matrix:  # 视觉坐标到下发坐标的2x2矩阵。
         - [0.72533465, 0.01675850]
         - [0.00479271, 0.64797763]
 
-      command_to_visual_tcp_matrix:
+      command_to_visual_tcp_matrix:  # 下发坐标到视觉TCP坐标的2x2矩阵。
         - [1.37890961, -0.03566244]
         - [-0.01019898, 1.54352692]
 
       # 双边抓取时这里表示“有向物理Yaw”的可执行范围，不是协议轴向yaw。
       # 由当前下位机Yaw标定 q=q0+k*(theta-theta0) 与舵机±135°范围换算；
       # 留少量边界余量，branch 0/1都会先经过此范围检查再做TCP补偿。
-      min_axis_deg: -79.0
-      max_axis_deg: 165.0
+      min_axis_deg: -79.0  # 可执行物理 Yaw 最小角度（度）。
+      max_axis_deg: 165.0  # 可执行物理 Yaw 最大角度（度）。
 
-      xy_calibration_claw_angle_deg: 45.0
-      tcp_fit_claw_angle_deg: 5.0
+      xy_calibration_claw_angle_deg: 45.0  # XY 标定时的夹爪角度（度）。
+      tcp_fit_claw_angle_deg: 5.0  # TCP 拟合时的夹爪角度（度）。
 
     # Z下降时机构存在可重复的横向漂移。这里补偿的是“真实下降过程中”
     # 才出现的位移，因此不放进 TopPickPipeline 的空抓对心坐标，
     # 只在正式 PICK_TARGET 下发前追加一次预偏移。
     descent_drift_compensation:
-      enabled: true
+      enabled: true  # 是否启用下压过程的横向漂移补偿。
       # 实测 TCP 在下降时沿“闭合轴 + relative_angle_deg”方向漂移的距离(mm)。
       # 正值表示 +90° 方向，负值表示反方向。当前先填0.0，
       # 用单物体抓取脚本 --descent-drift-mm 快速试出数值后再写回来。
-      signed_drift_mm: -5.0
+      signed_drift_mm: -5.0  # 下降过程测得的有符号横向漂移（mm）。
       # 两个夹爪连线/闭合轴的垂直方向。若机械实际不是严格90°可微调。
-      relative_angle_deg: 90.0
+      relative_angle_deg: 90.0  # 漂移相对夹爪闭合轴的方向（度）。
       # true 时复用 Yaw-TCP 标定得到的 J^-1，把“物理平面mm”换成XY命令mm。
-      use_visual_to_command_matrix: true
+      use_visual_to_command_matrix: true  # 是否用标定矩阵把视觉偏移转换为机械命令。
 
     gripper_collision:
-      enabled: false
+      enabled: false  # 是否启用夹爪碰撞和禁入区域检查。
 
-      allowed_polygon_mm: null
-      object_overlap_tolerance_px: 4
+      allowed_polygon_mm: null  # 允许抓取的机械区域多边形（mm）。
+      object_overlap_tolerance_px: 4  # 夹爪与目标允许的重叠容差（像素）。
 
       # 来自本次 STEP 顶视投影：夹持端零件最小外接矩形约 30.7 x 13.5 mm，
       # 向上取整作为保守单指包络。
-      finger_length_mm: 5.0
-      finger_thickness_mm: 2.7
-      finger_longitudinal_offset_mm: 0.0
+      finger_length_mm: 5.0  # 夹爪指端长度（mm）。
+      finger_thickness_mm: 2.7  # 夹爪指端厚度（mm）。
+      finger_longitudinal_offset_mm: 0.0  # 夹爪指端沿前后方向的偏移（mm）。
 
       # 覆盖动态预开口角度补偿、硅胶变形、机构误差。
-      opening_uncertainty_mm: 0.3
+      opening_uncertainty_mm: 0.3  # 开口测量与机构误差余量（mm）。
 
       # 夹爪真实外形之外的额外安全余量。
-      object_margin_mm: 0.1
-      wall_margin_mm: 0.5
+      object_margin_mm: 0.1  # 目标外侧安全余量（mm）。
+      wall_margin_mm: 0.5  # 托盘壁安全余量（mm）。
 
       # 没有可靠 grasp_width 时，下位机固定预夹角约对应此有效净开口。
-      fallback_opening_mm: 38.3
+      fallback_opening_mm: 38.3  # 没有可靠宽度时使用的回退开口（mm）。
 
-      enforce_image_border: true
-      image_border_margin_px: 0
+      enforce_image_border: true  # 是否检查图像边缘碰撞。
+      image_border_margin_px: 0  # 图像边缘碰撞检查余量（像素）。
 
       # 不确定物理托盘边界时保持 null。
-      allowed_region_mm: null
+      allowed_region_mm: null  # 允许区域矩形；null表示使用workspace_mm。
 
       # 只有夹爪主体在下降高度也可能碰撞时才打开。
       body:
-        enabled: false
-        width_mm: 50.0
-        length_mm: 20.0
-        longitudinal_offset_mm: -25.0
+        enabled: false  # 是否启用夹爪本体碰撞检查。
+        width_mm: 50.0  # 夹爪主体宽度（mm）。
+        length_mm: 20.0  # 夹爪主体长度（mm）。
+        longitudinal_offset_mm: -25.0  # 夹爪主体前后方向偏移（mm）。
 
       # 同一物体多姿态抓取搜索
       grasp_search:
-        enabled: true
+        enabled: true  # 是否启用同一物体的多姿态抓取搜索。
 
-        yaw_offsets_deg:
+        yaw_offsets_deg:  # 同一物体尝试的Yaw偏移角度列表（度）。
           [0, -5, 5, -10, 10, -15, 15, -20, 20, -30, 30]
 
-        longitudinal_offsets_mm:
+        longitudinal_offsets_mm:  # 同一物体尝试的前后偏移列表（mm）。
           [0.0, -2.0, 2.0, -3.0, 3.0]
 
-        closing_offsets_mm:
+        closing_offsets_mm:  # 同一物体尝试的左右偏移列表（mm）。
           [0.0]
 
-        hard_min_clearance_mm: 0.5
-        preferred_clearance_mm: 2.0
-        min_target_overlap_mm: 1.5
-        min_side_gap_mm: 0.15
+        hard_min_clearance_mm: 0.5  # 候选的硬性最小间隙（mm）。
+        preferred_clearance_mm: 2.0  # 候选优先使用的间隙（mm）。
+        min_target_overlap_mm: 1.5  # 目标最小有效重叠长度（mm）。
+        min_side_gap_mm: 0.15  # 夹爪侧边最小间隙（mm）。
 
-        yaw_penalty_per_deg: 0.12
-        center_penalty_per_mm: 0.25
+        yaw_penalty_per_deg: 0.12  # 搜索评分中的角度惩罚系数。
+        center_penalty_per_mm: 0.25  # 搜索评分中的中心偏移惩罚系数。
 
-        max_trials_per_object: 200
+        max_trials_per_object: 200  # 每个目标最多搜索的候选数量。
 
-      debug_log_rejections: true
+      debug_log_rejections: true  # 是否输出抓取候选被拒绝的原因。
 
     consensus:
-      window: 2
-      required: 2
-      max_track_center_shift_px: 55.0
-      max_grasp_spread_mm: 3.0
-      reset_after_misses: 3
+      window: 2  # 多帧共识窗口长度。
+      required: 2  # 窗口内达到该票数才确认。
+      max_track_center_shift_px: 55.0  # 顶部多帧中心允许的最大位移（像素）。
+      max_grasp_spread_mm: 3.0  # 顶部多帧抓取点允许的最大散布（mm）。
+      reset_after_misses: 3  # 连续漏检多少帧后清空顶部跟踪。
   side:
     recognition:
       color:
-        enabled: true
-        mask_erode_px: 3
-        achromatic_s_max: 80
-        achromatic_lab_chroma_max: 22.0
-        reliable_v_min: 35
-        reliable_v_max: 238
-        chromatic_s_min: 45
-        chromatic_lab_chroma_min: 10.0
-        hue_hist_bins: 36
-        dominant_hue_half_width: 12
-        black_v_max: 45
-        black_lab_l_max: 75
-        white_lab_l_p75_min: 195
-        white_lab_l_p90_min: 210
-        brown_h_min: 6
-        brown_h_max: 25
-        brown_v_max: 115
-        brown_lab_l_max: 115
-        purple_ambiguous_h_min: 115
-        purple_ambiguous_h_max: 133
-        purple_lab_a_min: 140
-        pastel_pink_h_min: 138
-        pastel_pink_h_max: 160
-        pastel_pink_s_max: 110
-        pastel_pink_v_min: 125
-        pastel_pink_lab_l_min: 120
-        pink_low_h_max: 7
-        pink_low_h_s_max: 175
-        pink_low_h_v_min: 150
-        min_pixels: 150
+        enabled: true  # 是否启用颜色识别。
+        mask_erode_px: 3  # 颜色识别前对 mask 腐蚀的像素数。
+        achromatic_s_max: 80  # 无色区域的 HSV 饱和度上限。
+        achromatic_lab_chroma_max: 22.0  # 无色区域的 Lab 色度上限。
+        reliable_v_min: 35  # 可靠颜色区域的 HSV 亮度下限。
+        reliable_v_max: 238  # 可靠颜色区域的 HSV 亮度上限。
+        chromatic_s_min: 45  # 有色区域的 HSV 饱和度下限。
+        chromatic_lab_chroma_min: 10.0  # 有色区域的 Lab 色度下限。
+        hue_hist_bins: 36  # 色调直方图分桶数量。
+        dominant_hue_half_width: 12  # 主色调统计半宽（色调单位）。
+        black_v_max: 45  # 黑色判定的 HSV 亮度上限。
+        black_lab_l_max: 75  # 黑色判定的 Lab 亮度上限。
+        white_lab_l_p75_min: 195  # 白色判定的 Lab L 通道 P75 下限。
+        white_lab_l_p90_min: 210  # 白色判定的 Lab L 通道 P90 下限。
+        brown_h_min: 6  # 棕色 HSV 色调下限。
+        brown_h_max: 25  # 棕色 HSV 色调上限。
+        brown_v_max: 115  # 棕色 HSV 亮度上限。
+        brown_lab_l_max: 115  # 棕色 Lab 亮度上限。
+        purple_ambiguous_h_min: 115  # 紫色歧义区色调下限。
+        purple_ambiguous_h_max: 133  # 紫色歧义区色调上限。
+        purple_lab_a_min: 140  # 紫色 Lab a 通道下限。
+        pastel_pink_h_min: 138  # 浅粉色 HSV 色调下限。
+        pastel_pink_h_max: 160  # 浅粉色 HSV 色调上限。
+        pastel_pink_s_max: 110  # 浅粉色 HSV 饱和度上限。
+        pastel_pink_v_min: 125  # 浅粉色 HSV 亮度下限。
+        pastel_pink_lab_l_min: 120  # 浅粉色 Lab 亮度下限。
+        pink_low_h_max: 7  # 低色调粉色的色调上限。
+        pink_low_h_s_max: 175  # 低色调粉色的饱和度上限。
+        pink_low_h_v_min: 150  # 低色调粉色的亮度下限。
+        min_pixels: 150  # 颜色分类所需的最少有效像素数。
       qr:
-        enabled: true
+        enabled: true  # 是否启用二维码检测。
         # false：多帧确认时只判断“有没有二维码”；
         # true：多帧确认时还要求解码出来的二维码内容一致。
-        check_content_consistency: false
-        try_rotate: true
-        try_downscale: false
-        try_invert: false
-        max_input_side: 640
-        opencv_curved_fallback: true
-        zxing_rectify_fallback: true
-        curved_warp_size: 360
-        curved_quiet_zone: 28
-        curved_gammas: [0.72, 0.82, 0.90, 1.10, 1.22]
+        check_content_consistency: false  # 是否要求多帧二维码解码内容一致。
+        try_rotate: true  # 是否尝试旋转二维码图像。
+        try_downscale: false  # 是否尝试缩小图像后解码。
+        try_invert: false  # 是否尝试反色后解码。
+        max_input_side: 640  # 二维码解码输入最长边上限（像素）。
+        opencv_curved_fallback: true  # 是否启用 OpenCV 曲面二维码回退。
+        zxing_rectify_fallback: true  # 是否启用透视展开后 ZXing 回退。
+        curved_warp_size: 360  # 曲面二维码展开图边长（像素）。
+        curved_quiet_zone: 28  # 展开二维码保留的白边宽度（像素）。
+        curved_gammas: [0.72, 0.82, 0.90, 1.10, 1.22]  # 曲面展开尝试的非线性校正参数列表。
       shape:
-        enabled: true
+        enabled: true  # 是否启用形状和空背景分类。
+        # 形状分类器输入完整侧面 ROI；这些类别表示空托盘/空背景。
+        # 训练集目录名必须与这里至少有一个完全一致。
+        no_object_labels: [no_object, empty, background]  # 形状分类器中表示空托盘的类别名列表。
 
-    # 先确认“托盘上确实有物体”，再进入颜色/QR/Shape识别。
-    # 单帧背景差分误触发不会直接送入分类器。
-    object_presence:
-      window: 4
-      required: 3
+    # 形状 YOLO 已经负责判断“有无物体”。这里的背景差分只在确认有物体后
+    # 辅助生成颜色/二维码裁剪，裁剪失败会回退到完整 ROI，不再作为存在性门控。
+    crop_extractor:
       extractor:
         # 有可靠 strong core 时沿用原来的较灵敏门槛，保证正常物体不漏检。
-        min_object_area: 1200
-        min_object_area_ratio: 0.003
+        min_object_area: 1200  # 裁剪辅助的最小前景面积（像素）。
+        min_object_area_ratio: 0.003  # 裁剪辅助的最小前景面积比例。
 
         # strong core 太小通常是反光/噪声，不作为可靠物体种子。
-        min_core_area: 350
-        min_core_area_ratio: 0.0006
+        min_core_area: 350  # 强前景种子的最小面积（像素）。
+        min_core_area_ratio: 0.0006  # 强前景种子的最小面积比例。
 
         # 没有 strong core、只能依赖弱差分时显著提高门槛。
         # 837x720 ROI 下 0.010 约等于 6026 px。
-        fallback_min_object_area: 4500
-        fallback_min_object_area_ratio: 0.010
-        fallback_min_bbox_width_ratio: 0.06
-        fallback_min_bbox_height_ratio: 0.10
-        chroma_threshold: 8
-        light_luma_threshold: 25
-        dark_luma_threshold: 50
-        strong_chroma_threshold: 14
-        strong_light_luma_threshold: 45
-        strong_dark_luma_threshold: 75
-        max_object_area_ratio: 0.80
-        min_padding_px: 12
-        open_kernel_size: 3
-        close_kernel_size: 5
-        close_iterations: 2
-        enable_gray_texture_assist: true
-        gray_texture_gradient_threshold: 15.0
-        gray_texture_luma_min: -12
-        gray_texture_luma_max: 25
-        gray_texture_support_x_ratio: 0.80
-        gray_texture_support_y_ratio: 0.15
-        gray_texture_close_kernel_size: 5
-        gray_texture_max_growth_ratio: 2.00
-        enable_achromatic_safe_crop: true
-        achromatic_saturation_threshold: 80
-        achromatic_chroma_delta_threshold: 10.0
-        achromatic_min_crop_width_ratio: 0.50
-        achromatic_min_crop_height_ratio: 0.93
+        fallback_min_object_area: 4500  # 弱差分回退时的最小面积（像素）。
+        fallback_min_object_area_ratio: 0.010  # 弱差分回退时的最小面积比例。
+        fallback_min_bbox_width_ratio: 0.06  # 弱差分回退时的 bbox 最小宽度比例。
+        fallback_min_bbox_height_ratio: 0.10  # 弱差分回退时的 bbox 最小高度比例。
+        chroma_threshold: 8  # 普通色度差阈值。
+        light_luma_threshold: 25  # 浅色目标亮度差阈值。
+        dark_luma_threshold: 50  # 深色目标亮度差阈值。
+        strong_chroma_threshold: 14  # 强前景色度差阈值。
+        strong_light_luma_threshold: 45  # 强前景浅色亮度阈值。
+        strong_dark_luma_threshold: 75  # 强前景深色亮度阈值。
+        max_object_area_ratio: 0.80  # 裁剪前景允许占 ROI 的最大比例。
+        min_padding_px: 12  # 裁剪框最小 padding（像素）。
+        open_kernel_size: 3  # 形态学开运算核尺寸。
+        close_kernel_size: 5  # 形态学闭运算核尺寸。
+        close_iterations: 2  # 形态学闭运算迭代次数。
+        enable_gray_texture_assist: true  # 是否启用灰色纹理裁剪辅助。
+        gray_texture_gradient_threshold: 15.0  # 灰色纹理梯度阈值。
+        gray_texture_luma_min: -12  # 灰色纹理亮度差下限。
+        gray_texture_luma_max: 25  # 灰色纹理亮度差上限。
+        gray_texture_support_x_ratio: 0.80  # 纹理候选横向支持比例。
+        gray_texture_support_y_ratio: 0.15  # 纹理候选纵向支持比例。
+        gray_texture_close_kernel_size: 5  # 纹理辅助闭运算核尺寸。
+        gray_texture_max_growth_ratio: 2.00  # 纹理辅助允许的最大面积增长比例。
+        enable_achromatic_safe_crop: true  # 是否启用无色目标安全裁剪。
+        achromatic_saturation_threshold: 80  # 无色安全裁剪的饱和度阈值。
+        achromatic_chroma_delta_threshold: 10.0  # 无色色度差阈值。
+        achromatic_min_crop_width_ratio: 0.50  # 无色目标最小裁剪宽度比例。
+        achromatic_min_crop_height_ratio: 0.93  # 无色目标最小裁剪高度比例。
 
-    padding_ratio: 0.15
+    padding_ratio: 0.15  # 裁剪框相对物体尺寸的 padding 比例。
 
     # 属性识别仍保持 4/5；若 4s 内一直未达共识，Runtime 使用整个
     # 识别阶段的有效完整结果多数票兜底。
     consensus:
-      window: 5
-      required: 4
+      window: 5  # 多帧共识窗口长度。
+      required: 4  # 窗口内达到该票数才确认。
 
 storage:
-  box_count: 6
+  box_count: 6  # 储物盒数量。
 
 runtime:
   # 命令丢包时的周期重发间隔。动作超时只触发提示和重发，不把整场锁死。
-  retry_interval_s: 0.25
+  retry_interval_s: 0.25  # 动作命令重发间隔（秒）。
 
   # MCU/USB-UART 掉线恢复参数。串口异常或心跳连续丢失时，Runtime
   # 会暂停当前周期、后台重连，收到安全 STOP_ACK 后从新顶部周期继续。
-  link_reconnect_interval_s: 1.0
-  heartbeat_interval_s: 0.5
-  link_dead_timeout_s: 3.0
+  link_reconnect_interval_s: 1.0  # 串口掉线后的重连间隔（秒）。
+  heartbeat_interval_s: 0.5  # 心跳发送间隔（秒）。
+  link_dead_timeout_s: 3.0  # 超过该时间无心跳则判定链路掉线（秒）。
 
   # 上位机 <-> STM32 动作等待提示阈值。达到阈值后继续重发并等待；
   # 真正掉线由 heartbeat/link_dead_timeout_s 判定。
-  pick_ack_timeout_s: 1.5
-  sort_ack_timeout_s: 1.5
-  recognition_ready_timeout_s: 18.0
-  retry_pick_ready_timeout_s: 4.0
-  sort_done_timeout_s: 16.0
+  pick_ack_timeout_s: 1.5  # PICK ACK 提示/重发周期（秒）。
+  sort_ack_timeout_s: 1.5  # SORT ACK 提示/重发周期（秒）。
+  recognition_ready_timeout_s: 18.0  # 等待识别台就绪的提示周期（秒）。
+  retry_pick_ready_timeout_s: 4.0  # 等待回 Disable 完成的提示周期（秒）。
+  sort_done_timeout_s: 16.0  # 等待 SORT DONE 的提示周期（秒）。
 
   # Side 正常仍按 vision.side.consensus 的 4/5 共识立即输出。
   # 4s 到时仍未共识时，使用整个识别阶段票数最多的完整结果继续分拣；
   # 这不是控制故障，因此不会仅因“识别不稳定”而 STOP。
-  side_recognition_timeout_s: 4.0
-
-  # 识别台连续确认空载时认为抓取途中掉落，走 RETRY_PICK 恢复，不终止比赛。
-  # 时间与帧数两个门槛必须同时满足，防止单帧漏检误触发。
-  side_empty_retry_hold_s: 0.6
-  side_empty_retry_min_frames: 5
+  side_recognition_timeout_s: 4.0  # 侧面识别共识超时后启用多数票回退的时间（秒）。
 
   # 相机无帧与“识别不稳定”分离。连续取不到新图像达到阈值才判定相机掉线，
   # 暂停当前周期并尝试恢复相机；恢复后重新同步 STM32，不把整场锁死为 ERROR。
   camera_watchdog:
-    top_no_frame_timeout_s: 2.0
-    side_no_frame_timeout_s: 2.0
+    top_no_frame_timeout_s: 2.0  # 顶部相机连续无帧阈值（秒）。
+    side_no_frame_timeout_s: 2.0  # 侧面相机连续无帧阈值（秒）。
 
   # 上电时 Jetson 主动 STOP，等待 STM32 全机构回到可启动安全状态。
   startup_sync:
-    enabled: true
-    timeout_s: 15.0
-    retry_interval_s: 0.25
-    poll_sleep_s: 0.010
+    enabled: true  # 是否启用上电安全同步。
+    timeout_s: 15.0  # 启动同步最大等待时间（秒）。
+    retry_interval_s: 0.25  # 动作命令重发间隔（秒）。
+    poll_sleep_s: 0.010  # 启动同步轮询间隔（秒）。
 
   # 比赛结束条件：完成至少12件以后，顶部连续1.5s确认场上0物体才自动STOP。
-  minimum_items_before_empty_finish: 12
-  empty_finish_hold_s: 1.5
+  minimum_items_before_empty_finish: 12  # 允许空场结束前至少完成的件数。
+  empty_finish_hold_s: 1.5  # 顶部持续空场达到该时间后结束（秒）。
   # 0表示不按固定件数强制结束；如果赛场明确只有12件，可改为12。
-  max_items: 0
+  max_items: 0  # 固定件数结束上限；0 表示不启用。
 
   # 正式比赛不允许把 unknown 直接分配到储物盒。
-  reject_unknown: true
+  reject_unknown: true  # 是否拒绝颜色或形状 unknown 的结果。
 
   warmup:
-    enabled: true
-    top_runs: 3
-    side_runs: 2
+    enabled: true  # 是否在启动阶段预热推理模型。
+    top_runs: 3  # 顶部模型预热次数。
+    side_runs: 2  # 侧面模型预热次数。
 
   scheduler:
-    idle_sleep_s: 0.010
-    wait_sleep_s: 0.002
-    vision_sleep_s: 0.001
+    idle_sleep_s: 0.010  # 空闲状态主循环间隔（秒）。
+    wait_sleep_s: 0.002  # 等待 ACK 状态主循环间隔（秒）。
+    vision_sleep_s: 0.001  # 视觉状态主循环间隔（秒）。
 
 ui:
-  enabled: true
-  fullscreen: true
-  max_visible_rows: 6
+  enabled: true  # 是否显示比赛运行界面。
+  fullscreen: true  # 是否全屏显示比赛界面。
+  max_visible_rows: 6  # 界面最多显示的历史记录行数。
 
 debug:
-  frames_dir: data/debug/last_debug/frames
-  dataset_dir: data/debug/last_debug/dataset
+  frames_dir: data/debug/last_debug/frames  # 调试帧输出目录。
+  dataset_dir: data/debug/last_debug/dataset  # 调试数据集输出目录。

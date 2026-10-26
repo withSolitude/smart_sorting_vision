@@ -14,10 +14,11 @@ class SideRecognizer:
     """
     侧面识别统一接口。
 
-    当前顺序：
-        1. Color
-        2. QR
-        3. Shape
+    正式流水线的顺序：
+        1. 完整侧面 ROI 先做 Shape / no_object 判断；
+        2. 确认有物体后再做 Color 和 QR；
+        3. 独立调用本类时，若没有传入预计算形状结果，仍兼容原来的
+           crop -> Color -> QR -> Shape 调用方式。
 
     QR 存在时会额外做一次“二维码区域抑制后的 Shape 推理”。
     目的不是删除真实物体轮廓，而是降低高对比二维码贴纸对分类模型的域偏移。
@@ -136,9 +137,13 @@ class SideRecognizer:
         self,
         crop: np.ndarray,
         crop_mask: np.ndarray,
+        shape_result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
 
         self._validate(crop, crop_mask)
+        # 记录调用方是否已经在完整 ROI 上完成形状分类。变量不能在下面
+        # 复用为字典，否则二维码抑制复核的分支条件会永远失效。
+        shape_was_precomputed = shape_result is not None
 
         # ========================================================
         # 1. Color
@@ -171,7 +176,14 @@ class SideRecognizer:
         # ========================================================
 
         if self.enable_shape:
-            shape_raw = self.shape_classifier.classify(crop)
+            # 正式流程先在完整侧面 ROI 上做一次形状/空背景分类。
+            # 传入预计算结果时不再对裁剪图重复推理，避免两次输入尺度不同
+            # 导致“先判断有物体、后又判断成另一种形状”。
+            shape_raw = (
+                shape_result
+                if shape_result is not None
+                else self.shape_classifier.classify(crop)
+            )
         else:
             shape_raw = {"shape": "disabled", "confidence": 0.0}
         shape_result = shape_raw
@@ -185,7 +197,11 @@ class SideRecognizer:
             "suppressed_confidence": None,
         }
 
-        if bool(qr_result.get("found", False)) and self.shape_classifier is not None:
+        if (
+            bool(qr_result.get("found", False))
+            and self.shape_classifier is not None
+            and not shape_was_precomputed
+        ):
             suppressed = self._qr_suppressed_shape_image(
                 crop,
                 crop_mask,

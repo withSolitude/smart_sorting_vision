@@ -75,6 +75,12 @@ class SmartSortingApp:
             f"enabled={bool(qr_cfg.get('enabled', True))} "
             f"content_check={bool(qr_cfg.get('check_content_consistency', False))}"
         )
+        shape_cfg = self.config["vision"]["side"]["recognition"]["shape"]
+        print(
+            "[CONFIG] side shape "
+            f"enabled={bool(shape_cfg.get('enabled', True))} "
+            f"no_object_labels={shape_cfg.get('no_object_labels', [])}"
+        )
         runtime_cfg = self.config["runtime"]
         print(
             "[CONFIG] competition "
@@ -351,8 +357,8 @@ class SmartSortingApp:
         side_consensus = side_vision_cfg["consensus"]
 
         side_recognition_cfg = side_vision_cfg["recognition"]
-        side_presence_cfg = side_vision_cfg["object_presence"]
-        side_extractor_cfg = side_presence_cfg["extractor"]
+        side_crop_cfg = side_vision_cfg["crop_extractor"]
+        side_extractor_cfg = side_crop_cfg["extractor"]
         side_color_cfg = dict(side_recognition_cfg["color"])
         side_qr_cfg = dict(side_recognition_cfg["qr"])
         enable_color = bool(side_color_cfg.pop("enabled"))
@@ -360,7 +366,15 @@ class SmartSortingApp:
         # QR 的内容校验不是解码器参数，而是多帧共识策略参数。
         # 从 QRDetector 配置中取出，避免把策略配置误传给底层解码器。
         qr_check_content = bool(side_qr_cfg.pop("check_content_consistency", False))
-        enable_shape = bool(side_recognition_cfg["shape"]["enabled"])
+        side_shape_cfg = dict(side_recognition_cfg["shape"])
+        enable_shape = bool(side_shape_cfg.pop("enabled"))
+        no_object_labels = tuple(
+            str(label)
+            for label in side_shape_cfg.pop(
+                "no_object_labels",
+                ("no_object", "empty", "background"),
+            )
+        )
 
         self.side_pipeline = SideSortPipeline(
             background_path=self.config["calibration"]["side_background"],
@@ -372,12 +386,11 @@ class SmartSortingApp:
             padding_ratio=side_vision_cfg["padding_ratio"],
             consensus_window=side_consensus["window"],
             consensus_required=side_consensus["required"],
-            presence_window=side_presence_cfg["window"],
-            presence_required=side_presence_cfg["required"],
             extractor_config=side_extractor_cfg,
             color_config=side_color_cfg,
             qr_config=side_qr_cfg,
             qr_check_content=qr_check_content,
+            no_object_labels=no_object_labels,
             enable_color=enable_color,
             enable_qr=enable_qr,
             enable_shape=enable_shape,
@@ -404,8 +417,6 @@ class SmartSortingApp:
             pick_ack_timeout_s=runtime_cfg["pick_ack_timeout_s"],
             recognition_ready_timeout_s=runtime_cfg["recognition_ready_timeout_s"],
             side_recognition_timeout_s=runtime_cfg["side_recognition_timeout_s"],
-            side_empty_retry_hold_s=runtime_cfg["side_empty_retry_hold_s"],
-            side_empty_retry_min_frames=runtime_cfg["side_empty_retry_min_frames"],
             retry_pick_ready_timeout_s=runtime_cfg["retry_pick_ready_timeout_s"],
             sort_ack_timeout_s=runtime_cfg["sort_ack_timeout_s"],
             sort_done_timeout_s=runtime_cfg["sort_done_timeout_s"],

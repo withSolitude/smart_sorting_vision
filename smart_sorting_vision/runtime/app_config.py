@@ -201,4 +201,20 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
         if not isinstance(qr_cfg[key], bool):
             raise ConfigError(f"vision.side.recognition.qr.{key} 必须是 true/false")
 
+    shape_cfg = side_recognition.get("shape")
+    if not isinstance(shape_cfg, dict):
+        raise ConfigError("缺少 vision.side.recognition.shape")
+    if "enabled" in shape_cfg and not isinstance(shape_cfg["enabled"], bool):
+        raise ConfigError("vision.side.recognition.shape.enabled 必须是 true/false")
+    labels = shape_cfg.get("no_object_labels", ["no_object", "empty", "background"])
+    if not isinstance(labels, (list, tuple)) or not any(str(label).strip() for label in labels):
+        raise ConfigError(
+            "vision.side.recognition.shape.no_object_labels 必须至少包含一个类别名"
+        )
+    shape_cfg["no_object_labels"] = [str(label).strip() for label in labels if str(label).strip()]
+
+    crop_cfg = cfg["vision"]["side"].get("crop_extractor")
+    if not isinstance(crop_cfg, dict) or not isinstance(crop_cfg.get("extractor"), dict):
+        raise ConfigError("缺少 vision.side.crop_extractor.extractor")
+
     return cfg

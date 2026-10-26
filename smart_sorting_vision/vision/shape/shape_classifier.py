@@ -10,15 +10,15 @@ from ultralytics import YOLO
 
 class ShapeClassifier:
     """
-    侧面形状分类器。
+    侧面形状/空背景分类器。
 
     职责只做一件事：
 
-        object_result.crop
+        SideCamera 完整 mechanical ROI
             ↓
         YOLO Classification
             ↓
-        shape + confidence
+        shape / no_object + confidence
 
     不负责：
         - 打开相机
@@ -26,16 +26,8 @@ class ShapeClassifier:
         - 背景差分
         - 物体裁剪
 
-    这样与颜色、二维码模块保持同一套上层接口：
-
-        SideCamera
-            ↓
-        SideObjectExtractor
-            ↓
-        object_result.crop
-            ├── ColorClassifier
-            ├── QRDetector
-            └── ShapeClassifier
+    正式流程中，完整机械 ROI 先进入本分类器；只有确认有物体后，
+    上层才会用裁剪图运行颜色和二维码模块。
     """
 
     def __init__(
@@ -46,6 +38,11 @@ class ShapeClassifier:
         device: str | int | None = None,
         confidence_threshold: float = 0.50,
         topk: int = 3,
+        no_object_labels: tuple[str, ...] | list[str] = (
+            "no_object",
+            "empty",
+            "background",
+        ),
     ) -> None:
 
         self.model_path = Path(
@@ -74,6 +71,14 @@ class ShapeClassifier:
                 topk
             ),
         )
+
+        # 这些类别来自训练集的空托盘/空背景样本。
+        # 形状分类器先用它们判断“是否有物体”，再决定是否运行颜色和二维码。
+        self.no_object_labels = {
+            str(label).strip().casefold()
+            for label in no_object_labels
+            if str(label).strip()
+        }
 
         self.model = YOLO(
             str(
@@ -251,6 +256,9 @@ class ShapeClassifier:
                 "found":
                     False,
 
+                "object_present":
+                    False,
+
                 "shape":
                     "unknown",
 
@@ -342,11 +350,22 @@ class ShapeClassifier:
             self.confidence_threshold
         )
 
+        is_no_object = (
+            shape.strip().casefold()
+            in self.no_object_labels
+        )
+        # found 表示模型给出了足够可信的 top1；object_present 才表示
+        # 该 top1 是真实物体。这样 no_object 可以被上层明确区分。
+        object_present = bool(found and not is_no_object)
+
         return {
             "found":
                 bool(
                     found
                 ),
+
+            "object_present":
+                object_present,
 
             "shape":
                 (
@@ -369,8 +388,10 @@ class ShapeClassifier:
 
             "reason":
                 (
-                    "ok"
-                    if found
+                    "no_object"
+                    if is_no_object and found
+                    else "ok"
+                    if object_present
                     else "low_confidence"
                 ),
         }

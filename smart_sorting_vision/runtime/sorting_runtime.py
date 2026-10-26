@@ -11,7 +11,7 @@
 - MCU_ERROR 仍作为真实下位机故障记录；动作等待超时只触发重发，
   心跳/串口掉线进入可恢复的 LINK_OFFLINE。
 - 侧面识别超时不再直接 ERROR：有有效候选时按整个识别时段的多数票结果继续分拣。
-- 侧面识别台连续确认无物体时，不 STOP；走 RETRY_PICK 恢复链后自动重新顶部夹取。
+- 侧面形状分类确认 no_object 时，不 STOP；走 RETRY_PICK 恢复链后自动重新顶部夹取。
 - PICK/SORT 命令周期重发，利用下位机幂等握手恢复 ACK/READY/DONE 丢包。
 - 顶部连续无物体且已达到最小件数后自动结束比赛。
 """
@@ -80,10 +80,6 @@ class SortingRuntime:
         pick_ack_timeout_s: float = 1.5,
         recognition_ready_timeout_s: float = 18.0,
         side_recognition_timeout_s: float = 4.0,
-        # 识别台连续空载恢复：只有 found=False 连续满足“时间+帧数”双门槛
-        # 才判定本次抓取途中掉落，避免偶发单帧漏检误触发重抓。
-        side_empty_retry_hold_s: float = 0.6,
-        side_empty_retry_min_frames: int = 5,
         retry_pick_ready_timeout_s: float = 4.0,
         sort_ack_timeout_s: float = 1.5,
         sort_done_timeout_s: float = 16.0,
@@ -144,8 +140,6 @@ class SortingRuntime:
         self.pick_ack_timeout_s = float(pick_ack_timeout_s)
         self.recognition_ready_timeout_s = float(recognition_ready_timeout_s)
         self.side_recognition_timeout_s = float(side_recognition_timeout_s)
-        self.side_empty_retry_hold_s = float(side_empty_retry_hold_s)
-        self.side_empty_retry_min_frames = max(1, int(side_empty_retry_min_frames))
         self.retry_pick_ready_timeout_s = float(retry_pick_ready_timeout_s)
         self.sort_ack_timeout_s = float(sort_ack_timeout_s)
         self.sort_done_timeout_s = float(sort_done_timeout_s)
@@ -163,7 +157,6 @@ class SortingRuntime:
             ("pick_ack_timeout_s", self.pick_ack_timeout_s),
             ("recognition_ready_timeout_s", self.recognition_ready_timeout_s),
             ("side_recognition_timeout_s", self.side_recognition_timeout_s),
-            ("side_empty_retry_hold_s", self.side_empty_retry_hold_s),
             ("retry_pick_ready_timeout_s", self.retry_pick_ready_timeout_s),
             ("sort_ack_timeout_s", self.sort_ack_timeout_s),
             ("sort_done_timeout_s", self.sort_done_timeout_s),
@@ -214,8 +207,6 @@ class SortingRuntime:
         # 本场比赛内“夹取后识别台为空”的自动恢复次数，仅用于日志，不计成功件数。
         self.drop_recovery_count = 0
         self._empty_scene_since: float | None = None
-        self._side_empty_since: float | None = None
-        self._side_empty_frames = 0
 
         # 侧面识别超时兜底统计。正常情况下仍由 SideRecognitionConsensus
         # 按 4/5（配置值）立即确认；只有超过 side_recognition_timeout_s
@@ -598,8 +589,6 @@ class SortingRuntime:
         self.current_sort_command = None
         self.current_retry_pick_command = None
         self.current_side_image = None
-        self._side_empty_since = None
-        self._side_empty_frames = 0
         self._reset_side_vote_stats()
         self._last_command_send_at = 0.0
 
@@ -711,8 +700,6 @@ class SortingRuntime:
         self.current_sort_command = None
         self.current_side_image = None
         self._safe_reset(self.side_pipeline)
-        self._side_empty_since = None
-        self._side_empty_frames = 0
 
         self.current_retry_pick_command = SortingFrame(mode=Mode.RETRY_PICK)
         self.drop_recovery_count += 1
@@ -1023,28 +1010,6 @@ class SortingRuntime:
         if self.state == RuntimeState.WAIT_SIDE_OBJECT:
             elapsed = time.monotonic() - self.state_entered_at
             if elapsed <= self.side_recognition_timeout_s:
-                return
-
-            # 如果最近已经出现“识别台空载”帧，先让原有掉落恢复逻辑完成判断，
-            # 不能拿更早的多数票结果去分拣一个可能已经掉落的空托盘。
-            if self._side_empty_since is not None:
-                empty_for = time.monotonic() - self._side_empty_since
-                enough_empty_frames = (
-                    self._side_empty_frames >= self.side_empty_retry_min_frames
-                )
-                # 相机若在空载后停止出帧，帧数门槛可能永远达不到。
-                # 持续一个完整侧面识别超时后也转入重抓，避免卡死。
-                empty_stalled = empty_for >= self.side_recognition_timeout_s
-                if (
-                    empty_for >= self.side_empty_retry_hold_s
-                    and (enough_empty_frames or empty_stalled)
-                ):
-                    self._request_retry_pick(
-                        reason=(
-                            f"side empty during recognition timeout: "
-                            f"{empty_for:.2f}s/{self._side_empty_frames}frames"
-                        )
-                    )
                 return
 
             key, stats = self._best_side_timeout_result()
@@ -1394,46 +1359,23 @@ class SortingRuntime:
 
         result = self.side_pipeline.process(image)
 
-        # SideSortPipeline 先做物体存在多帧确认。presence_pending 表示
-        # 当前帧看到了候选物体，但还没有达到存在确认票数：
-        # - 不能把它计为“空托盘”触发 RETRY_PICK；
-        # - 也不能用它清空之前已经积累的空托盘证据；
-        # - 更不能进入颜色/QR/Shape 投票。
+        # 侧面流水线现在先运行形状分类器。只有形状分类器确认不是
+        # no_object，才会继续颜色、二维码等属性识别。
         side_reason = str(getattr(result, "reason", ""))
-        if side_reason.startswith("presence_pending:"):
+        if side_reason.startswith("shape_pending:"):
             return
 
         # -----------------------------------------------------
-        # 夹取途中掉落恢复
+        # 无物体恢复
         # -----------------------------------------------------
-        # SideSortPipeline 的 found=False 表示固定识别托盘相对空背景没有
-        # 提取到物体。单帧漏检不能触发机械恢复，所以同时要求：
-        #   1) 连续空载达到 side_empty_retry_hold_s；
-        #   2) 连续空载达到 side_empty_retry_min_frames 帧。
-        # 任意一帧重新发现物体就立即清零。
+        # no_object 已由形状 YOLO 直接确认。此时不再进入颜色/QR/Shape
+        # 后续流程，也不等待背景差分的时间/帧数门槛，马上请求下位机
+        # Return -> Disable；收到 MCU_RETRY_PICK_READY 后重新开始顶部识别。
         if not bool(getattr(result, "found", True)):
-            now = time.monotonic()
-            if self._side_empty_since is None:
-                self._side_empty_since = now
-                self._side_empty_frames = 1
-            else:
-                self._side_empty_frames += 1
-
-            empty_for = now - self._side_empty_since
-            if (
-                empty_for >= self.side_empty_retry_hold_s
-                and self._side_empty_frames >= self.side_empty_retry_min_frames
-            ):
-                self._request_retry_pick(
-                    reason=(
-                        f"no_object {empty_for:.2f}s/"
-                        f"{self._side_empty_frames}frames, pipeline={getattr(result, 'reason', 'no_object')}"
-                    )
-                )
+            self._request_retry_pick(
+                reason=f"no_object from shape classifier: {side_reason or 'no_object'}"
+            )
             return
-
-        self._side_empty_since = None
-        self._side_empty_frames = 0
 
         # 无论当前是否达到 4/5 共识，只要本帧给出了完整有效结果，就累计到
         # “本次识别阶段”的超时兜底票池。这样超时后选择的是整个时段
@@ -1603,8 +1545,6 @@ class SortingRuntime:
                     return
                 # 机械已经把新物体放到识别台之后，才打开新的侧面采样窗口。
                 self._safe_reset(self.side_pipeline)
-                self._side_empty_since = None
-                self._side_empty_frames = 0
                 self._reset_side_vote_stats()
                 print("[Runtime] RECOGNITION READY")
                 self._enter_state(RuntimeState.WAIT_SIDE_OBJECT)
