@@ -6,6 +6,7 @@
 
 窗口操作：
     鼠标左键单击：添加一个多边形顶点；按住左键沿圆弧拖动：连续采点
+    S：保存当前画面和点集快照，不写入 YAML
     R：清空当前顶点，重新标注
     Backspace：删除最后一个顶点
     Enter：确认并写入 YAML（不加 --write 时只打印）
@@ -18,6 +19,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -116,6 +119,8 @@ def main() -> None:
     polygon_key = "safe_roi_polygon" if args.camera == "top" else "roi_polygon"
     rect_key = "safe_roi" if args.camera == "top" else "roi"
     initial = camera_cfg.get(polygon_key)
+    snapshot_dir = ROOT / cfg["debug"]["frames_dir"] / "roi_selection" / args.camera
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
     picker = None
     try:
         camera.open(require_calibration=False) if args.camera == "top" else camera.open()
@@ -124,7 +129,8 @@ def main() -> None:
         while True:
             frame = first if picker.frame is None else _read_frame(args.camera, camera)
             picker.frame = frame
-            cv2.imshow(picker.window, picker.draw(frame))
+            display = picker.draw(frame.copy())
+            cv2.imshow(picker.window, display)
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 print("[CANCEL] 未写入 ROI")
@@ -135,6 +141,32 @@ def main() -> None:
             if key in (8, 127):
                 if picker.points:
                     picker.points.pop()
+                continue
+            if key in (ord("s"), ord("S")):
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                image_path = snapshot_dir / f"{stamp}_roi_selection.jpg"
+                meta_path = snapshot_dir / f"{stamp}_roi_selection.json"
+                if not cv2.imwrite(str(image_path), display):
+                    raise RuntimeError(f"保存 ROI 调试图失败: {image_path}")
+                meta_path.write_text(
+                    json.dumps(
+                        {
+                            "camera": args.camera,
+                            "frame_shape": list(frame.shape),
+                            "points": [list(point) for point in picker.points],
+                            "current_rect": _bounding_rect(picker.points)
+                            if len(picker.points) >= 3
+                            else None,
+                            "config_rect": camera_cfg.get(rect_key),
+                            "config_polygon": camera_cfg.get(polygon_key),
+                            "controls": camera_cfg.get("controls", {}),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                print(f"[SNAPSHOT] {image_path}")
                 continue
             if key in (10, 13):
                 if len(picker.points) < 3:

@@ -23,7 +23,7 @@ def main() -> None:
     saved = len(list(output.glob("*.jpg")))
     try:
         camera.open()
-        print("棋盘格需完整出现；SPACE 保存，Q/ESC 退出。")
+        print("棋盘格需完整出现；S/SPACE 保存，Q/ESC 退出。")
         while True:
             frame = camera.read_full()
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -37,7 +37,7 @@ def main() -> None:
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 break
-            if key == 32 and found:
+            if key in (ord("s"), ord("S"), 32) and found:
                 path = output / f"calib_{datetime.now():%Y%m%d_%H%M%S_%f}.jpg"
                 cv2.imwrite(str(path), frame)
                 saved += 1

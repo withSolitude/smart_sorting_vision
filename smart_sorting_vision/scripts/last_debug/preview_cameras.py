@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -39,6 +40,10 @@ def main() -> None:
 
     output = ROOT / (args.output or cfg["debug"]["frames_dir"])
     output.mkdir(parents=True, exist_ok=True)
+    current_frames = {}
+    current_rois = {}
+    current_overlays = {}
+    current_rects = {}
     try:
         for name, camera in cameras.items():
             camera.open(require_calibration=False) if name == "top" else camera.open()
@@ -58,9 +63,21 @@ def main() -> None:
                 )
                 roi, rect = crop(full, cfg["camera"][name])
                 polygon_key = "safe_roi_polygon" if name == "top" else "roi_polygon"
+                overlay = draw_roi(
+                    full,
+                    rect,
+                    name,
+                    cfg["camera"][name].get(polygon_key),
+                )
+                # 缓存当前画面，按 S 时保存屏幕上正在观察的同一帧，
+                # 不再额外读一帧造成完整图和 ROI 对不上。
+                current_frames[name] = full.copy()
+                current_rois[name] = roi.copy()
+                current_overlays[name] = overlay
+                current_rects[name] = rect
                 cv2.imshow(
                     f"{name} full",
-                    draw_roi(full, rect, name, cfg["camera"][name].get(polygon_key)),
+                    overlay,
                 )
                 cv2.imshow(f"{name} roi", roi)
 
@@ -69,16 +86,40 @@ def main() -> None:
                 break
             if key in (ord("s"), ord("S")):
                 stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                for name, camera in cameras.items():
-                    full = (
-                        camera.read_undistorted()
-                        if name == "top" and top_undistorted
-                        else camera.read_full()
-                    )
-                    roi, _ = crop(full, cfg["camera"][name])
-                    cv2.imwrite(str(output / f"{name}_{stamp}_full.jpg"), full)
-                    cv2.imwrite(str(output / f"{name}_{stamp}_roi.jpg"), roi)
+                metadata = {
+                    "timestamp": stamp,
+                    "top_mode": "undistorted" if top_undistorted else "raw",
+                    "cameras": {},
+                }
+                for name in cameras:
+                    full_path = output / f"{name}_{stamp}_full.jpg"
+                    overlay_path = output / f"{name}_{stamp}_overlay.jpg"
+                    roi_path = output / f"{name}_{stamp}_roi.jpg"
+                    if not cv2.imwrite(str(full_path), current_frames[name]):
+                        raise RuntimeError(f"保存完整图失败: {full_path}")
+                    if not cv2.imwrite(str(overlay_path), current_overlays[name]):
+                        raise RuntimeError(f"保存 ROI 标注图失败: {overlay_path}")
+                    if not cv2.imwrite(str(roi_path), current_rois[name]):
+                        raise RuntimeError(f"保存 ROI 图失败: {roi_path}")
+                    camera_cfg = cfg["camera"][name]
+                    polygon_key = "safe_roi_polygon" if name == "top" else "roi_polygon"
+                    metadata["cameras"][name] = {
+                        "full": str(full_path),
+                        "overlay": str(overlay_path),
+                        "roi": str(roi_path),
+                        "frame_shape": list(current_frames[name].shape),
+                        "roi_shape": list(current_rois[name].shape),
+                        "roi_rect": list(current_rects[name]),
+                        "roi_polygon": camera_cfg.get(polygon_key),
+                        "controls": camera_cfg.get("controls", {}),
+                    }
+                metadata_path = output / f"cameras_{stamp}.json"
+                metadata_path.write_text(
+                    json.dumps(metadata, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
                 print(f"[SAVE] {output}/*_{stamp}_*.jpg")
+                print(f"[META] {metadata_path}")
     finally:
         for camera in cameras.values():
             camera.release()

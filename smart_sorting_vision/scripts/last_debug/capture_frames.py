@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import datetime
 
 import cv2
@@ -23,7 +24,7 @@ def main() -> None:
     camera = TopCamera() if args.camera == "top" else SideCamera()
     output = ROOT / (args.output or cfg["debug"]["dataset_dir"]) / args.camera
     output.mkdir(parents=True, exist_ok=True)
-    index = len(list(output.glob("*.jpg"))) // 2
+    index = len(list(output.glob("*_full.jpg")))
     try:
         camera.open(require_calibration=False) if args.camera == "top" else camera.open()
         top_undistorted = (
@@ -44,8 +45,41 @@ def main() -> None:
                 break
             if key in (ord("s"), ord("S")):
                 stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                cv2.imwrite(str(output / f"{index:06d}_{stamp}_full.jpg"), full)
-                cv2.imwrite(str(output / f"{index:06d}_{stamp}_roi.jpg"), roi)
+                prefix = output / f"{index:06d}_{stamp}"
+                full_path = prefix.with_name(prefix.name + "_full.jpg")
+                overlay_path = prefix.with_name(prefix.name + "_overlay.jpg")
+                roi_path = prefix.with_name(prefix.name + "_roi.jpg")
+                if not cv2.imwrite(str(full_path), full):
+                    raise RuntimeError(f"保存完整图失败: {full_path}")
+                if not cv2.imwrite(str(overlay_path), draw_roi(
+                    full,
+                    rect,
+                    args.camera,
+                    cfg["camera"][args.camera].get(polygon_key),
+                )):
+                    raise RuntimeError(f"保存 ROI 标注图失败: {overlay_path}")
+                if not cv2.imwrite(str(roi_path), roi):
+                    raise RuntimeError(f"保存 ROI 图失败: {roi_path}")
+                metadata_path = prefix.with_suffix(".json")
+                metadata_path.write_text(
+                    json.dumps(
+                        {
+                            "timestamp": stamp,
+                            "camera": args.camera,
+                            "full": str(full_path),
+                            "overlay": str(overlay_path),
+                            "roi": str(roi_path),
+                            "frame_shape": list(full.shape),
+                            "roi_shape": list(roi.shape),
+                            "roi_rect": list(rect),
+                            "roi_polygon": cfg["camera"][args.camera].get(polygon_key),
+                            "controls": cfg["camera"][args.camera].get("controls", {}),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
                 print(f"[SAVE] {output} index={index}")
                 index += 1
     finally:

@@ -46,6 +46,9 @@ $env:PYTHONPATH = (Get-Location).Path
 
 按窗口提示退出。脚本读取 YAML 的分辨率、帧率、FourCC 和 `controls`，画面稳定后再调：
 
+预览窗口按 `S` 会保存当前显示帧的完整图、ROI 标注图、ROI 裁剪图和同名 JSON。
+JSON 记录相机控制参数、ROI 矩形、多边形和图像尺寸，照片与参数可以对应起来。
+
 - 曝光：物体边缘不能过曝，黑色区域不能完全丢失；
 - 增益：优先保持较低，避免噪声被分割模型当成物体；
 - 白平衡：固定后再采集训练数据；
@@ -110,6 +113,8 @@ python -m scripts.last_debug.capture_side_background
 python -m scripts.last_debug.capture_top_intrinsics
 python -m scripts.last_debug.calibrate_top_intrinsics
 ```
+
+棋盘格采集窗口按 `S` 或空格保存检测到的棋盘格图片。
 
 按脚本提示移动棋盘，检测不到角点的图片不要保存。完成后确认输出文件为：
 
