@@ -105,6 +105,107 @@ def _bounding_rect(points: list[tuple[int, int]]) -> list[int]:
     return [min(xs), min(ys), max(xs) + 1, max(ys) + 1]
 
 
+def _update_roi_yaml(
+    config_path: Path,
+    camera_name: str,
+    polygon_key: str,
+    rect_key: str,
+    points: list[tuple[int, int]],
+    rect: list[int],
+) -> None:
+    """只替换相机 ROI 两行，保留 YAML 其它内容和全部注释。
+
+    PyYAML 的 safe_dump 会把整个文件重新序列化并丢失注释。这里按缩进定位
+    camera.<name> 下的两个字段，只改字段值，行尾的中文说明和其它格式原样保留。
+    """
+    with config_path.open("r", encoding="utf-8", newline="") as stream:
+        text = stream.read()
+    lines = text.splitlines(keepends=True)
+
+    camera_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.strip().split("#", 1)[0].strip() == "camera:"
+            and not line.startswith((" ", "\t"))
+        ),
+        None,
+    )
+    if camera_index is None:
+        raise RuntimeError(f"YAML 中找不到 camera 段: {config_path}")
+
+    camera_line = next(
+        (
+            index
+            for index in range(camera_index + 1, len(lines))
+            if lines[index].startswith(f"  {camera_name}:")
+        ),
+        None,
+    )
+    if camera_line is None:
+        raise RuntimeError(f"YAML 中找不到 camera.{camera_name} 段")
+
+    section_end = len(lines)
+    for index in range(camera_line + 1, len(lines)):
+        stripped = lines[index].strip()
+        if stripped and not stripped.startswith("#") and not lines[index].startswith((" ", "\t")):
+            section_end = index
+            break
+
+    def replace_field(field: str, value: str) -> None:
+        for index in range(camera_line + 1, section_end):
+            line = lines[index]
+            if not line.startswith(f"    {field}:"):
+                continue
+            newline = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+            body = line[: -len(newline)] if newline else line
+            comment = ""
+            if "#" in body:
+                body_without_comment, comment_text = body.split("#", 1)
+                spacing = body_without_comment[len(body_without_comment.rstrip()):]
+                body = body_without_comment
+                comment = spacing + "#" + comment_text
+            prefix = body.split(":", 1)[0] + ": "
+            lines[index] = f"{prefix}{value}{comment}{newline}"
+            # 兼容旧脚本已经写成的多行 YAML 数组，例如：
+            #     safe_roi_polygon:
+            #     - - 10
+            #       - 20
+            # 这些续行也必须删除，否则新的一行后面会留下非法/错误数据。
+            continuation_end = index + 1
+            while continuation_end < section_end:
+                next_line = lines[continuation_end]
+                stripped = next_line.strip()
+                if not stripped or stripped.startswith("#"):
+                    break
+                indent = len(next_line) - len(next_line.lstrip(" \t"))
+                if indent > 4 or (indent == 4 and stripped.startswith("-")):
+                    continuation_end += 1
+                    continue
+                break
+            if continuation_end > index + 1:
+                del lines[index + 1:continuation_end]
+            return
+        raise RuntimeError(f"YAML 中找不到 camera.{camera_name}.{field}")
+
+    # 使用紧凑的 YAML 流式数组格式，避免引入多行结构。
+    replace_field(polygon_key, "[" + ", ".join(f"[{x}, {y}]" for x, y in points) + "]")
+    replace_field(rect_key, "[" + ", ".join(str(value) for value in rect) + "]")
+
+    updated_text = "".join(lines)
+    try:
+        parsed = yaml.safe_load(updated_text) or {}
+    except yaml.YAMLError as exc:
+        raise RuntimeError(f"ROI 写入后 YAML 语法检查失败: {exc}") from exc
+    camera_values = parsed.get("camera", {}).get(camera_name, {})
+    expected_polygon = [list(point) for point in points]
+    if camera_values.get(polygon_key) != expected_polygon or camera_values.get(rect_key) != rect:
+        raise RuntimeError(f"ROI 写入后数值校验失败: camera.{camera_name}")
+
+    with config_path.open("w", encoding="utf-8", newline="") as stream:
+        stream.write(updated_text)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="实时标注手工多边形 ROI")
     parser.add_argument("--camera", choices=("top", "side"), required=True)
@@ -177,10 +278,14 @@ def main() -> None:
                 print(f"camera.{args.camera}.{rect_key} = {rect}")
                 if not args.write:
                     return
-                raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-                raw.setdefault("camera", {}).setdefault(args.camera, {})[polygon_key] = [list(p) for p in picker.points]
-                raw["camera"][args.camera][rect_key] = rect
-                config_path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
+                _update_roi_yaml(
+                    config_path,
+                    args.camera,
+                    polygon_key,
+                    rect_key,
+                    picker.points,
+                    rect,
+                )
                 print(f"[WRITE] {config_path}")
                 return
     finally:
