@@ -23,7 +23,12 @@ def main() -> None:
     camera = TopCamera()
     saved = len(list(output.glob("*.jpg")))
     try:
-        camera.open()
+        # 标定采集必须使用原始 read_full()。RawTopCamera 会跳过旧内参，
+        # 这里显式传入 require_calibration=False，并再次检查没有生成映射表。
+        camera.open(require_calibration=False)
+        if getattr(camera, "_map1", None) is not None or getattr(camera, "_map2", None) is not None:
+            raise RuntimeError("内参采集模式异常：检测到旧去畸变映射表")
+        print("[RAW] 当前采集使用原始 read_full()，没有经过旧内参去畸变。")
         print(
             f"圆点板 {pattern_size[0]}x{pattern_size[1]}，"
             f"圆心距={spacing_mm:g}mm；S/SPACE 保存，Q/ESC 退出。"
