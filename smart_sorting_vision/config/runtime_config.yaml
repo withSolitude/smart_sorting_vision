@@ -87,6 +87,14 @@ calibration:
     min_valid_images: 12  # 标定至少需要的有效图片数量。
     warning_error_px: 0.8  # 标定误差警告阈值（像素）。
     max_view_error_px: 2.0  # 单张标定图最大允许重投影误差（像素）。
+  yaw_servo:
+    # 顶部相机 Yaw 标定报告生成后，把报告中的三项拟合参数更新到这里。
+    # 验证脚本只读取此块，不再在代码中维护另一份旧标定值。
+    reference_axis_deg: 43.590200  # 参考舵机姿态下夹爪闭合轴在机械XY中的方向（度）。
+    reference_servo_deg: -0.622672  # 参考闭合轴对应的舵机命令（度）。
+    servo_deg_per_axis_deg: -1.10205336  # 夹爪物理轴每转1度对应舵机命令变化（度/度）。
+    safe_command_min_deg: -60.0  # 已通过机械行程测试的舵机最小命令（度）。
+    safe_command_max_deg: 135.0  # 已通过机械行程测试的舵机最大命令（度）。
   side_background_capture:
     settle_frames: 15  # 采集背景前等待的稳定帧数。
     frame_count: 30  # 用于生成背景的采样帧数。

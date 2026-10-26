@@ -2,6 +2,8 @@
 
 本文对应分支 `codex/robust-reconnect-cleanup`，覆盖相机参数、顶部内参、ROI、像素到机械 XY、侧面背景、数据集、模型训练、模型部署和整机验证。
 
+本手册所有可执行的调试入口都在 `scripts/last_debug` 下。数据集、训练和旧版标定实现由这些入口统一转发或复用；调试时只按本文的 `python -m scripts.last_debug...` 命令执行，不直接运行其他目录的脚本。
+
 所有长期参数只写入：
 
 ```text
@@ -51,7 +53,7 @@ export PYTHONPATH=.
 确认配置能被加载：
 
 ```bash
-python -c "from runtime.app_config import load_runtime_config; from pathlib import Path; load_runtime_config(Path('.').resolve(), Path('config/runtime_config.yaml')); print('config ok')"
+python -m scripts.last_debug.check_runtime_config
 ```
 
 确认相机设备：
@@ -278,7 +280,98 @@ data/calibration/top_camera/robot_mapping/pixel_to_robot.points.json
 
 修改相机位置、分辨率、去畸变参数、safe_roi 或 safe_roi_polygon 后，都必须重新标定这个文件。
 
-## 7. 侧面 ROI 和空背景
+## 7. Yaw 轴标定和验证
+
+Yaw 标定必须在 XY、顶部内参、ROI 和像素到机械 XY 都已经确认之后进行。下位机要处于停止分拣状态，夹爪抬高且不夹物；标定点使用夹爪两指上稳定、可重复的物理点。不要用物体边缘代替夹爪点，也不要在没有确认机械干涉范围前扩大角度。
+
+### 7.1 舵机安全行程
+
+先用低速、小步长确认舵机命令范围，所有命令都从 `last_debug` 入口运行：
+
+```bash
+python -m scripts.last_debug.yaw_servo_range --targets=-30,-15,0,15,30
+```
+
+如果任意角度有碰撞、拉线或机构卡滞，立即按脚本提示停止，并把 `targets` 缩小到安全范围。确认安全范围后再做拟合，不要直接使用舵机协议允许的最大角度。
+
+### 7.2 视觉 Yaw 关系标定
+
+```bash
+python -m scripts.last_debug.calibrate_yaw_axis --x <安全X_mm> --y <安全Y_mm> --step 5
+```
+
+脚本先把 XY 移到安全位置，再逐个下发 Yaw 舵机角度。每个角度在窗口中点击夹爪闭合轴上的两个点，按 Enter 保存一组样本。建议至少采集 `-60,-30,0,+30,+60` 五个点，实际范围以 7.1 的安全结果为准；角度顺序可以用 `A/D` 和步长键微调。按 `F` 拟合，按 `Q` 结束。
+
+输出在像素到机械标定目录：
+
+```text
+yaw_calibration_samples.csv
+yaw_calibration_report.json
+```
+
+先检查报告中的轴向 RMSE 和最大误差，再把报告中的三项拟合参数写入下位机 Yaw 参数。不要在报告未生成或误差明显偏大时修改正式参数。
+
+同时把同一组数值更新到 `config/runtime_config.yaml` 的
+`calibration.yaw_servo`：`reference_axis_deg`、`reference_servo_deg`、
+`servo_deg_per_axis_deg`。`safe_command_min_deg` 和
+`safe_command_max_deg` 只填写 7.1 已经通过机械行程测试的范围。后面的
+Yaw 验证入口只读取这个 YAML 块。
+
+### 7.3 独立验证和 TCP 中心验证
+
+独立验证使用已标定的关系，在多个角度重新点击两指闭合轴：
+
+```bash
+python -m scripts.last_debug.verify_yaw --x <安全X_mm> --y <安全Y_mm> --targets=-60,-30,0,30,60
+```
+
+如果 Yaw 旋转时夹爪中心在 XY 平面发生漂移，再运行 TCP 中心验证：
+
+```bash
+python -m scripts.last_debug.verify_yaw_tcp --x <安全X_mm> --y <安全Y_mm> --targets=-60,-30,0,30,60
+```
+
+TCP 验证通过后才启用对应的补偿开关。`--x`、`--y` 必须填当前 YAML 的机械工作区内点，不能照抄旧机构坐标。
+
+如果需要用细长实物继续校正“抓取闭合方向”和物体短轴的平行关系，可运行：
+
+```bash
+python -m scripts.last_debug.calibrate_yaw_alignment
+```
+
+只放一个有明确长短轴的物体；此步骤只移动 XY 和 Yaw，不下压、不闭合夹爪。按窗口提示用 `J/L` 调整偏置，确认实物方向一致后按 Enter 保存报告，再把报告值写回 YAML 的 `yaw_alignment_offset_deg`。
+
+## 8. 夹爪预开口标定
+
+预开口标定测的是“夹爪开合舵机角度（不是 Yaw 角度）”与“两指内侧间隙”的关系，和 Yaw 轴标定是两套独立数据。先断开自动抓取，只允许单步运动；用卡尺测量固定高度、固定姿态下的内侧间隙，至少记录 5 个安全点，覆盖小、中、大开口。最终夹取闭合角度不作为预开口点，所有点都必须能无碰撞到达。
+
+按 `舵机角度:实测间隙_mm` 逐点输入，示例：
+
+```bash
+python -m scripts.last_debug.calibrate_preopen_profile \
+  --point=-20:8 --point=-35:20 --point=-50:35 --point=-65:50 \
+  --margin-mm 5 --confirmed-safe \
+  --out-dir outputs/calibration/preopen_20261027
+```
+
+脚本只离线生成文件，不会自动写入配置或运动电机。输出目录中包含：
+
+```text
+dynamic_preopen.yaml
+claw_preopen_profile.h
+```
+
+人工检查点序、角度范围、间隙范围和总余量后，把 `dynamic_preopen.yaml` 中的块合并到 `config/runtime_config.yaml`，把 `claw_preopen_profile.h` 安装到下位机对应目录并重新编译烧录。运行离线检查：
+
+```bash
+python -m scripts.last_debug.test_preopen_profile
+python -m scripts.last_debug.preview_preopen --width 25
+python -m scripts.last_debug.preview_preopen --gap 30
+```
+
+最后在低速、空载和真实物体三种条件下逐个测试小、中、大开口。发现夹爪碰撞、开口不足或超出范围时，先停止自动流程，重新测量并生成新 profile；不要通过扩大软件上下限掩盖机械问题。
+
+## 9. 侧面 ROI 和空背景
 
 侧面 ROI：
 
@@ -302,7 +395,7 @@ python -m scripts.last_debug.capture_side_background
 data/calibration/side_camera/side_mechanical_roi_background.png
 ```
 
-## 8. 顶部实例分割数据集
+## 10. 顶部实例分割数据集
 
 顶部训练图片必须来自正式 `TopCamera.read()` 坐标系，不能使用 RAW 图片、旧 ROI 图片、手机图片或不同尺寸图片。
 
@@ -323,14 +416,24 @@ data/datasets/top_seg/raw/
 采集脚本：
 
 ```bash
-python -m scripts.dataset.top_seg.capture_top_dataset
+python -m scripts.last_debug.capture_top_dataset
 ```
 
 每个 layout 记录当前托盘中的所有物体。保存的图片再进行人工实例轮廓标注，标注每个物体的轮廓，不要把整张托盘标成一个目标。
 
 如果脚本使用的相机 profile 与 YAML 不一致，先确认脚本已经调用 `TopCamera.configure()`，否则不要用它采集正式数据。
 
-## 9. 顶部数据集整理和检查
+完成 CVAT/Ultralytics 分割标注并导出 ZIP 后，整理成训练版本：
+
+```bash
+python -m scripts.last_debug.prepare_top_dataset \
+  --cvat-zip data/datasets/top_seg/annotations/top_seg_v3.zip \
+  --version v3
+```
+
+这个步骤按 layout 划分 train/val/test，避免同一连续场景泄漏到不同集合；输出目录作为后续检查和训练的输入。
+
+## 11. 顶部数据集整理和检查
 
 建议划分：
 
@@ -345,7 +448,7 @@ test：10%～20%
 验证数据集：
 
 ```bash
-python -m scripts.dataset.top_seg.validate_top_seg_dataset
+python -m scripts.last_debug.validate_top_dataset --version v3
 ```
 
 检查：
@@ -357,12 +460,12 @@ python -m scripts.dataset.top_seg.validate_top_seg_dataset
 - train/val/test 没有重复图片；
 - `data.yaml` 路径正确。
 
-## 10. 顶部分割模型训练
+## 12. 顶部分割模型训练
 
 准备好 V3 数据后，从已验证的 V2 模型继续训练：
 
 ```bash
-python -m scripts.train.top_seg.train_top_seg_v3 \
+python -m scripts.last_debug.train_top_seg \
   --data data/datasets/top_seg/prepared/v3/data.yaml \
   --model weights/top_seg/v2/best.pt \
   --name v3_interim_aug \
@@ -377,7 +480,7 @@ python -m scripts.train.top_seg.train_top_seg_v3 \
 outputs/training/top_seg/v3/<run_name>/weights/best.pt
 ```
 
-## 11. 侧面形状/空背景数据集
+## 13. 侧面形状/空背景数据集
 
 侧面形状模型直接看完整侧面 ROI，不保存背景差分 crop。
 
@@ -403,17 +506,17 @@ data/datasets/side_cls/v1/
 采集：
 
 ```bash
-python -m scripts.dataset.side_cls.capture_side_shape_dataset
+python -m scripts.last_debug.capture_side_shape_dataset
 ```
 
 操作：选择 split，输入类别目录名，空托盘输入 `no_object`，按 `S` 保存完整 ROI。
 
 `no_object` 必须包含不同空托盘位置、不同光照和轻微曝光变化。物体类别要覆盖不同形状、位置、角度、颜色、二维码状态、反光和阴影。
 
-## 12. 侧面分类模型训练
+## 14. 侧面分类模型训练
 
 ```bash
-python -m scripts.train.side_cls.train_side_cls
+python -m scripts.last_debug.train_side_cls
 ```
 
 训练前确认 train、val、test 都有 `no_object`。训练后检查：
@@ -435,7 +538,7 @@ vision:
 
 必须与训练目录名一致。
 
-## 13. 颜色和二维码调试
+## 15. 颜色和二维码调试
 
 侧面形状分类确认有物体后才运行颜色和二维码。
 
@@ -463,7 +566,7 @@ enabled=true, check_content_consistency=true
 
 二维码至少测试无二维码、正面、旋转、斜视、反光和多帧内容变化。颜色至少测试白、黑、灰、红、橙、黄、绿、青、蓝、紫、粉以及阴影和反光。
 
-## 14. 模型路径和 TensorRT
+## 16. 模型路径和 TensorRT
 
 训练出的 `best.pt` 不能直接当作正式 TensorRT engine。正式 YAML 必须指向实际存在的 `.engine` 文件：
 
@@ -477,7 +580,17 @@ model:
 
 侧面 engine 必须来自包含 `no_object` 类别的完整 ROI 分类模型。TensorRT engine 建议在最终 Jetson 上生成，并确认输入尺寸、CUDA/TensorRT 版本和模型版本一致。
 
-## 15. 单模块验证
+在最终 Jetson 上导出侧面分类 engine：
+
+```bash
+python -m scripts.last_debug.export_tensorrt \
+  --model outputs/training/side_cls/v1/weights/best.pt \
+  --imgsz 224 --batch 1 --device 0
+```
+
+默认导出 FP16；只有明确需要时才加 `--fp32`。顶部模型如需导出，先确认其训练尺寸和模型类型，再使用同一入口并传入对应的 `.pt` 与 `--imgsz`，不要把侧面分类的 224 参数套到顶部实例分割模型。
+
+## 17. 单模块验证
 
 ### 顶部
 
@@ -521,7 +634,7 @@ ShapeClassifier → 真实形状
 → SORT_DONE
 ```
 
-## 16. 通信和掉线测试
+## 18. 通信和掉线测试
 
 正式运行前验证：
 
@@ -534,7 +647,7 @@ ShapeClassifier → 真实形状
 7. 链路恢复后重新 STOP 同步，再继续新周期；
 8. 视觉识别超时不会永久锁死为 ERROR。
 
-## 17. 最终验收顺序
+## 19. 最终验收顺序
 
 ```text
 相机设备
@@ -544,9 +657,16 @@ ShapeClassifier → 真实形状
 → 顶部去畸变
 → 顶部 safe_roi 和 polygon
 → 顶部 pixel_to_robot
+→ Yaw 舵机安全范围
+→ Yaw 轴拟合和独立验证
+→ Yaw TCP 中心验证（需要时）
+→ 夹爪预开口实测和离线 profile
+→ 预开口下位机烧录和低速验证
 → 侧面 roi 和 polygon
 → 侧面空背景
 → 顶部数据采集
+→ 顶部人工实例标注
+→ 顶部数据集整理和检查
 → 顶部分割模型训练
 → 侧面 no_object/形状数据采集
 → 侧面分类模型训练
