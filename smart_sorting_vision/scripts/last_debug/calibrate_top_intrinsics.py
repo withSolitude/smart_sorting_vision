@@ -88,6 +88,12 @@ def main() -> None:
             f"存在异常标定图片，单图重投影误差超过 {max_view_error:g}px：{details}；"
             "请移走这些图片后重新采集"
         )
+    warning = float(cal.get("warning_error_px", 0.8))
+    if rms > warning:
+        raise RuntimeError(
+            f"整体重投影 RMS={rms:.4f}px，超过允许值 {warning:g}px；"
+            "本次不保存内参，请增加标定姿态或移走异常图片后重试"
+        )
     alpha = float(cal.get("new_camera_alpha", 0.0))
     new_matrix, valid_roi = cv2.getOptimalNewCameraMatrix(
         matrix,
@@ -112,8 +118,7 @@ def main() -> None:
         calibration_flags=np.array([calibration_flags], dtype=np.int32),
         new_camera_alpha=np.array([alpha]),
     )
-    warning = float(cal.get("warning_error_px", 0.8))
-    status = "PASS" if rms <= warning else "WARN"
+    status = "PASS"
     print(
         f"[SAVE] {output}\n"
         f"pattern={pattern_type} size={pattern_size} spacing={spacing_mm:g}mm\n"
