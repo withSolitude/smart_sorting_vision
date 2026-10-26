@@ -190,6 +190,11 @@ class TopCamera:
         SAFE_ROI_Y1
     )
 
+    # 手工标注的托盘多边形，坐标仍使用去畸变完整图坐标。
+    # 多边形的外接矩形继续作为输出尺寸，外接矩形之外的区域置零，
+    # 这样不会破坏已有像素到机械坐标的标定尺寸。
+    SAFE_ROI_POLYGON: tuple[tuple[int, int], ...] | None = None
+
     # ============================================================
     # 相机启动后丢弃若干帧
     #
@@ -242,6 +247,15 @@ class TopCamera:
         cls.SAFE_ROI_WIDTH = cls.SAFE_ROI_X2 - cls.SAFE_ROI_X1
         cls.SAFE_ROI_HEIGHT = cls.SAFE_ROI_Y2 - cls.SAFE_ROI_Y1
 
+        polygon = config.get("safe_roi_polygon")
+        if polygon is None:
+            cls.SAFE_ROI_POLYGON = None
+        else:
+            cls.SAFE_ROI_POLYGON = cls._parse_roi_polygon(
+                polygon,
+                name="camera.top.safe_roi_polygon",
+            )
+
         controls = config.get("controls", {})
         mapping = {
             "auto_exposure": "AUTO_EXPOSURE",
@@ -266,6 +280,18 @@ class TopCamera:
             cls.CALIBRATION_FILE = Path(calibration_file)
 
         cls._verify_roi_definition()
+
+    @staticmethod
+    def _parse_roi_polygon(value: Any, *, name: str) -> tuple[tuple[int, int], ...]:
+        """校验 YAML 中的手工 ROI 多边形，并转换成整数像素点。"""
+        if not isinstance(value, (list, tuple)) or len(value) < 3:
+            raise ValueError(f"{name} 必须至少包含 3 个 [x, y] 点")
+        points: list[tuple[int, int]] = []
+        for point in value:
+            if not isinstance(point, (list, tuple)) or len(point) != 2:
+                raise ValueError(f"{name} 的每个点必须是 [x, y]")
+            points.append((int(round(float(point[0]))), int(round(float(point[1])))))
+        return tuple(points)
 
     # ============================================================
     # 初始化
@@ -860,6 +886,15 @@ class TopCamera:
                 "SAFE_ROI_HEIGHT 定义错误。"
             )
 
+        if cls.SAFE_ROI_POLYGON is not None:
+            points = np.asarray(cls.SAFE_ROI_POLYGON, dtype=np.int32)
+            if np.any(points[:, 0] < cls.SAFE_ROI_X1) or np.any(points[:, 0] >= cls.SAFE_ROI_X2):
+                raise RuntimeError("顶部相机 SAFE ROI 多边形必须位于 safe_roi 外接矩形内。")
+            if np.any(points[:, 1] < cls.SAFE_ROI_Y1) or np.any(points[:, 1] >= cls.SAFE_ROI_Y2):
+                raise RuntimeError("顶部相机 SAFE ROI 多边形必须位于 safe_roi 外接矩形内。")
+            if cv2.contourArea(points.reshape(-1, 1, 2)) <= 1.0:
+                raise RuntimeError("顶部相机 SAFE ROI 多边形面积过小。")
+
     # ============================================================
     # 验证视频流
     # ============================================================
@@ -1342,6 +1377,16 @@ class TopCamera:
             roi.copy()
         )
 
+        if self.SAFE_ROI_POLYGON is not None:
+            # 多边形坐标先换成 ROI 局部坐标，再把外接矩形外的像素置零。
+            # 输出尺寸不变，因此现有 Homography 和像素坐标无需重算尺寸。
+            polygon = np.asarray(self.SAFE_ROI_POLYGON, dtype=np.int32).copy()
+            polygon[:, 0] -= self.SAFE_ROI_X1
+            polygon[:, 1] -= self.SAFE_ROI_Y1
+            mask = np.zeros(roi.shape[:2], dtype=np.uint8)
+            cv2.fillPoly(mask, [polygon.reshape(-1, 1, 2)], 255)
+            roi[mask == 0] = 0
+
         expected_shape = (
             self.SAFE_ROI_HEIGHT,
             self.SAFE_ROI_WIDTH,
@@ -1618,6 +1663,8 @@ class TopCamera:
                     self.SAFE_ROI_X2,
                     self.SAFE_ROI_Y2,
                 ),
+
+            "safe_roi_polygon": self.SAFE_ROI_POLYGON,
 
             "safe_roi_width":
                 self.SAFE_ROI_WIDTH,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import time
-from typing import Optional
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -138,6 +138,10 @@ class SideCamera:
     ROI_WIDTH = ROI_X2 - ROI_X1
     ROI_HEIGHT = ROI_Y2 - ROI_Y1
 
+    # 手工标注的托盘多边形，使用完整侧面图坐标。
+    # 输出仍保持 ROI 外接矩形尺寸，便于复用原有背景和识别坐标系。
+    ROI_POLYGON: tuple[tuple[int, int], ...] | None = None
+
     # ==========================================================
     # 4. 曝光
     # ==========================================================
@@ -244,10 +248,28 @@ class SideCamera:
         cls.ROI_WIDTH = cls.ROI_X2 - cls.ROI_X1
         cls.ROI_HEIGHT = cls.ROI_Y2 - cls.ROI_Y1
 
+        polygon = config.get("roi_polygon")
+        if polygon is None:
+            cls.ROI_POLYGON = None
+        else:
+            cls.ROI_POLYGON = cls._parse_roi_polygon(
+                polygon,
+                name="camera.side.roi_polygon",
+            )
+
         if not (0 <= cls.ROI_X1 < cls.ROI_X2 <= cls.WIDTH):
             raise ValueError("camera.side.roi 的 X 范围超出图像")
         if not (0 <= cls.ROI_Y1 < cls.ROI_Y2 <= cls.HEIGHT):
             raise ValueError("camera.side.roi 的 Y 范围超出图像")
+
+        if cls.ROI_POLYGON is not None:
+            points = np.asarray(cls.ROI_POLYGON, dtype=np.int32)
+            if np.any(points[:, 0] < cls.ROI_X1) or np.any(points[:, 0] >= cls.ROI_X2):
+                raise ValueError("camera.side.roi_polygon 必须位于 roi 外接矩形内")
+            if np.any(points[:, 1] < cls.ROI_Y1) or np.any(points[:, 1] >= cls.ROI_Y2):
+                raise ValueError("camera.side.roi_polygon 必须位于 roi 外接矩形内")
+            if cv2.contourArea(points.reshape(-1, 1, 2)) <= 1.0:
+                raise ValueError("camera.side.roi_polygon 面积过小")
 
         controls = config.get("controls", {})
         mapping = {
@@ -268,6 +290,18 @@ class SideCamera:
         for key, attr in mapping.items():
             if key in controls:
                 setattr(cls, attr, int(controls[key]))
+
+    @staticmethod
+    def _parse_roi_polygon(value: Any, *, name: str) -> tuple[tuple[int, int], ...]:
+        """校验 YAML 中的手工 ROI 多边形，并转换成整数像素点。"""
+        if not isinstance(value, (list, tuple)) or len(value) < 3:
+            raise ValueError(f"{name} 必须至少包含 3 个 [x, y] 点")
+        points: list[tuple[int, int]] = []
+        for point in value:
+            if not isinstance(point, (list, tuple)) or len(point) != 2:
+                raise ValueError(f"{name} 的每个点必须是 [x, y]")
+            points.append((int(round(float(point[0]))), int(round(float(point[1])))))
+        return tuple(points)
 
     # ==========================================================
     # 12. 初始化
@@ -949,6 +983,15 @@ class SideCamera:
         # 返回独立连续内存。
         roi = roi.copy()
 
+        if self.ROI_POLYGON is not None:
+            # 多边形之外的托盘外区域不参与背景差分和分类。
+            polygon = np.asarray(self.ROI_POLYGON, dtype=np.int32).copy()
+            polygon[:, 0] -= self.ROI_X1
+            polygon[:, 1] -= self.ROI_Y1
+            mask = np.zeros(roi.shape[:2], dtype=np.uint8)
+            cv2.fillPoly(mask, [polygon.reshape(-1, 1, 2)], 255)
+            roi[mask == 0] = 0
+
         expected_shape = (
             self.ROI_HEIGHT,
             self.ROI_WIDTH,
@@ -1068,6 +1111,8 @@ class SideCamera:
 
             "roi_height":
                 self.ROI_HEIGHT,
+
+            "roi_polygon": self.ROI_POLYGON,
 
             "auto_exposure":
                 self.AUTO_EXPOSURE,

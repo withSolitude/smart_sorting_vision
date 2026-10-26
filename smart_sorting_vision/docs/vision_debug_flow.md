@@ -57,13 +57,27 @@ $env:PYTHONPATH = (Get-Location).Path
    python -m scripts.last_debug.preview_cameras --camera top
 ```
 
-ROI 应覆盖完整工作区，同时排除支架、边框和无关背景。需要重新框选时运行：
+ROI 应覆盖完整工作区，同时排除支架、边框和无关背景。托盘边缘有圆弧或不是标准矩形时，运行多边形标注工具：
 
 ```bash
    python -m scripts.last_debug.select_roi --camera top --write
 ```
 
-确认后保存，检查 YAML 中 `camera.top.safe_roi: [x1, y1, x2, y2]`。不要在顶部处理器里再写第二个 ROI。
+窗口会持续显示实际相机画面。鼠标左键逐点点击托盘边界，沿圆弧多点取样；按 `R` 清空重画，
+按 Backspace 删除最后一点，按 Enter 确认，按 `Q` 或 Esc 取消。顶部有内参时显示去畸变画面，
+没有内参时显示原始画面。确认后工具会同时写入：
+
+```yaml
+camera:
+  top:
+    safe_roi: [x1, y1, x2, y2]             # 多边形外接矩形，保持原输出尺寸
+    safe_roi_polygon: [[x1, y1], [x2, y2]]  # 实际手工边界，可包含任意数量的点
+```
+
+正式程序仍返回原来的矩形尺寸，只将多边形外部像素置零，所以像素到机械坐标的尺寸和接口不变。
+如果这一步是在内参文件生成前完成的，先把它当作临时边界；完成顶部内参标定后，重新运行同一命令，
+在去畸变画面上再点一遍并覆盖保存最终边界。
+不要在顶部处理器里再写第二个 ROI。
 
 ## 3. 侧面相机画面、曝光和 ROI
 
@@ -71,13 +85,14 @@ ROI 应覆盖完整工作区，同时排除支架、边框和无关背景。需�
 python -m scripts.last_debug.preview_cameras --camera side
 ```
 
-侧面 ROI 必须覆盖识别托盘和物体可能出现的区域，排除传送结构和固定背景。需要重新选择时：
+侧面 ROI 必须覆盖识别托盘和物体可能出现的区域，排除传送结构和固定背景。侧面也使用同样的实时多边形点选：
 
 ```bash
 python -m scripts.last_debug.select_roi --camera side --write
 ```
 
-确认 YAML 中的 `camera.side.roi` 后，先拍空托盘背景。背景文件由 `calibration.side_background`
+保存后 YAML 中会同时有 `camera.side.roi` 外接矩形和 `camera.side.roi_polygon` 点集。多边形外的像素会置零，
+因此修改侧面多边形后必须重新拍空托盘背景。背景文件由 `calibration.side_background`
 指定，采集前托盘上不能有物体、手或工具：
 
 ```bash

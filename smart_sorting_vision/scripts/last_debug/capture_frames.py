@@ -26,10 +26,18 @@ def main() -> None:
     index = len(list(output.glob("*.jpg"))) // 2
     try:
         camera.open(require_calibration=False) if args.camera == "top" else camera.open()
+        top_undistorted = (
+            args.camera == "top"
+            and getattr(camera, "_map1", None) is not None
+        )
         while True:
-            full = camera.read_full()
+            full = camera.read_undistorted() if top_undistorted else camera.read_full()
             roi, rect = crop(full, cfg["camera"][args.camera])
-            cv2.imshow(f"{args.camera} full", draw_roi(full, rect, args.camera))
+            polygon_key = "safe_roi_polygon" if args.camera == "top" else "roi_polygon"
+            cv2.imshow(
+                f"{args.camera} full",
+                draw_roi(full, rect, args.camera, cfg["camera"][args.camera].get(polygon_key)),
+            )
             cv2.imshow(f"{args.camera} roi", roi)
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):

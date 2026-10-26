@@ -42,11 +42,26 @@ def main() -> None:
     try:
         for name, camera in cameras.items():
             camera.open(require_calibration=False) if name == "top" else camera.open()
+        # 顶部正式 ROI 位于去畸变坐标系；有内参时预览也使用同一坐标系。
+        # 没有内参或显式 --raw 时，直接显示镜头原始画面。
+        top_undistorted = (
+            "top" in cameras
+            and not args.raw
+            and getattr(cameras.get("top"), "_map1", None) is not None
+        )
         while True:
             for name, camera in cameras.items():
-                full = camera.read_full()
+                full = (
+                    camera.read_undistorted()
+                    if name == "top" and top_undistorted
+                    else camera.read_full()
+                )
                 roi, rect = crop(full, cfg["camera"][name])
-                cv2.imshow(f"{name} full", draw_roi(full, rect, name))
+                polygon_key = "safe_roi_polygon" if name == "top" else "roi_polygon"
+                cv2.imshow(
+                    f"{name} full",
+                    draw_roi(full, rect, name, cfg["camera"][name].get(polygon_key)),
+                )
                 cv2.imshow(f"{name} roi", roi)
 
             key = cv2.waitKey(1) & 0xFF
@@ -55,7 +70,11 @@ def main() -> None:
             if key in (ord("s"), ord("S")):
                 stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                 for name, camera in cameras.items():
-                    full = camera.read_full()
+                    full = (
+                        camera.read_undistorted()
+                        if name == "top" and top_undistorted
+                        else camera.read_full()
+                    )
                     roi, _ = crop(full, cfg["camera"][name])
                     cv2.imwrite(str(output / f"{name}_{stamp}_full.jpg"), full)
                     cv2.imwrite(str(output / f"{name}_{stamp}_roi.jpg"), roi)

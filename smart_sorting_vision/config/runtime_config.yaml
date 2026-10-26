@@ -17,6 +17,7 @@ camera:
     reconnect_interval_s: 0.5
     fps_tolerance: 1.0
     safe_roi: [580, 120, 1330, 927]   # x1, y1, x2, y2，基于去畸变完整图
+    safe_roi_polygon: null              # 手工点选的托盘边界；填写完整图坐标点集后启用
     controls:
       auto_exposure: 1
       exposure_time_absolute: 100
@@ -42,6 +43,7 @@ camera:
     warmup_frames: 10
     reconnect_interval_s: 0.5
     roi: [0, 0, 837, 720]             # 最终实测侧面机械ROI
+    roi_polygon: null                  # 手工点选的托盘边界；填写完整图坐标点集后启用
     controls:
       auto_exposure: 1
       exposure_time_absolute: 185
