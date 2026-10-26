@@ -111,6 +111,10 @@ python -m scripts.last_debug.capture_side_background
 不能直接当作圆心距。圆点板在画面中覆盖不同位置、距离和角度，至少采集
 15 张清晰图片，避免所有图片都在中心位置：
 
+标定默认固定三阶径向畸变系数 `fix_k3: true`，并使用
+`new_camera_alpha: 0.0` 去掉无效黑边。程序会拒绝分辨率不一致的图片，
+并检查每张图片的重投影误差；单张图片误差过大时先移走该图片，不要直接保存内参。
+
 ```bash
 python -m scripts.last_debug.capture_top_intrinsics
 python -m scripts.last_debug.calibrate_top_intrinsics

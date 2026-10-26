@@ -73,8 +73,11 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
         "pattern_type",
         "pattern_size",
         "circle_spacing_mm",
+        "fix_k3",
+        "new_camera_alpha",
         "min_valid_images",
         "warning_error_px",
+        "max_view_error_px",
     ):
         if key not in top_calibration:
             raise ConfigError(f"缺少 calibration.top_camera.{key}")
@@ -98,6 +101,28 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
     if float(top_calibration["circle_spacing_mm"]) <= 0:
         raise ConfigError(
             "calibration.top_camera.circle_spacing_mm 必须大于0"
+        )
+    if not isinstance(top_calibration["fix_k3"], bool):
+        raise ConfigError("calibration.top_camera.fix_k3 必须是 true/false")
+    try:
+        alpha = float(top_calibration["new_camera_alpha"])
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(
+            "calibration.top_camera.new_camera_alpha 必须是数值"
+        ) from exc
+    if not 0.0 <= alpha <= 1.0:
+        raise ConfigError(
+            "calibration.top_camera.new_camera_alpha 必须在 [0, 1] 范围内"
+        )
+    try:
+        max_view_error = float(top_calibration["max_view_error_px"])
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(
+            "calibration.top_camera.max_view_error_px 必须是数值"
+        ) from exc
+    if max_view_error <= 0:
+        raise ConfigError(
+            "calibration.top_camera.max_view_error_px 必须大于0"
         )
     background_capture = cfg["calibration"].get("side_background_capture")
     if not isinstance(background_capture, dict):
