@@ -106,7 +106,9 @@ python -m scripts.last_debug.capture_side_background
 
 ## 4. 顶部相机内参标定
 
-使用 6×9 棋盘格，格距必须按实际打印件实测后填写 `calibration.top_camera.square_size_mm`，不能直接照抄示例值。棋盘在画面中覆盖不同位置、距离和角度，至少采集
+当前使用 HC7 系列 7×7 对称圆点标定板。`pattern_size` 填圆点数量，
+`circle_spacing_mm` 填相邻圆心的实际距离；型号中的 3.5 通常表示圆点尺寸，
+不能直接当作圆心距。圆点板在画面中覆盖不同位置、距离和角度，至少采集
 15 张清晰图片，避免所有图片都在中心位置：
 
 ```bash
@@ -116,7 +118,7 @@ python -m scripts.last_debug.calibrate_top_intrinsics
 
 棋盘格采集窗口按 `S` 或空格保存检测到的棋盘格图片。
 
-按脚本提示移动棋盘，检测不到角点的图片不要保存。完成后确认输出文件为：
+按脚本提示移动圆点板，画面中必须完整看到 7×7 圆点阵列；检测不到完整圆点阵列的图片不要保存。完成后确认输出文件为：
 
 `data/calibration/top_camera/top_camera_intrinsics.npz`
 

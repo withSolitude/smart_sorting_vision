@@ -79,8 +79,9 @@ calibration:
   side_background: data/calibration/side_camera/side_mechanical_roi_background.png  # 侧面颜色/二维码裁剪辅助使用的空背景；不再用于判断是否有物体。
   top_camera:
     image_dir: data/calibration/top_camera/images  # 标定图片目录。
-    chessboard_size: [6, 9]  # 棋盘格内角点数量 [列, 行]。
-    square_size_mm: 5.2  # 必须按实际棋盘格测量值修改
+    pattern_type: symmetric_circles  # 标定板类型：当前使用7x7对称黑色圆点阵列。
+    pattern_size: [7, 7]  # 圆点数量 [列, 行]；HC7标定板对应7x7。
+    circle_spacing_mm: 7.0  # 相邻圆心的实际距离（mm）；请按厂家规格或实测值确认。
     min_valid_images: 12  # 标定至少需要的有效图片数量。
     warning_error_px: 0.8  # 标定误差警告阈值（像素）。
   side_background_capture:

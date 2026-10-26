@@ -68,9 +68,37 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
     top_calibration = cfg["calibration"].get("top_camera")
     if not isinstance(top_calibration, dict):
         raise ConfigError("缺少 calibration.top_camera")
-    for key in ("image_dir", "chessboard_size", "square_size_mm", "min_valid_images", "warning_error_px"):
+    for key in (
+        "image_dir",
+        "pattern_type",
+        "pattern_size",
+        "circle_spacing_mm",
+        "min_valid_images",
+        "warning_error_px",
+    ):
         if key not in top_calibration:
             raise ConfigError(f"缺少 calibration.top_camera.{key}")
+    if str(top_calibration["pattern_type"]).lower() not in {
+        "symmetric_circles",
+        "circles",
+        "circle_grid",
+    }:
+        raise ConfigError(
+            "calibration.top_camera.pattern_type 当前只支持 symmetric_circles"
+        )
+    pattern_size = top_calibration["pattern_size"]
+    if (
+        not isinstance(pattern_size, (list, tuple))
+        or len(pattern_size) != 2
+        or any(int(value) < 3 for value in pattern_size)
+    ):
+        raise ConfigError(
+            "calibration.top_camera.pattern_size 必须是至少为3x3的 [列, 行]"
+        )
+    if float(top_calibration["circle_spacing_mm"]) <= 0:
+        raise ConfigError(
+            "calibration.top_camera.circle_spacing_mm 必须大于0"
+        )
     background_capture = cfg["calibration"].get("side_background_capture")
     if not isinstance(background_capture, dict):
         raise ConfigError("缺少 calibration.side_background_capture")
