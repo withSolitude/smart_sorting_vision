@@ -184,4 +184,21 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
         if window <= 0 or required <= 0 or required > window:
             raise ConfigError(f"{name} 无效: required={required}, window={window}")
 
+    # 二维码只有两层开关：是否运行识别，以及是否把解码内容纳入多帧一致性。
+    # 内容开关关闭时，正式流程只使用 qr_present，不会因为不同文本阻塞 READY。
+    side_recognition = cfg["vision"]["side"].get("recognition")
+    if not isinstance(side_recognition, dict):
+        raise ConfigError("缺少 vision.side.recognition")
+    qr_cfg = side_recognition.get("qr")
+    if not isinstance(qr_cfg, dict):
+        raise ConfigError("缺少 vision.side.recognition.qr")
+    for key, default in (
+        ("enabled", True),
+        ("check_content_consistency", False),
+    ):
+        if key not in qr_cfg:
+            qr_cfg[key] = default
+        if not isinstance(qr_cfg[key], bool):
+            raise ConfigError(f"vision.side.recognition.qr.{key} 必须是 true/false")
+
     return cfg

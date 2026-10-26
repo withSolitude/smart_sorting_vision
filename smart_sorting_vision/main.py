@@ -69,6 +69,12 @@ class SmartSortingApp:
             f"top={top_consensus['required']}/{top_consensus['window']} "
             f"side={side_consensus['required']}/{side_consensus['window']}"
         )
+        qr_cfg = self.config["vision"]["side"]["recognition"]["qr"]
+        print(
+            "[CONFIG] qr "
+            f"enabled={bool(qr_cfg.get('enabled', True))} "
+            f"content_check={bool(qr_cfg.get('check_content_consistency', False))}"
+        )
         runtime_cfg = self.config["runtime"]
         print(
             "[CONFIG] competition "
@@ -351,6 +357,9 @@ class SmartSortingApp:
         side_qr_cfg = dict(side_recognition_cfg["qr"])
         enable_color = bool(side_color_cfg.pop("enabled"))
         enable_qr = bool(side_qr_cfg.pop("enabled"))
+        # QR 的内容校验不是解码器参数，而是多帧共识策略参数。
+        # 从 QRDetector 配置中取出，避免把策略配置误传给底层解码器。
+        qr_check_content = bool(side_qr_cfg.pop("check_content_consistency", False))
         enable_shape = bool(side_recognition_cfg["shape"]["enabled"])
 
         self.side_pipeline = SideSortPipeline(
@@ -368,6 +377,7 @@ class SmartSortingApp:
             extractor_config=side_extractor_cfg,
             color_config=side_color_cfg,
             qr_config=side_qr_cfg,
+            qr_check_content=qr_check_content,
             enable_color=enable_color,
             enable_qr=enable_qr,
             enable_shape=enable_shape,

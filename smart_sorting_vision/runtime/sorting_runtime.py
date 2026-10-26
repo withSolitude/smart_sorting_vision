@@ -525,7 +525,19 @@ class SortingRuntime:
             return None
         if shape.lower() in ("", "unknown", "none"):
             return None
-        return (color, bool(getattr(result, "qr_present", False)), shape)
+        qr_present = bool(getattr(result, "qr_present", False))
+        key = [color, qr_present, shape]
+
+        # SideSortPipeline 仅在 YAML 开启二维码内容共识时提供 qr_content。
+        # 这样超时多数票不会绕过“内容必须一致”的设置。
+        qr_content = getattr(result, "qr_content", None)
+        if qr_present and qr_content is not None:
+            qr_content = str(qr_content)
+            if not qr_content:
+                return None
+            key.append(qr_content)
+
+        return tuple(key)
 
     def _record_side_vote(self, result) -> None:
         """累计整个 WAIT_SIDE_OBJECT 阶段的完整结果票数。"""

@@ -319,6 +319,9 @@ vision:
         min_pixels: 150
       qr:
         enabled: true
+        # false：多帧确认时只判断“有没有二维码”；
+        # true：多帧确认时还要求解码出来的二维码内容一致。
+        check_content_consistency: false
         try_rotate: true
         try_downscale: false
         try_invert: false

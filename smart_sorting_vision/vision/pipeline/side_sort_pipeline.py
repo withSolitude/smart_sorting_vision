@@ -36,6 +36,7 @@ class SideSortPipelineResult:
         这里只输出稳定的识别属性：
             color
             qr_present
+            qr_content（仅启用内容共识时向上层暴露）
             shape
 
         暂时不在这里硬编码 Box_ID 映射。
@@ -52,6 +53,7 @@ class SideSortPipelineResult:
 
     color: str | None
     qr_present: bool | None
+    qr_content: str | None
     shape: str | None
 
     color_confidence: float
@@ -115,6 +117,7 @@ class SideSortPipeline:
         extractor_config: dict[str, Any] | None = None,
         color_config: dict[str, Any] | None = None,
         qr_config: dict[str, Any] | None = None,
+        qr_check_content: bool = False,
         enable_color: bool = True,
         enable_qr: bool = True,
         enable_shape: bool = True,
@@ -126,11 +129,13 @@ class SideSortPipeline:
         self.enable_color = bool(enable_color)
         self.enable_qr = bool(enable_qr)
         self.enable_shape = bool(enable_shape)
+        self.qr_check_content = bool(qr_check_content)
 
         print(
             "[SIDE CONFIG] "
             f"color={self.enable_color} "
             f"qr={self.enable_qr} "
+            f"qr_content_check={self.qr_check_content} "
             f"shape={self.enable_shape}"
         )
 
@@ -217,6 +222,7 @@ class SideSortPipeline:
                 enable_color=self.enable_color,
                 enable_qr=self.enable_qr,
                 enable_shape=self.enable_shape,
+                qr_check_content=self.qr_check_content,
             )
         )
 
@@ -226,6 +232,7 @@ class SideSortPipeline:
                     consensus_window,
                 required_hits=
                     consensus_required,
+                check_qr_content=self.qr_check_content,
             )
         )
 
@@ -287,6 +294,7 @@ class SideSortPipeline:
                 required_hits,
             color=None,
             qr_present=None,
+            qr_content=None,
             shape=None,
             color_confidence=0.0,
             shape_confidence=0.0,
@@ -433,6 +441,12 @@ class SideSortPipeline:
                         False,
                     )
                 ),
+                qr_content=(
+                    str(final_result.get("qr_content") or "")
+                    if self.qr_check_content
+                    and bool(final_result.get("qr_present", False))
+                    else None
+                ),
                 shape=str(
                     final_result.get(
                         "shape",
@@ -485,6 +499,11 @@ class SideSortPipeline:
                     "qr_present",
                     False,
                 )
+            ),
+            qr_content=(
+                str(raw_result.get("qr_content") or "")
+                if self.qr_check_content and bool(raw_result.get("qr_present", False))
+                else None
             ),
             shape=str(
                 raw_result.get(

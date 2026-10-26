@@ -172,6 +172,16 @@ python scripts/debug/test_side_all.py
 
 颜色、二维码和形状的阈值只写在 YAML 或其明确引用的模型配置中；不要在多个分类脚本中复制同一阈值。
 
+### 二维码识别模式
+
+`config/runtime_config.yaml` 的 `vision.side.recognition.qr` 有两个独立开关：
+
+- `enabled: false`：完全关闭二维码识别；
+- `enabled: true` 且 `check_content_consistency: false`：只确认有无二维码；
+- `enabled: true` 且 `check_content_consistency: true`：除确认存在外，还要求共识窗口内的解码内容一致。
+
+内容校验只影响多帧 READY 共识，不改变二维码检测器的定位和解码流程；比较时会去掉解码文本首尾空白。
+
 ## 8. 上下位机通信联调
 
 先不接物体，按以下顺序测试：

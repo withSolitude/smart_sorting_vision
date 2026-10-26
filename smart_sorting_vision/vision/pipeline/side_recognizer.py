@@ -33,6 +33,7 @@ class SideRecognizer:
         enable_color: bool = True,
         enable_qr: bool = True,
         enable_shape: bool = True,
+        qr_check_content: bool = False,
     ) -> None:
 
         self.color_classifier = color_classifier
@@ -41,6 +42,11 @@ class SideRecognizer:
         self.enable_color = bool(enable_color)
         self.enable_qr = bool(enable_qr)
         self.enable_shape = bool(enable_shape)
+        self.qr_check_content = bool(qr_check_content)
+
+    def _normalize_qr_content(self, value: Any) -> str:
+        """去掉解码结果首尾空白，供多帧一致性比较。"""
+        return "" if value is None else str(value).strip()
 
     @staticmethod
     def _validate(
@@ -155,6 +161,11 @@ class SideRecognizer:
         else:
             qr_result = {"found": False, "disabled": True}
 
+        qr_content = None
+        if bool(qr_result.get("found", False)):
+            normalized = self._normalize_qr_content(qr_result.get("text", ""))
+            qr_content = normalized or None
+
         # ========================================================
         # 3. Shape
         # ========================================================
@@ -174,7 +185,7 @@ class SideRecognizer:
             "suppressed_confidence": None,
         }
 
-        if bool(qr_result.get("found", False)):
+        if bool(qr_result.get("found", False)) and self.shape_classifier is not None:
             suppressed = self._qr_suppressed_shape_image(
                 crop,
                 crop_mask,
@@ -204,6 +215,9 @@ class SideRecognizer:
             "color": color_result.get("color", "unknown"),
             "color_confidence": float(color_result.get("confidence", 0.0)),
             "qr_present": bool(qr_result.get("found", False)),
+            # 即使关闭内容共识，也保留解码内容供调试显示；
+            # 是否参与 READY 判断由 SideRecognitionConsensus 决定。
+            "qr_content": qr_content,
             "shape": shape_result.get("shape", "unknown"),
             "shape_confidence": float(shape_result.get("confidence", 0.0)),
             "details": {
