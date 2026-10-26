@@ -5,7 +5,7 @@
     python -m scripts.last_debug.select_roi --camera side --write
 
 窗口操作：
-    鼠标左键：依次添加多边形顶点
+    鼠标左键单击：添加一个多边形顶点；按住左键沿圆弧拖动：连续采点
     R：清空当前顶点，重新标注
     Backspace：删除最后一个顶点
     Enter：确认并写入 YAML（不加 --write 时只打印）
@@ -39,15 +39,26 @@ class PolygonPicker:
         ]
         self.scale = 1.0
         self.frame = None
+        self.dragging = False
         cv2.namedWindow(window, cv2.WINDOW_NORMAL)
         cv2.setMouseCallback(window, self._on_mouse)
 
     def _on_mouse(self, event: int, x: int, y: int, _flags: int, _param: Any) -> None:
-        if event != cv2.EVENT_LBUTTONDOWN:
-            return
+        if event == cv2.EVENT_LBUTTONDOWN:
+            self.dragging = True
+            self._append_point(x, y)
+        elif event == cv2.EVENT_MOUSEMOVE and self.dragging:
+            self._append_point(x, y)
+        elif event == cv2.EVENT_LBUTTONUP:
+            self.dragging = False
+
+    def _append_point(self, x: int, y: int) -> None:
         # 显示窗口可能被缩放，点击坐标需要换回完整图坐标。
         px = max(0, min(self.width - 1, int(round(x / self.scale))))
         py = max(0, min(self.height - 1, int(round(y / self.scale))))
+        # 拖动时只保留相隔至少3像素的点，避免鼠标事件产生大量重复点。
+        if self.points and (px - self.points[-1][0]) ** 2 + (py - self.points[-1][1]) ** 2 < 9:
+            return
         self.points.append((px, py))
 
     def draw(self, frame):
@@ -69,7 +80,7 @@ class PolygonPicker:
             cv2.polylines(display, [np.array(points, dtype="int32")], True, (0, 255, 0), 3)
         cv2.putText(
             display,
-            f"points={len(self.points)} | L-click add | Backspace undo | R clear | Enter save | Q cancel",
+            f"points={len(self.points)} | click/drag draw | Backspace undo | R clear | Enter save | Q cancel",
             (20, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA,
         )
         return display
