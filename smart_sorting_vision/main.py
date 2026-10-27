@@ -16,6 +16,7 @@ from runtime.app_config import load_runtime_config
 from runtime.sorting_runtime import SortingRuntime
 from vision.cameras.side_camera import SideCamera
 from vision.cameras.top_camera import TopCamera
+from vision.models.top_segmenter import TopSegmenter
 from vision.pipeline.side_sort_pipeline import SideSortPipeline
 from vision.pipeline.top_pick_pipeline import TopPickPipeline
 from vision.calibration.yaw_tcp_compensation import YawTcpCompensator
@@ -49,6 +50,12 @@ class SmartSortingApp:
             "pixel_to_robot": self.config["calibration"]["pixel_to_robot"],
             "side background": self.config["calibration"]["side_background"],
         }
+        surface_model = self.config["model"].get(
+            "top_surface",
+            {},
+        )
+        if bool(surface_model.get("enabled", False)):
+            required["top surface model"] = surface_model["path"]
         for name, file in required.items():
             if not Path(file).exists():
                 raise FileNotFoundError(f"缺少{name}: {file}")
@@ -68,6 +75,14 @@ class SmartSortingApp:
             "[CONFIG] consensus "
             f"top={top_consensus['required']}/{top_consensus['window']} "
             f"side={side_consensus['required']}/{side_consensus['window']}"
+        )
+        surface_model = self.config["model"].get(
+            "top_surface",
+            {},
+        )
+        print(
+            "[CONFIG] top surface model "
+            f"enabled={bool(surface_model.get('enabled', False))}"
         )
         qr_cfg = self.config["vision"]["side"]["recognition"]["qr"]
         print(
@@ -119,6 +134,16 @@ class SmartSortingApp:
             top_frame,
             runs=top_runs,
         )
+        if self.top_pipeline.surface_segmenter is not None:
+            surface_stats = self.top_pipeline.surface_segmenter.warmup(
+                top_frame,
+                runs=top_runs,
+            )
+        else:
+            surface_stats = {
+                "first_ms": 0.0,
+                "steady_avg_ms": 0.0,
+            }
         self.top_pipeline.reset()
 
         if self.side_pipeline.shape_classifier is not None:
@@ -136,6 +161,8 @@ class SmartSortingApp:
             "[WARMUP] READY "
             f"top_first={top_stats['first_ms']:.1f}ms "
             f"top_steady={top_stats['steady_avg_ms']:.1f}ms "
+            f"surface_first={surface_stats['first_ms']:.1f}ms "
+            f"surface_steady={surface_stats['steady_avg_ms']:.1f}ms "
             f"side_first={side_stats['first_ms']:.1f}ms "
             f"side_steady={side_stats['steady_avg_ms']:.1f}ms"
         )
@@ -188,12 +215,29 @@ class SmartSortingApp:
         print("[OK] Side Camera")
 
         top_model_cfg = self.config["model"]["top"]
+        top_surface_model_cfg = self.config["model"].get(
+            "top_surface",
+            {},
+        )
         top_vision_cfg = self.config["vision"]["top"]
         top_consensus = top_vision_cfg["consensus"]
         top_orientation = top_vision_cfg["grasp_orientation"]
         top_preopen = top_orientation["dynamic_preopen"]
         top_gripper_collision = top_vision_cfg["gripper_collision"]
         top_grasp_search = top_gripper_collision["grasp_search"]
+        top_surface_matching = top_vision_cfg.get(
+            "surface_matching",
+            {},
+        )
+
+        top_surface_segmenter = None
+        if bool(top_surface_model_cfg.get("enabled", False)):
+            top_surface_segmenter = TopSegmenter(
+                model_path=top_surface_model_cfg["path"],
+                conf=top_surface_model_cfg["conf"],
+                imgsz=top_surface_model_cfg["imgsz"],
+                device=top_surface_model_cfg["device"],
+            )
         top_tcp_comp = top_vision_cfg["yaw_tcp_compensation"]
         branch1_axis_correction_deg = float(top_tcp_comp["branch1_axis_correction_deg"])
         branch1_closing_bias_mm = float(top_tcp_comp["branch1_closing_bias_mm"])
@@ -280,6 +324,11 @@ class SmartSortingApp:
             conf=top_model_cfg["conf"],
             imgsz=top_model_cfg["imgsz"],
             device=top_model_cfg["device"],
+            surface_segmenter=top_surface_segmenter,
+            surface_match_class_name=top_surface_matching["match_class_name"],
+            surface_match_center_max_px=top_surface_matching["match_center_max_px"],
+            surface_min_area_ratio=top_surface_matching["min_area_ratio"],
+            surface_required=top_surface_matching["required"],
             obstacle_margin=top_vision_cfg["obstacle_margin_px"],
             border_margin=top_vision_cfg["border_margin_px"],
             min_safe_area=top_vision_cfg["min_safe_area_px"],

@@ -177,6 +177,13 @@ class TopPickPipeline:
         conf: float = 0.35,
         imgsz: int = 832,
         device=0,
+        # 可选的第二个模型：只分割物体顶部可抓区域。
+        # 主模型仍然负责完整物体轮廓，避免把顶部和侧面当成两个物体。
+        surface_segmenter: TopSegmenter | None = None,
+        surface_match_class_name: bool = True,
+        surface_match_center_max_px: float = 160.0,
+        surface_min_area_ratio: float = 0.08,
+        surface_required: bool = True,
         obstacle_margin: int = 12,
         border_margin: int = 12,
         min_safe_area: int = 50,
@@ -275,6 +282,25 @@ class TopPickPipeline:
             imgsz=imgsz,
             device=device,
         )
+        self.surface_segmenter = surface_segmenter
+        self.surface_match_class_name = bool(
+            surface_match_class_name
+        )
+        self.surface_match_center_max_px = max(
+            1.0,
+            float(surface_match_center_max_px),
+        )
+        self.surface_min_area_ratio = min(
+            1.0,
+            max(0.0, float(surface_min_area_ratio)),
+        )
+        self.surface_required = bool(surface_required)
+
+        if self.surface_segmenter is not None:
+            print(
+                "[TopPickPipeline] 顶部抓取区域模型已启用；"
+                "完整轮廓模型和顶部区域模型将分别处理。"
+            )
 
         self.planner = (
             CollisionAwareGraspPlanner(
@@ -558,6 +584,162 @@ class TopPickPipeline:
 
         return polygon
 
+    @staticmethod
+    def _polygon_area(
+        polygon: np.ndarray,
+    ) -> float:
+        """返回 polygon 的绝对面积；无效轮廓返回0。"""
+
+        try:
+            contour = np.asarray(
+                polygon,
+                dtype=np.float32,
+            ).reshape(-1, 1, 2)
+            if len(contour) < 3:
+                return 0.0
+            return abs(float(cv2.contourArea(contour)))
+        except (TypeError, ValueError, cv2.error):
+            return 0.0
+
+    def _attach_surface_polygons(
+        self,
+        objects: list[dict],
+        surface_objects: list[dict],
+    ) -> list[dict]:
+        """把顶部区域模型的 polygon 关联到完整物体实例。
+
+        顶部区域模型的结果不会作为新的物体加入列表，
+        只会写入对应完整物体的 ``grasp_polygon`` 字段。
+        这样可以避免“顶部”和“侧面”被重复计数，
+        同时保留完整轮廓用于其他物体碰撞检查。
+        """
+
+        if not surface_objects:
+            if self.surface_required:
+                return [
+                    {
+                        **obj,
+                        "surface_match_failed": True,
+                        "surface_match_reason": "surface_model_empty",
+                    }
+                    for obj in objects
+                ]
+            return objects
+
+        surface_candidates: list[dict] = []
+        for surface in surface_objects:
+            polygon = self._normalize_polygon(
+                surface.get("polygon")
+            )
+            if polygon is None:
+                continue
+
+            area = self._polygon_area(polygon)
+            if area <= 1.0:
+                continue
+
+            surface_candidates.append(
+                {
+                    "object": surface,
+                    "polygon": polygon,
+                    "area": area,
+                    "center": self._polygon_center(polygon),
+                    "used": False,
+                }
+            )
+
+        matched_objects: list[dict] = []
+        for object_index, obj in enumerate(objects):
+            full_polygon = self._normalize_polygon(
+                obj.get("polygon")
+            )
+            if full_polygon is None:
+                matched_objects.append(obj)
+                continue
+
+            full_area = self._polygon_area(full_polygon)
+            full_center = np.asarray(
+                self._polygon_center(full_polygon),
+                dtype=np.float64,
+            )
+            best = None
+            best_score = -float("inf")
+
+            for candidate in surface_candidates:
+                if candidate["used"]:
+                    continue
+
+                surface_obj = candidate["object"]
+                if (
+                    self.surface_match_class_name
+                    and str(surface_obj.get("class_name", ""))
+                    != str(obj.get("class_name", ""))
+                ):
+                    continue
+
+                surface_center = np.asarray(
+                    candidate["center"],
+                    dtype=np.float64,
+                )
+                center_distance = float(
+                    np.linalg.norm(surface_center - full_center)
+                )
+                if (
+                    center_distance
+                    > self.surface_match_center_max_px
+                ):
+                    continue
+
+                # 顶部区域的中心必须落在完整物体轮廓内，
+                # 这是区分相邻目标的主要条件。
+                inside = cv2.pointPolygonTest(
+                    full_polygon.reshape(-1, 1, 2),
+                    (float(surface_center[0]), float(surface_center[1])),
+                    False,
+                )
+                if inside < 0:
+                    continue
+
+                area_ratio = (
+                    candidate["area"] / full_area
+                    if full_area > 1.0
+                    else 0.0
+                )
+                if area_ratio < self.surface_min_area_ratio:
+                    continue
+
+                confidence = float(
+                    surface_obj.get("confidence", 0.0)
+                )
+                # 面积不能压过类别和空间匹配；优先选择中心近、置信度高的实例。
+                score = (
+                    3.0 * confidence
+                    + 0.5 * min(area_ratio, 1.0)
+                    - 0.01 * center_distance
+                )
+                if score > best_score:
+                    best_score = score
+                    best = candidate
+
+            merged = dict(obj)
+            if best is None:
+                merged["surface_match_failed"] = True
+                merged["surface_match_reason"] = (
+                    "surface_polygon_not_matched"
+                )
+            else:
+                best["used"] = True
+                merged["grasp_polygon"] = best["polygon"]
+                merged["surface_match_failed"] = False
+                merged["surface_match_reason"] = "matched"
+                merged["surface_confidence"] = float(
+                    best["object"].get("confidence", 0.0)
+                )
+
+            matched_objects.append(merged)
+
+        return matched_objects
+
     def _inside_machine_limits(
         self,
         x_mm: float,
@@ -781,19 +963,63 @@ class TopPickPipeline:
         self.last_gripper_rejections = []
         self.last_gripper_search_alternatives = []
 
-        valid_objects: list[tuple[int, dict, np.ndarray]] = []
+        # 每个实例同时保留两个轮廓：
+        # - collision_polygon：完整物体轮廓，用于其他目标的碰撞检查；
+        # - grasp_polygon：顶部可抓区域，用于抓取中心、Yaw和夹持宽度。
+        all_collision_objects: list[
+            tuple[int, np.ndarray]
+        ] = []
+        valid_objects: list[
+            tuple[int, dict, np.ndarray, np.ndarray]
+        ] = []
         for list_index, obj in enumerate(objects):
-            polygon = self._normalize_polygon(obj.get("polygon"))
-            if polygon is None:
+            collision_polygon = self._normalize_polygon(
+                obj.get("polygon")
+            )
+            if collision_polygon is None:
                 continue
-            valid_objects.append((list_index, obj, polygon))
+
+            # 即使顶部区域匹配失败，完整轮廓仍然必须作为障碍物保留。
+            all_collision_objects.append(
+                (list_index, collision_polygon)
+            )
+
+            if (
+                self.surface_segmenter is not None
+                and self.surface_required
+                and bool(obj.get("surface_match_failed", False))
+            ):
+                # 顶部模型开启且要求匹配时，宁可暂时跳过不确定目标，
+                # 也不把包含侧面的完整轮廓误当成抓取区域。
+                continue
+
+            grasp_polygon = self._normalize_polygon(
+                obj.get("grasp_polygon")
+            )
+            if grasp_polygon is None:
+                grasp_polygon = collision_polygon
+
+            valid_objects.append(
+                (
+                    list_index,
+                    obj,
+                    collision_polygon,
+                    grasp_polygon,
+                )
+            )
 
         candidates: list[TopPickCandidate] = []
 
-        for list_index, obj, target_polygon in valid_objects:
+        for (
+            list_index,
+            obj,
+            collision_polygon,
+            target_polygon,
+        ) in valid_objects:
             other_polygons = [
-                polygon
-                for other_index, _, polygon in valid_objects
+                other_collision_polygon
+                for other_index, other_collision_polygon
+                in all_collision_objects
                 if other_index != list_index
             ]
 
@@ -1526,6 +1752,20 @@ class TopPickPipeline:
                 yolo_result
             )
         )
+
+        # 顶部区域模型只提供“抓取几何”，不会生成第二批物体。
+        # 主模型的完整轮廓仍用于物体计数和碰撞检查。
+        if self.surface_segmenter is not None:
+            surface_result = self.surface_segmenter.predict(
+                frame
+            )
+            surface_objects = self.surface_segmenter.get_objects(
+                surface_result
+            )
+            objects = self._attach_surface_polygons(
+                objects,
+                surface_objects,
+            )
 
         inference_ms = (
             (

@@ -66,6 +66,14 @@ model:
     conf: 0.35  # 模型置信度阈值。
     imgsz: 832  # 模型输入尺寸（像素）。
     device: 0  # 相机设备路径或推理设备编号。
+  top_surface:
+    enabled: false  # 是否启用顶部可抓区域模型；训练完成后再改为 true。
+    # 该模型与 model.top 使用同一套类别名称，但标注内容只包含物体顶部可抓区域。
+    # 它不会作为第二批物体参与识别，只给主模型实例附加 grasp_polygon。
+    path: outputs/training/top_surface_seg/top_surface_v1/weights/best.engine  # 顶部区域模型路径。
+    conf: 0.35  # 顶部区域模型置信度阈值。
+    imgsz: 832  # 顶部区域模型输入尺寸；应与导出模型保持一致。
+    device: 0  # 顶部区域模型推理设备编号。
   side:
     path: outputs/training/side_cls/school_test/weights/best.engine  # 必须替换为“完整侧面ROI+no_object空背景”分类模型；相对工程根目录解析。
     imgsz: 224  # 模型输入尺寸（像素）。
@@ -115,6 +123,15 @@ vision:
     border_margin_px: 12  # 图像边缘安全余量（像素）。
     min_safe_area_px: 50  # 安全区域最小面积（像素）。
     min_clearance_px: 3.0  # 抓取点最小安全间隙（像素）。
+
+    surface_matching:
+      # true 时顶部区域模型和完整物体模型必须使用相同类别名。
+      match_class_name: true  # 是否按类别名关联两个模型的实例。
+      # 顶部区域模型开启后，找不到对应顶部区域就跳过该目标，
+      # 防止把带侧面的完整轮廓误当成抓取区域。
+      required: true  # 是否要求每个抓取目标必须匹配到顶部区域。
+      match_center_max_px: 160.0  # 顶部区域中心与完整轮廓中心允许的最大距离（像素）。
+      min_area_ratio: 0.08  # 顶部区域面积/完整轮廓面积的最小比例。
 
     # 动态抓取Yaw。这里的角度是“夹爪闭合轴在机械XY坐标系中的方向”，
     # 上位机不直接假设舵机安装零位。下位机再把该方向换算成真实舵机角度。
