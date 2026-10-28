@@ -6,20 +6,33 @@ model:
   precision: bfloat16  # RTX 4060 使用混合精度，降低推理显存需求。
   confidence: 0.5  # SAM 3 实例分数阈值；漏检时适当调低。
 
+#inference:
+#  # 标完整可见轮廓，包含顶面和侧面。
+#  # 所有提示结果仍导出为类别 0: object。
+#  prompts:
+#    - cube               # 正方体
+#    - rectangular prism  # 长方体
+#    - cylinder           # 圆柱体
+#    - cone               # 圆锥体
+#    - truncated cone     # 圆台
+#    - pyramid            # 棱锥
+#    - prism              # 棱柱
+
 inference:
-  # 所有提示结果最终都统一为类别 0: object；重复 mask 会合并。
-  # 已用实际样图验证颜色提示比 plastic blocks/cone 更容易检出本批物体。
-  # 浅蓝色由 blue object 覆盖；灰色提示可能误选托盘，仍需人工检查。
-  prompts:  # 每一项独立推理，共享图像编码；最终仍只有 object 一个类别。
-    - red object
-    - yellow object
-    - green object
-    - blue object
-    - orange object
-    - purple object
-    - white object
-    - black object
-    - gray object
+  # 每个提示独立推理，所有结果仍统一导出为类别 0: object。
+  # 以下文字仅用于生成候选区域，最终需要人工检查顶面与侧面的分界。
+  prompts:
+    # 有明确平面顶面的物体
+    - top face of a cube               # 正方体：只标朝上的平面
+    - top face of a rectangular prism  # 长方体：只标朝上的平面
+    - top face of a cylinder           # 直立圆柱：只标上端圆盘
+    - top face of a truncated cone     # 圆台：只标朝上的平端面
+    - top face of a prism              # 棱柱：只标朝上的平面
+
+    # 没有平面顶面的物体：以下仅为尝试性提示
+    - upper surface of a cone         # 圆锥：尝试识别上部可见表面，可能返回整个锥体
+    - upper surface of a pyramid      # 棱锥：尝试识别上部可见表面，可能包含多个斜面
+    - upper surface of a sphere       # 球体：尝试识别上部可见曲面，可能返回整个球体
 
 dataset:
   source_dir: E:\smart_sorting_vision\data\datasets\top_seg\v2  # 用户提供的采集根目录，递归读取场景子目录。
@@ -33,3 +46,8 @@ export:
   mask_iou_threshold: 0.75  # 多个提示产生重复实例时，按真实 mask IoU 去重。
   save_previews: true  # 保存编号、分数和轮廓预览图。
   make_zip: true  # 生成 CVAT 可导入的 Ultralytics YOLO 分割数据集 ZIP。
+
+interactive:
+  output_dir: outputs_interactive  # 交互标注专用目录；固定目录支持下次接着修改，不覆盖批量预标注。
+  view_width: 1200  # 图片显示区域最大宽度；不改变图片和标签的实际像素坐标。
+  view_height: 820  # 图片显示区域最大高度；滚轮缩放、中键拖动查看细节。

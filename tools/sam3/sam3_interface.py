@@ -1,4 +1,4 @@
-"""官方 SAM 3 图片接口：本地权重、文字提示、正负框提示。
+"""官方 SAM 3 图片接口：本地权重、文字提示、框提示和交互式正负点。
 
 输入路径、PIL 图片或 OpenCV BGR 图片；输出原图大小的实例 mask。
 所有模型导入延迟到创建接口时，导出和检查数据集时不需要先加载 GPU。
@@ -48,7 +48,7 @@ def as_rgb_image(image: str | Path | Image.Image | np.ndarray) -> Image.Image:
 class Sam3Interface:
     """只加载一次模型；同一图片的多次提示共享图像编码结果。"""
 
-    def __init__(self, model_config: dict):
+    def __init__(self, model_config: dict, *, enable_interactivity: bool = False):
         source = Path(model_config["source_dir"]).resolve()
         checkpoint = Path(model_config["checkpoint"]).resolve()
         if not (source / "sam3" / "model_builder.py").is_file():
@@ -82,7 +82,8 @@ class Sam3Interface:
             load_from_HF=False,
             device=self.device.type,
             eval_mode=True,
-            enable_inst_interactivity=False,
+            # 只有交互入口加载点提示分支，原来的文字批处理保持原配置。
+            enable_inst_interactivity=enable_interactivity,
             compile=False,
         ).to(self.device).eval()
         self.processor = Sam3Processor(
@@ -171,6 +172,80 @@ class Sam3Interface:
                     box=box, label=label, state=self.state
                 )
             return self._results(output, text or "box prompt")
+
+    def predict_points(
+        self,
+        point_coords: list[list[float]],
+        point_labels: list[int],
+        box: list[float] | None = None,
+    ) -> list[dict]:
+        """交互分割一个目标，返回同一目标的多个备选 mask。
+
+        点坐标使用原图像素 [x, y]，1 为保留目标的正点，0 为排除区域的负点；
+        可同时给出原图 [x1, y1, x2, y2] 框，也支持仅给框、点列表为空。
+        返回按质量分数排序的候选，不能将它们当成多个物体一起加入标签。
+        """
+        if self.state is None:
+            raise RuntimeError("先调用 set_image(image)")
+        if self.model.inst_interactive_predictor is None:
+            raise RuntimeError("点交互需使用 enable_interactivity=True 创建接口")
+
+        width, height = self.image_size
+        coords = np.asarray(point_coords, dtype=np.float32)
+        labels = np.asarray(point_labels)
+        if coords.size == 0:
+            coords = np.empty((0, 2), dtype=np.float32)
+        if coords.ndim != 2 or coords.shape[1] != 2:
+            raise ValueError("点坐标必须为 N×2 的 [x, y] 列表")
+        if labels.ndim != 1 or len(labels) != len(coords):
+            raise ValueError("每个点必须对应一个标签，正点为1、负点为0")
+        if not np.isin(labels, [0, 1]).all():
+            raise ValueError("点标签只能为1（正点）或0（负点）")
+        if not np.isfinite(coords).all() or (
+            len(coords) and (
+                (coords[:, 0] < 0).any() or (coords[:, 0] >= width).any()
+                or (coords[:, 1] < 0).any() or (coords[:, 1] >= height).any()
+            )
+        ):
+            raise ValueError("提示点必须位于原图范围内")
+
+        bounds = None
+        if box is not None:
+            bounds = np.asarray(box, dtype=np.float32)
+            if bounds.shape != (4,) or not np.isfinite(bounds).all():
+                raise ValueError("提示框必须为 [x1, y1, x2, y2]")
+            x1, y1, x2, y2 = bounds
+            if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
+                raise ValueError("提示框必须在原图内，且 x1<x2、y1<y2")
+        if bounds is None and not np.any(labels == 1):
+            raise ValueError("至少添加一个正点，或先框选目标")
+
+        with self.torch.inference_mode(), self._autocast():
+            masks, scores, _ = self.model.predict_inst(
+                self.state,
+                point_coords=coords if len(coords) else None,
+                point_labels=labels.astype(np.int32) if len(coords) else None,
+                box=bounds,
+                multimask_output=True,
+                return_logits=False,
+                normalize_coords=True,
+            )
+
+        candidates = []
+        # 这里是候选质量分数，不用文字检测的 confidence 阈值过滤。
+        for mask, score in zip(masks, scores):
+            mask = np.asarray(mask, dtype=bool)
+            ys, xs = np.nonzero(mask)
+            if not len(xs):
+                continue
+            candidates.append({
+                "mask": mask,
+                "score": float(score),
+                "box": [float(xs.min()), float(ys.min()),
+                        float(xs.max() + 1), float(ys.max() + 1)],
+                "prompt": "interactive points",
+            })
+        return sorted(candidates, key=lambda item: item["score"], reverse=True)
 
     def predict(self, image, prompts: str | list[str]) -> list[dict]:
         """批量预标注入口：设置图片后执行文字提示。"""

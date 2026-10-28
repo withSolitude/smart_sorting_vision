@@ -6,6 +6,10 @@
 生成原顶部 YOLO-seg 模型需要的单类别 `object` 实例分割标签。
 所有新增 Python 文件都有中文注释，参数集中在 `sam3_config.yaml`。
 
+需要鼠标交互选择顶面时，启动 `run_interactive.cmd`，操作见
+[README_交互式标注.md](README_交互式标注.md)。这个入口使用正负点和当前实例框，
+不读取 `inference.prompts`，可以直接手工描多边形并保存。
+
 ## 1. 已准备的文件
 
 | 文件 | 用途 |
