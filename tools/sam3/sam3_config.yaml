@@ -1,0 +1,35 @@
+# 本目录是独立的标注工具；所有可调参数集中在这份 YAML 中。
+model:
+  source_dir: sam3-main  # 已解压的官方源码，相对本配置文件所在目录。
+  checkpoint: sam3.pt  # 用户提供的本地权重，不从 Hugging Face 下载。
+  device: cuda:0  # 使用第一个 NVIDIA GPU。
+  precision: bfloat16  # RTX 4060 使用混合精度，降低推理显存需求。
+  confidence: 0.5  # SAM 3 实例分数阈值；漏检时适当调低。
+
+inference:
+  # 所有提示结果最终都统一为类别 0: object；重复 mask 会合并。
+  # 已用实际样图验证颜色提示比 plastic blocks/cone 更容易检出本批物体。
+  # 浅蓝色由 blue object 覆盖；灰色提示可能误选托盘，仍需人工检查。
+  prompts:  # 每一项独立推理，共享图像编码；最终仍只有 object 一个类别。
+    - red object
+    - yellow object
+    - green object
+    - blue object
+    - orange object
+    - purple object
+    - white object
+    - black object
+    - gray object
+
+dataset:
+  source_dir: E:\smart_sorting_vision\data\datasets\top_seg\v2  # 用户提供的采集根目录，递归读取场景子目录。
+  splits: [train, val, test]  # 保留已有 train/val/test 划分，不重新随机分配。
+  output_dir: outputs  # 每次运行在此目录下创建时间命名的新输出目录。
+  limit: 0  # 每个 split 最多处理多少张；0 为全部，建议初次通过命令行 --limit 5 试跑。
+
+export:
+  min_area_px: 100  # 小于此像素面积的 mask 不导出。
+  simplify_epsilon_px: 1.0  # 多边形轮廓简化距离，单位为原图像素。
+  mask_iou_threshold: 0.75  # 多个提示产生重复实例时，按真实 mask IoU 去重。
+  save_previews: true  # 保存编号、分数和轮廓预览图。
+  make_zip: true  # 生成 CVAT 可导入的 Ultralytics YOLO 分割数据集 ZIP。
