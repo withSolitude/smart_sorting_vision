@@ -140,43 +140,6 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
     cfg["model"]["top"]["path"] = _resolve_path(
         root, cfg["model"]["top"]["path"], name="model.top.path"
     )
-
-    # 顶部抓取区域模型是可选的第二个分割模型。
-    # 主模型识别完整物体，第二个模型只识别顶部区域，
-    # 两者不能合并成一个“顶部+侧面”的混合实例。
-    surface_model = cfg["model"].get("top_surface")
-    if surface_model is None:
-        surface_model = {
-            "enabled": False,
-        }
-        cfg["model"]["top_surface"] = surface_model
-    if not isinstance(surface_model, dict):
-        raise ConfigError("model.top_surface 必须是对象")
-    if "enabled" not in surface_model:
-        surface_model["enabled"] = False
-    if not isinstance(surface_model["enabled"], bool):
-        raise ConfigError("model.top_surface.enabled 必须是 true/false")
-    if surface_model["enabled"]:
-        for key in ("path", "conf", "imgsz", "device"):
-            if key not in surface_model:
-                raise ConfigError(f"缺少 model.top_surface.{key}")
-        surface_model["path"] = _resolve_path(
-            root,
-            surface_model["path"],
-            name="model.top_surface.path",
-        )
-        try:
-            surface_model["conf"] = float(surface_model["conf"])
-            surface_model["imgsz"] = int(surface_model["imgsz"])
-        except (TypeError, ValueError) as exc:
-            raise ConfigError(
-                "model.top_surface.conf/imgsz 必须是数值"
-            ) from exc
-        if not 0.0 < surface_model["conf"] <= 1.0:
-            raise ConfigError("model.top_surface.conf 必须在 (0, 1] 范围内")
-        if surface_model["imgsz"] <= 0:
-            raise ConfigError("model.top_surface.imgsz 必须大于0")
-
     cfg["model"]["side"]["path"] = _resolve_path(
         root, cfg["model"]["side"]["path"], name="model.side.path"
     )
@@ -267,42 +230,6 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
             raise ConfigError("dynamic_preopen 的 closed/standby 舵机角无效")
 
     top_consensus = cfg["vision"]["top"].get("consensus", {})
-    surface_matching = cfg["vision"]["top"].get("surface_matching")
-    if surface_matching is None:
-        surface_matching = {}
-        cfg["vision"]["top"]["surface_matching"] = surface_matching
-    if not isinstance(surface_matching, dict):
-        raise ConfigError("vision.top.surface_matching 必须是对象")
-    for key, default in (
-        ("match_class_name", True),
-        ("required", True),
-    ):
-        if key not in surface_matching:
-            surface_matching[key] = default
-        if not isinstance(surface_matching[key], bool):
-            raise ConfigError(
-                f"vision.top.surface_matching.{key} 必须是 true/false"
-            )
-    try:
-        surface_matching["match_center_max_px"] = float(
-            surface_matching.get("match_center_max_px", 160.0)
-        )
-        surface_matching["min_area_ratio"] = float(
-            surface_matching.get("min_area_ratio", 0.08)
-        )
-    except (TypeError, ValueError) as exc:
-        raise ConfigError(
-            "vision.top.surface_matching 的数值参数无效"
-        ) from exc
-    if surface_matching["match_center_max_px"] <= 0:
-        raise ConfigError(
-            "vision.top.surface_matching.match_center_max_px 必须大于0"
-        )
-    if not 0.0 <= surface_matching["min_area_ratio"] <= 1.0:
-        raise ConfigError(
-            "vision.top.surface_matching.min_area_ratio 必须在 [0, 1] 范围内"
-        )
-
     side_consensus = cfg["vision"]["side"].get("consensus", {})
     for name, item in (("vision.top.consensus", top_consensus), ("vision.side.consensus", side_consensus)):
         window = int(item.get("window", 0))
