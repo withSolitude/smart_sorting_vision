@@ -362,7 +362,7 @@ def main() -> int:
         )
 
     mapping_path = Path(cfg["calibration"]["pixel_to_robot"])
-    transform = PixelToRobotTransform.load(mapping_path)
+    transform = PixelToRobotTransform.load(mapping_path, camera_config=cfg["camera"]["top"])
 
     output_dir = mapping_path.parent
     samples_path = output_dir / "yaw_calibration_samples.csv"

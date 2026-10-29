@@ -1,0 +1,60 @@
+# 侧面专用预标注配置。顶部仍使用 sam3_config.yaml。
+model:
+  source_dir: sam3-main  # 官方源码目录，相对本 YAML。
+  checkpoint: sam3.pt  # 本地 SAM 3 权重。
+  device: cuda:0  # 本机 NVIDIA 显卡。
+  precision: bfloat16  # 与当前已验证的官方接口一致。
+  confidence: 0.45  # 文字预标注的候选阈值，不是形状分类的准确率。
+
+annotation:
+  class_from_folder: true  # 用 split/形状/颜色/图片 中的形状目录赋类别，SAM 只找轮廓。
+  empty_folders: [no_object, empty, background]  # 明确的空台目录导出空标签，不作为物体类别。
+  # 以下12类来自现有 side_cls 数据集。列表顺序就是0起始的类别ID，开始标注后不要调换顺序。
+  classes:
+    - name: 三棱柱  # 类别0；三角形底面的棱柱。
+      prompts: [triangular prism, triangular block]  # 同类别的轮廓提示，结果仍是三棱柱。
+    - name: 三棱锥  # 类别1；三角形底面的棱锥。
+      prompts: [triangular pyramid, tetrahedron]
+    - name: 五棱柱  # 类别2；五边形底面的棱柱。
+      prompts: [pentagonal prism, pentagonal block]
+    - name: 六棱柱  # 类别3；六边形底面的棱柱。
+      prompts: [hexagonal prism, hexagonal block]
+    - name: 四棱台  # 类别4；四边形底面的棱台，与圆台区分。
+      prompts: [truncated square pyramid, square pyramid frustum]
+    - name: 四棱锥  # 类别5；四边形底面的棱锥。
+      prompts: [square pyramid, quadrangular pyramid]
+    - name: 圆台  # 类别6；圆锥截去尖端后的实体。
+      prompts: [truncated cone, conical frustum]
+    - name: 圆柱  # 类别7。
+      prompts: [cylinder, cylindrical block]
+    - name: 圆锥  # 类别8。
+      prompts: [cone, conical block]
+    - name: 正方体  # 类别9。
+      prompts: [cube, cubic block]
+    - name: 球  # 类别10。
+      prompts: [sphere, ball]
+    - name: 长方体  # 类别11；不与正方体合并。
+      prompts: [rectangular prism, cuboid]
+
+inference:
+  target_point: [0.5, 0.5]  # 原图归一化目标位置；单物体图片中优先选覆盖此点、接近此点的实例。
+  # 自动入口每图最多保留一个目标。多目标、轮廓不准时用侧面交互入口逐个确认。
+
+dataset:
+  source_dir: E:\smart_sorting_vision\data\datasets\side_cls\school_mixed  # 已有1057张、完整12类；换数据集只改这里。
+  splits: [train, val, test]  # 保留原有划分；school_test_new没有test时改为[train, val]。
+  output_dir: outputs_side  # 自动预标注每次新建时间目录。
+  limit: 0  # 每个split的图片上限，0为全部；--limit 5可先试跑。
+
+export:
+  min_area_px: 100  # 丢弃过小候选。
+  simplify_epsilon_px: 1.0  # 原图像素单位的轮廓简化距离。
+  mask_iou_threshold: 0.75  # 同一物体的多个文字提示结果按mask重叠去重。
+  save_previews: true  # 自动入口保存轮廓、类别ID与SAM分数；中文类名见data.yaml和manifest.csv。
+  make_zip: true  # 同时生成YOLO-seg数据集和CVAT导入包。
+
+interactive:
+  prelabels_dir: latest  # 自动载入本数据集最近完成批次的候选；null从零标，或填写批次目录。
+  output_dir: outputs_side_interactive  # 固定目录支持断点继续，与顶部输出隔开。
+  view_width: 1200  # 最大显示宽度，不改变原图坐标。
+  view_height: 820  # 最大显示高度。

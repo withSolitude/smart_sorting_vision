@@ -277,6 +277,7 @@ class SmartSortingApp:
         self.top_pipeline = TopPickPipeline(
             model_path=top_model_cfg["path"],
             calibration_path=self.config["calibration"]["pixel_to_robot"],
+            camera_config=self.config["camera"]["top"],
             conf=top_model_cfg["conf"],
             imgsz=top_model_cfg["imgsz"],
             device=top_model_cfg["device"],

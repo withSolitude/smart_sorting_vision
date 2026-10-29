@@ -142,6 +142,11 @@ python -m scripts.last_debug.calibrate_top_intrinsics
    边缘点残差明显变大时，重新检查内参、ROI 和机械坐标方向。
 5. 将最终映射写入 `calibration.pixel_to_robot` 指向的 JSON。视觉代码只读取这个文件，不能在处理器中再写矩阵常量。
 
+新标定在完整去畸变图上采点，保存 `coordinate_space: undistorted_full`。
+之后修改 ROI 时，程序按 YAML 的裁剪原点换算，不必重新采四点。
+旧 ROI 局部坐标文件可用 `scripts.last_debug.migrate_pixel_to_robot_roi --old-roi x1 y1 x2 y2`
+迁移；要求找回标定时的完整裁剪框，并保持原始采集和去畸变几何一致。
+
 验证要求：中心点和四个边缘点都能落在 `mechanics.workspace_mm` 内；X/Y 正方向、单位和 STM32 返回值一致。
 
 ## 6. 顶部物体数据和抓取点

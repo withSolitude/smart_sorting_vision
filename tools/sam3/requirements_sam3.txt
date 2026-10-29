@@ -1,0 +1,17 @@
+# PyTorch / torchvision 请使用已有且能调用 CUDA 的匹配版本。
+# 本接口通过 source_dir 导入本地官方源码，不联网下载模型。
+timm>=1.0.17
+huggingface-hub
+iopath
+ftfy==6.1.1
+regex
+einops
+pycocotools
+psutil
+PyYAML
+Pillow
+opencv-python
+scipy
+setuptools<81
+triton-windows<3.7; platform_system == "Windows"
+triton; platform_system == "Linux"

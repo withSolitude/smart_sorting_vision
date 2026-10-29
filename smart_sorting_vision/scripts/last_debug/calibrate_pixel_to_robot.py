@@ -1,7 +1,7 @@
-"""用四个固定点标定顶部 ROI 像素到 XY 坐标的单应矩阵。
+"""用四个固定点标定顶部完整去畸变图像到 XY 坐标的单应矩阵。
 
 先在画面中依次点击左上、右上、右下、左下四个固定点，再输入每个点的
-机械 XY。该脚本使用 TopCamera.read() 的 ROI 坐标，和正式流水线一致。
+机械 XY。保存完整图坐标，正式流水线自动补上ROI原点，后续裁剪不必重标。
 """
 from __future__ import annotations
 
@@ -26,7 +26,8 @@ def main() -> None:
     camera = TopCamera()
     try:
         camera.open()
-        frame = camera.read()
+        # 内参已经生效，但此处不裁ROI、不使用多边形掩膜。
+        frame = camera.read_undistorted()
         points: list[tuple[float, float]] = []
 
         def on_click(event, x, y, _flags, _param):
@@ -72,8 +73,9 @@ def main() -> None:
 
         H = cv2.getPerspectiveTransform(np.float32(points), np.float32(robot))
         transform = PixelToRobotTransform(
-            H, frame.shape[1], frame.shape[0], source="TopCamera.read()",
+            H, frame.shape[1], frame.shape[0], source="TopCamera.read_undistorted()",
             metadata={"point_count": 4, "points_pixel": points, "points_robot": robot},
+            coordinate_space="undistorted_full",
         )
         transform.save(output)
         output.with_suffix(".points.json").write_text(

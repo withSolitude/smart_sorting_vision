@@ -352,6 +352,15 @@ def verify_roi_and_mapping(
     print(f"[CONFIG] ROI size      = {roi_w} x {roi_h}")
     print(f"[CONFIG] Mapping size  = {map_w} x {map_h}")
 
+    if mapping_json.get("coordinate_space", "roi") == "undistorted_full":
+        # 新映射记录完整去畸变图尺寸，当前 ROI 只改变输入原点，不必与整图同宽高。
+        full_size = (int(cfg["camera"]["top"]["width"]), int(cfg["camera"]["top"]["height"]))
+        if (map_w, map_h) != full_size:
+            raise RuntimeError(
+                f"完整图尺寸与 pixel_to_robot 映射不一致：camera={full_size}, mapping={(map_w, map_h)}"
+            )
+        return roi_w, roi_h
+
     if roi != EXPECTED_SAFE_ROI:
         print(
             "[WARN] 当前 YAML safe_roi 与本次脚本记录的新 ROI 不同："
@@ -408,7 +417,7 @@ def main() -> int:
     x_limits = tuple(float(v) for v in cfg["mechanics"]["workspace_mm"]["x"])
     y_limits = tuple(float(v) for v in cfg["mechanics"]["workspace_mm"]["y"])
 
-    transform = PixelToRobotTransform.load(calibration_path)
+    transform = PixelToRobotTransform.load(calibration_path, camera_config=cfg["camera"]["top"])
 
     # 正式相机参数只从 YAML 读取，包括新 safe_roi=[580,120,1330,927]。
     TopCamera.configure(

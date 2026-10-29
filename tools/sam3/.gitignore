@@ -1,0 +1,17 @@
+# 模型和官方源码由使用者按官方许可另行准备。
+sam3.pt
+sam3-main/
+*.zip
+*.pt
+*.pth
+
+# 本机环境、生成结果和编辑器缓存不提交。
+.venv_sam3/
+outputs/
+outputs_*/
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+.env
+.env.*

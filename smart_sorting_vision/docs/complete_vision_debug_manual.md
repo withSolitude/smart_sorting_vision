@@ -250,7 +250,8 @@ x1 <= x < x2
 y1 <= y < y2
 ```
 
-修改顶部 ROI 后，必须重新进行像素到机械 XY 标定。
+新版本 XY 标定保存完整去畸变图坐标。只修改顶部 ROI 不需要重做 XY；
+正式流程会根据当前裁剪原点自动换算。旧版 ROI 局部坐标文件需要先迁移，见下一节。
 
 ## 6. 顶部像素到机械 XY
 
@@ -258,7 +259,8 @@ y1 <= y < y2
 python -m scripts.last_debug.calibrate_pixel_to_robot
 ```
 
-脚本使用正式 `TopCamera.read()` 输出，也就是去畸变、ROI 裁剪和多边形掩膜之后的图像。依次点击四个固定机械点：
+脚本使用 `TopCamera.read_undistorted()` 输出，也就是经过内参去畸变、尚未裁 ROI 的完整图像。
+四个点尽量覆盖实际工作区，后续 ROI 可以在同一完整图内独立裁剪。依次点击四个固定机械点：
 
 ```text
 P1 左上
@@ -278,7 +280,22 @@ data/calibration/top_camera/robot_mapping/pixel_to_robot.json
 data/calibration/top_camera/robot_mapping/pixel_to_robot.points.json
 ```
 
-修改相机位置、分辨率、去畸变参数、safe_roi 或 safe_roi_polygon 后，都必须重新标定这个文件。
+调整曝光、白平衡、`safe_roi` 或 `safe_roi_polygon` 不改变映射本身；
+改变相机位置、镜头焦距、原始分辨率或去畸变几何后，应重新核对并标定。
+四点不是运行区域的硬边界，但点外属于外推，应通过实际点验证精度。
+
+旧版标定的 `coordinate_space` 缺省或为 `roi`，可使用标定时的完整裁剪框精确迁移：
+
+```bash
+python -m scripts.last_debug.migrate_pixel_to_robot_roi --old-roi 505 4 1739 1052
+```
+
+此处四个数是这次历史配置中找回的旧 ROI，不是通用默认值。
+脚本自动备份原 `pixel_to_robot.json`，把 H 换算成 `undistorted_full` 坐标，
+保留原机械坐标、TCP 偏置和四点数据，不重新采点或拟合。
+原始视频仍为1920×1080时，新文件记录完整尺寸1920×1080，
+正式输入ROI可以是1226×1049或其他合法裁剪尺寸。
+只适用于相机几何和去畸变未变的纯裁剪调整；旧ROI未知时不能仅凭宽高推断原点。
 
 ## 7. Yaw 轴标定和验证
 

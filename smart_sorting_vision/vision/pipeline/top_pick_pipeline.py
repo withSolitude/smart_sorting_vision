@@ -165,7 +165,7 @@ class TopPickPipeline:
         1. 本类不打开相机。
         2. 本类不发送 STM32。
         3. P1~P4 不是抓取范围限制。
-        4. 整个 TopCamera.read() 图像均允许进行 Homography 转换。
+        4. 新标定使用完整去畸变图坐标；识别 ROI 由同一相机配置绑定。
         5. 机械极限限制应在后续 robot_config / 状态机层设置。
     """
 
@@ -174,6 +174,7 @@ class TopPickPipeline:
         *,
         model_path: str | Path,
         calibration_path: str | Path,
+        camera_config: dict | None = None,
         conf: float = 0.35,
         imgsz: int = 832,
         device=0,
@@ -291,7 +292,8 @@ class TopPickPipeline:
 
         self.transform = (
             PixelToRobotTransform.load(
-                self.calibration_path
+                self.calibration_path,
+                camera_config=camera_config,
             )
         )
 
@@ -393,10 +395,6 @@ class TopPickPipeline:
             )
         else:
             self.grasp_search_offsets = [(0.0, 0.0, 0.0)]
-
-        self._H_inv = np.linalg.inv(np.asarray(self.transform.H, dtype=np.float64))
-        if not np.all(np.isfinite(self._H_inv)):
-            raise ValueError("pixel_to_robot homography inverse invalid")
 
         self.yaw_tcp_compensator = yaw_tcp_compensator
 
@@ -597,9 +595,12 @@ class TopPickPipeline:
         self,
         point_robot_mm: tuple[float, float] | np.ndarray,
     ) -> tuple[float, float] | None:
-        point = np.asarray(point_robot_mm, dtype=np.float64).reshape(1, 1, 2)
+        point = np.asarray(point_robot_mm, dtype=np.float64).reshape(2)
         try:
-            out = cv2.perspectiveTransform(point, self._H_inv)[0, 0]
+            # 候选机械点不含 TCP 偏置；统一反投影负责减去当前 ROI 原点。
+            out = self.transform.robot_to_pixel(
+                float(point[0]), float(point[1]), apply_tcp_offset=False,
+            )
         except Exception:
             return None
         if not np.all(np.isfinite(out)):
@@ -1507,8 +1508,7 @@ class TopPickPipeline:
                 "frame 不能为 None"
             )
 
-        # 标定时与运行时必须使用
-        # 完全相同的 TopCamera.read() 输出尺寸。
+        # 新标定检查当前 ROI 与完整图的关系；旧标定继续严格检查原 ROI 尺寸。
         self.transform.check_frame(
             frame
         )

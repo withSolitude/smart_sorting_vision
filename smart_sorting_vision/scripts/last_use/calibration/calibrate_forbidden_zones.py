@@ -94,7 +94,9 @@ def main() -> None:
     )
     camera = TopCamera()
     camera.open()
-    transform = PixelToRobotTransform.load(cfg["calibration"]["pixel_to_robot"])
+    transform = PixelToRobotTransform.load(
+        cfg["calibration"]["pixel_to_robot"], camera_config=cfg["camera"]["top"]
+    )
 
     window = "Forbidden Zone 4-Point Calibration"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
