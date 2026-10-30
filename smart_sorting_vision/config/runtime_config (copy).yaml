@@ -165,25 +165,7 @@ vision:
       # 垂直于闭合轴，沿夹爪前后修正
       longitudinal_bias_mm: 0.0
 
-      # ======================================================
-      # branch=1 专用微调
-      #
-      # branch1_axis_correction_deg:
-      #   只修另一物理侧的夹爪实际方向角，branch=0不受影响。
-      #   必须与 STM32 ita_robot.h 中的
-      #   Pick_Yaw_Branch1_Axis_Correction_Deg 保持完全相同。
-      #
-      # branch1_closing_bias_mm:
-      #   只修另一物理侧的抓取中心左右偏差。
-      #   正值沿真实夹爪闭合轴方向移动，负值反向。
-      #
-      # branch1_longitudinal_bias_mm:
-      #   只修另一物理侧的抓取中心前后偏差。
-      #   正值沿真实夹爪闭合轴 +90° 方向移动，负值反向。
-      # ======================================================
-      branch1_axis_correction_deg: 0.0
-      branch1_closing_bias_mm: 10.0
-      branch1_longitudinal_bias_mm: 10.0
+      # 单一180°物理姿态由 calibration.yaw_servo 统一确定。
 
       visual_to_command_matrix:
         - [0.72533465, 0.01675850]
@@ -193,11 +175,7 @@ vision:
         - [1.37890961, -0.03566244]
         - [-0.01019898, 1.54352692]
 
-      # 双边抓取时这里表示“有向物理Yaw”的可执行范围，不是协议轴向yaw。
-      # 由当前下位机Yaw标定 q=q0+k*(theta-theta0) 与舵机±135°范围换算；
-      # 留少量边界余量，branch 0/1都会先经过此范围检查再做TCP补偿。
-      min_axis_deg: -79.0
-      max_axis_deg: 165.0
+      # 执行区间从 calibration.yaw_servo 自动计算，不在此重复配置。
 
       xy_calibration_claw_angle_deg: 45.0
       tcp_fit_claw_angle_deg: 5.0

@@ -256,40 +256,18 @@ private:
     // 例如直驱同向约为 +1；外啮合齿轮通常为负号，数值还要乘传动比。
     // 具体值必须实测，不从照片/视觉代码猜。
     // ========================================================
-    // 2026-09-12 实机Yaw标定（16点，舵机命令覆盖 -60°~+135°）
-    // 拟合结果：q = q0 + k * (theta - theta0)
-    // theta 为机械XY坐标系中的夹爪闭合轴方向（180°周期）。
-    // 标定报告：axis RMSE = 3.487°，max = 6.264°。
-    float Pick_Yaw_Reference_Closing_Axis_Robot_Deg = 43.590200f;
-    float Pick_Yaw_Reference_Servo_Command_Deg = -0.622672f;
-    float Pick_Yaw_Servo_Deg_Per_Gripper_Deg = -1.10205336f;
+    // 2026-10-30 当前实机标定：q = q0 + k * (theta - theta0)。
+    // 与上位机 calibration.yaw_servo 三项参数保持一致。
+    // theta 采用以 theta0 为中心的唯一 180° 区间，不再搜索另一物理姿态。
+    float Pick_Yaw_Reference_Closing_Axis_Robot_Deg = -63.280987000f;
+    float Pick_Yaw_Reference_Servo_Command_Deg = 0.232430000f;
+    float Pick_Yaw_Servo_Deg_Per_Gripper_Deg = 1.047207920f;
 
-    // ========================================================
-    // branch=1 专用实际夹爪方向修正
-    //
-    // 单位：夹爪物理闭合轴角度 deg。
-    // 只作用于另一物理侧；branch=0完全不受影响。
-    //
-    // 必须与 Jetson runtime_config.yaml 中：
-    // branch1_axis_correction_deg
-    // 保持完全相同。
-    //
-    // 初始为0.0f，实机先按 ±2° 测，再用0.5°步长精调。
-    // ========================================================
-    float Pick_Yaw_Branch1_Axis_Correction_Deg = 0.0f;
+    // 保留现有舵机机械限位；角度换算失败时拒绝目标，不静默截断。
+    float Pick_Yaw_Servo_Command_Min_Deg = -90.0f;
+    float Pick_Yaw_Servo_Command_Max_Deg =  90.0f;
 
-    // 只允许进入本轮实机实际标定覆盖过的舵机区间。
-    // 该区间宽195°，大于闭合轴完整180°周期经传动后的约190°，
-    // 因而仍能为任意闭合轴方向选择一个等效合法解。
-    float Pick_Yaw_Servo_Command_Min_Deg = -135.0f;
-    float Pick_Yaw_Servo_Command_Max_Deg =  135.0f;
-
-    // 双边抓取：Yaw_Branch由Jetson显式选择物理180°分支。
-    // 0 = 轴向角本身；1 = 与其相差180°的另一物理姿态。
-    float Convert_Grasp_Axis_To_Servo_Yaw_Rad(
-        float Grasp_Axis_Robot_Deg,
-        uint8_t Yaw_Branch
-    ) const;
+    float Convert_Grasp_Axis_To_Servo_Yaw_Rad(float Grasp_Axis_Robot_Deg) const;
 
 
     // ========================================================

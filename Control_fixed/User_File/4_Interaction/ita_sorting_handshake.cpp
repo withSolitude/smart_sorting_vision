@@ -35,7 +35,6 @@ void Class_Sorting_Handshake::Init(
         Struct_Sorting_Pick_Request{};
     Pending_Preopen_mm = 0.0f;
     Pending_Preopen_Valid = false;
-    Pending_Yaw_Branch = 0U;
 
 
     Current_Sort =
@@ -176,7 +175,6 @@ Request_Start_Work()
         Struct_Sorting_Pick_Request{};
     Pending_Preopen_mm = 0.0f;
     Pending_Preopen_Valid = false;
-    Pending_Yaw_Branch = 0U;
 
 
     Current_Sort =
@@ -290,7 +288,6 @@ Request_Stop_Work()
         Struct_Sorting_Pick_Request{};
     Pending_Preopen_mm = 0.0f;
     Pending_Preopen_Valid = false;
-    Pending_Yaw_Branch = 0U;
 
 
     Current_Sort =
@@ -397,30 +394,6 @@ Handle_Frame(
 
 
         // ====================================================
-        // 双边Yaw物理分支参数
-        // ====================================================
-
-        case Sorting_Vision_Mode_PICK_YAW_BRANCH:
-        {
-            if (State == Sorting_Handshake_State_WAIT_PICK_TARGET)
-            {
-                // UART层已经限制Yaw_Branch只能为0/1。
-                // ACK可靠进入发送队列后再锁存，避免上位机认为参数已接受但MCU未保存。
-                if (Communication->Send_Pick_Yaw_Branch_Ack(Data.Yaw_Branch) != HAL_OK)
-                {
-                    break;
-                }
-
-                Pending_Yaw_Branch = Data.Yaw_Branch;
-                break;
-            }
-
-            Communication->Send_Busy();
-            break;
-        }
-
-
-        // ====================================================
         // 顶部相机X/Y
         // ====================================================
 
@@ -446,7 +419,6 @@ Handle_Frame(
                 Current_Pick.X_mm = Data.X_mm;
                 Current_Pick.Y_mm = Data.Y_mm;
                 Current_Pick.Grasp_Axis_Deg = Data.Grasp_Axis_Deg;
-                Current_Pick.Yaw_Branch = Pending_Yaw_Branch;
                 Current_Pick.Preopen_mm = Pending_Preopen_mm;
                 Current_Pick.Preopen_Valid = Pending_Preopen_Valid;
                 Current_Pick.Sequence = Data.Sequence;
@@ -454,7 +426,6 @@ Handle_Frame(
                 // 参数只属于当前这一件，锁定后立刻清空“下一件”缓存。
                 Pending_Preopen_mm = 0.0f;
                 Pending_Preopen_Valid = false;
-                Pending_Yaw_Branch = 0U;
 
                 Pick_Request_Pending = true;
                 Sort_Request_Pending = false;
@@ -817,7 +788,6 @@ Handle_Frame(
 
             Current_Pick =
                 Struct_Sorting_Pick_Request{};
-            Pending_Yaw_Branch = 0U;
 
 
             Current_Sort =
@@ -945,7 +915,6 @@ Notify_Retry_Pick_Ready()
 
     // READY 已经可靠进入发送队列后才清空上一笔失败事务并开放新 PICK。
     Current_Pick = Struct_Sorting_Pick_Request{};
-    Pending_Yaw_Branch = 0U;
     Current_Sort = Struct_Sorting_Result_Request{};
     Pick_Request_Pending = false;
     Sort_Request_Pending = false;
@@ -1021,7 +990,6 @@ Notify_Sort_Done()
     Last_Sort_Done_Valid = true;
 
     Current_Pick = Struct_Sorting_Pick_Request{};
-    Pending_Yaw_Branch = 0U;
     Current_Sort = Struct_Sorting_Result_Request{};
     State = Sorting_Handshake_State_WAIT_PICK_TARGET;
     return true;
@@ -1257,7 +1225,6 @@ Notify_Error(
     Current_Yaw_Calib = Struct_Sorting_Yaw_Calib_Request{};
     Pending_Preopen_mm = 0.0f;
     Pending_Preopen_Valid = false;
-    Pending_Yaw_Branch = 0U;
 
 
     // 机械层进入安全返回。
@@ -1288,7 +1255,6 @@ Reset_To_Stopped()
     Explicit_Stop_Request_Pending = false;
     Current_Pick =
         Struct_Sorting_Pick_Request{};
-    Pending_Yaw_Branch = 0U;
 
 
     Current_Sort =

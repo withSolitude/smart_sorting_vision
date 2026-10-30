@@ -45,8 +45,6 @@ class RuntimeState(Enum):
     # 侧面识别台确认空载后，等待下位机将夹爪安全回到 Disable。
     WAIT_RETRY_PICK_READY = 8
     ERROR = 9
-    # 双边抓取物理Yaw分支命令已发送，等待STM32锁存并ACK。
-    WAIT_PICK_YAW_BRANCH_ACK = 10
     # 串口暂时断开。该状态只暂停当前动作，不结束主程序或比赛会话。
     LINK_OFFLINE = 11
     # 串口已恢复，等待下位机确认 STOP 安全态后再继续分拣。
@@ -88,7 +86,7 @@ class SortingRuntime:
         pick_x_limits_mm: tuple[float, float] | list[float] | None = None,
         pick_y_limits_mm: tuple[float, float] | list[float] | None = None,
         descent_drift_compensator=None,
-        branch1_axis_correction_deg: float = 0.0,
+        yaw_servo_calibration=None,
         retry_interval_s: float = 0.25,
         link_reconnect_interval_s: float = 1.0,
         heartbeat_interval_s: float = 0.5,
@@ -110,13 +108,7 @@ class SortingRuntime:
         self.storage_manager = storage_manager
         self.stm32 = stm32
         self.descent_drift_compensator = descent_drift_compensator
-        self.branch1_axis_correction_deg = float(branch1_axis_correction_deg)
-        if not math.isfinite(self.branch1_axis_correction_deg):
-            raise ValueError("branch1_axis_correction_deg must be finite")
-        if abs(self.branch1_axis_correction_deg) > 15.0:
-            raise ValueError(
-                "branch1_axis_correction_deg absolute value must be <= 15 deg"
-            )
+        self.yaw_servo_calibration = yaw_servo_calibration
 
         self.retry_interval_s = float(retry_interval_s)
         self.link_reconnect_interval_s = max(0.2, float(link_reconnect_interval_s))
@@ -195,7 +187,6 @@ class SortingRuntime:
         # 防止迟到/旧周期回包被误认为当前动作。
         self.current_pick_command: SortingFrame | None = None
         self.current_preopen_command: SortingFrame | None = None
-        self.current_yaw_branch_command: SortingFrame | None = None
         self.current_object: ObjectInfo | None = None
         self.current_box: int | None = None
         self.current_reservation_id: int | None = None
@@ -582,7 +573,6 @@ class SortingRuntime:
         self.current_pick = None
         self.current_pick_command = None
         self.current_preopen_command = None
-        self.current_yaw_branch_command = None
         self.current_object = None
         self.current_box = None
         self.current_reservation_id = None
@@ -615,40 +605,14 @@ class SortingRuntime:
         print(prefix, self.stm32.describe(frame))
         return True
 
-    def _physical_yaw_for_branch(
-        self,
-        axial_yaw_deg: float,
-        branch: int,
-    ) -> float:
-        """与 TopPickPipeline / STM32 保持完全一致的双边物理Yaw。"""
-        axial = ((float(axial_yaw_deg) + 90.0) % 180.0) - 90.0
-
-        if int(branch) == 0:
-            return float(axial)
-
-        if int(branch) == 1:
-            physical = (
-                axial + 180.0
-                if axial < 0.0
-                else axial - 180.0
-            )
-            physical += self.branch1_axis_correction_deg
-            physical = ((physical + 180.0) % 360.0) - 180.0
-            return float(physical)
-
-        raise ValueError(f"yaw branch must be 0 or 1, got {branch}")
-
-    def _send_pick_yaw_branch(self) -> bool:
-        if self.current_yaw_branch_command is None:
-            self._fail("PICK_YAW_BRANCH command missing")
+    def _send_pick_target(self) -> bool:
+        """预开口确认后直接发送抓取目标，不再发送分支选择帧。"""
+        if self.current_pick_command is None:
+            self._fail("PICK_TARGET command missing")
             return False
-        if not self._send_command(
-            self.current_yaw_branch_command,
-            label="PICK_YAW_BRANCH",
-            retry=False,
-        ):
+        if not self._send_command(self.current_pick_command, label="PICK_TARGET", retry=False):
             return False
-        self._enter_state(RuntimeState.WAIT_PICK_YAW_BRANCH_ACK)
+        self._enter_state(RuntimeState.WAIT_PICK_ACK)
         return True
 
     def _retry_pending_command(self) -> None:
@@ -663,9 +627,6 @@ class SortingRuntime:
         if self.state == RuntimeState.WAIT_PICK_PREOPEN_ACK:
             frame = self.current_preopen_command
             label = "PICK_PREOPEN retry"
-        elif self.state == RuntimeState.WAIT_PICK_YAW_BRANCH_ACK:
-            frame = self.current_yaw_branch_command
-            label = "PICK_YAW_BRANCH retry"
         elif self.state in (RuntimeState.WAIT_PICK_ACK, RuntimeState.WAIT_RECOGNITION_READY):
             frame = self.current_pick_command
             label = "PICK_TARGET retry"
@@ -987,10 +948,6 @@ class SortingRuntime:
                 self.pick_ack_timeout_s,
                 "PICK_PREOPEN_ACK timeout",
             ),
-            RuntimeState.WAIT_PICK_YAW_BRANCH_ACK: (
-                self.pick_ack_timeout_s,
-                "PICK_YAW_BRANCH_ACK timeout",
-            ),
             RuntimeState.WAIT_PICK_ACK: (self.pick_ack_timeout_s, "PICK_ACK timeout"),
             RuntimeState.WAIT_RECOGNITION_READY: (
                 self.recognition_ready_timeout_s,
@@ -1136,16 +1093,21 @@ class SortingRuntime:
         y_mm = float(result.y_mm)
         # 兼容旧测试/调试Pipeline；正式TopPickPipeline会始终给出动态yaw_deg。
         yaw_deg = float(getattr(result, "yaw_deg", 0.0))
-        yaw_branch = int(getattr(result, "yaw_branch", 0) if getattr(result, "yaw_branch", None) is not None else 0)
-
-        if not (-90.0 <= yaw_deg <= 90.0):
-            self._fail(f"PICK_TARGET yaw outside protocol range: {yaw_deg:.2f} deg")
+        if not math.isfinite(yaw_deg) or not (-90.0 <= yaw_deg <= 90.0):
+            print(f"[Runtime] 跳过无效抓取角度: {yaw_deg}")
+            self._safe_reset(self.top_pipeline)
             return
-        if yaw_branch not in (0, 1):
-            self._fail(f"PICK_TARGET invalid yaw branch: {yaw_branch}")
+        # 先采用协议实际发送的整度轴向角，尤其避免跨180°区间边界后TCP相反。
+        yaw_deg = ((float(round(yaw_deg)) + 90.0) % 180.0) - 90.0
+        try:
+            if self.yaw_servo_calibration is None:
+                raise ValueError("缺少 calibration.yaw_servo")
+            servo_yaw_deg = self.yaw_servo_calibration.command_deg(yaw_deg)
+            physical_yaw_deg = self.yaw_servo_calibration.physical_axis_deg(yaw_deg)
+        except ValueError as exc:
+            print(f"[Runtime] 跳过当前Yaw不可执行候选: {exc}")
+            self._safe_reset(self.top_pipeline)
             return
-
-        physical_yaw_deg = self._physical_yaw_for_branch(yaw_deg, yaw_branch)
 
         # 下降横向漂移补偿只在真正执行 PICK_TARGET 前应用。
         # TopPickPipeline/空抓对心保持“下降前真实TCP应在物体中心”的几何语义，
@@ -1200,25 +1162,10 @@ class SortingRuntime:
             self._fail(f"PICK_TARGET pack failed: {exc}")
             return
 
-        # 双边抓取分支通过独立10字节命令锁存，不改变原PICK_TARGET帧。
-        branch_tx = SortingFrame(
-            mode=Mode.PICK_YAW_BRANCH,
-            x_mm=0.0,
-            y_mm=0.0,
-            box_id=yaw_branch,
-        )
-        try:
-            self.current_yaw_branch_command = SortingProtocol.unpack(
-                SortingProtocol.pack(branch_tx)
-            )
-        except Exception as exc:
-            self._fail(f"PICK_YAW_BRANCH pack failed: {exc}")
-            return
-
         print(
-            "[Runtime] dual-yaw selected "
+            "[Runtime] single-yaw selected "
             f"axis={self.current_pick_command.yaw_deg:+.1f}deg "
-            f"branch={yaw_branch} physical={physical_yaw_deg:+.1f}deg"
+            f"physical={physical_yaw_deg:+.1f}deg servo={servo_yaw_deg:+.2f}deg"
         )
 
         preopen_mm = getattr(result, "preopen_mm", None)
@@ -1256,12 +1203,12 @@ class SortingRuntime:
             self._enter_state(RuntimeState.WAIT_PICK_PREOPEN_ACK)
             return
 
-        # 圆形/几何回退等没有可靠宽度时，保持旧版行为：
-        # 不发动态预开口，由下位机使用固定 Claw_Servo_Motor_Angle_Pre_Clip。
+        # 没有可靠动态预开口时保持原有固定预收缩流程，直接发送抓取目标。
         self.current_preopen_command = None
         print("[Runtime] dynamic preopen unavailable -> legacy fixed pre-clip")
-        if not self._send_pick_yaw_branch():
+        if not self._send_pick_target():
             return
+
 
     # =====================================================
     # 侧面识别
@@ -1477,31 +1424,8 @@ class SortingRuntime:
                 if self.current_pick_command is None:
                     self._fail("PICK_PREOPEN_ACK received without prepared PICK_TARGET")
                     return
-                if not self._send_pick_yaw_branch():
+                if not self._send_pick_target():
                     return
-            return
-
-        if mode == Mode.MCU_PICK_YAW_BRANCH_ACK:
-            if self.state == RuntimeState.WAIT_PICK_YAW_BRANCH_ACK:
-                expected = self.current_yaw_branch_command
-                if expected is None:
-                    self._fail("PICK_YAW_BRANCH_ACK received without active branch command")
-                    return
-                if int(msg.box_id) != int(expected.box_id):
-                    self._fail(
-                        "PICK_YAW_BRANCH_ACK mismatch: "
-                        f"expected={expected.box_id}, got={msg.box_id}"
-                    )
-                    return
-                print(f"[Runtime] PICK YAW BRANCH ACK {msg.box_id}")
-                if self.current_pick_command is None:
-                    self._fail("PICK_YAW_BRANCH_ACK received without prepared PICK_TARGET")
-                    return
-                if not self._send_command(
-                    self.current_pick_command, label="PICK_TARGET", retry=False
-                ):
-                    return
-                self._enter_state(RuntimeState.WAIT_PICK_ACK)
             return
 
         if mode == Mode.MCU_PICK_TARGET_ACK:

@@ -20,6 +20,7 @@ from runtime.app_config import load_runtime_config
 from vision.cameras.top_camera import TopCamera
 from vision.pipeline.top_pick_pipeline import TopPickPipeline
 from vision.calibration.yaw_tcp_compensation import YawTcpCompensator
+from vision.calibration.yaw_servo import YawServoCalibration
 from vision.grasp.orientation_planner import polygon_long_axis_image_deg
 
 
@@ -180,6 +181,7 @@ def build_pipeline(cfg: dict, comp: YawTcpCompensator) -> TopPickPipeline:
     preopen = orient.get("dynamic_preopen", {}) or {}
     x_limits = cfg["mechanics"]["workspace_mm"]["x"]
     y_limits = cfg["mechanics"]["workspace_mm"]["y"]
+    yaw_servo = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
     return TopPickPipeline(
         model_path=top_model_cfg["path"],
         calibration_path=cfg["calibration"]["pixel_to_robot"],
@@ -220,6 +222,7 @@ def build_pipeline(cfg: dict, comp: YawTcpCompensator) -> TopPickPipeline:
         x_limits_mm=x_limits,
         y_limits_mm=y_limits,
         yaw_tcp_compensator=comp,
+        yaw_servo_calibration=yaw_servo,
     )
 
 

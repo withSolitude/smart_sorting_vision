@@ -14,17 +14,24 @@ ROOT = Path(
     __file__
 ).resolve().parents[1]
 
+# 项目根目录用于读取当前正式 YAML；保留 ROOT 以兼容该旧调试脚本的输出路径。
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 if str(ROOT) not in sys.path:
     sys.path.insert(
         0,
         str(ROOT),
     )
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 from vision.cameras.top_camera import TopCamera
 from vision.pipeline.top_pick_pipeline import (
     TopPickPipeline,
 )
+from runtime.app_config import load_runtime_config
+from vision.calibration.yaw_servo import YawServoCalibration
 
 
 MODEL_PATH = (
@@ -142,6 +149,10 @@ def main() -> None:
         exist_ok=True,
     )
 
+    # 使用正式 YAML 的单一 180° Yaw 标定，避免该旧脚本在处理候选时缺少真实舵机映射。
+    cfg = load_runtime_config(PROJECT_ROOT, PROJECT_ROOT / "config" / "runtime_config.yaml")
+    yaw_servo = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
+
     pipeline = TopPickPipeline(
         model_path=
             MODEL_PATH,
@@ -180,6 +191,7 @@ def main() -> None:
         #
         x_limits_mm=None,
         y_limits_mm=None,
+        yaw_servo_calibration=yaw_servo,
     )
 
     camera = TopCamera()

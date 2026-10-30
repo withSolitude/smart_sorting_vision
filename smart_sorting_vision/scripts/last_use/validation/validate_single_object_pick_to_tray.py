@@ -22,6 +22,7 @@ from vision.cameras.top_camera import TopCamera
 from vision.pipeline.top_pick_pipeline import TopPickPipeline
 from vision.calibration.yaw_tcp_compensation import YawTcpCompensator
 from vision.calibration.descent_drift_compensation import DescentDriftCompensator
+from vision.calibration.yaw_servo import YawServoCalibration
 
 
 class UserStopRequested(RuntimeError):
@@ -94,6 +95,7 @@ def build_pipeline(cfg: dict) -> TopPickPipeline:
     y_limits = cfg["mechanics"]["workspace_mm"]["y"]
     comp = build_compensator(top_vision_cfg)
     preopen = orient.get("dynamic_preopen", {}) or {}
+    yaw_servo = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
 
     return TopPickPipeline(
         model_path=top_model_cfg["path"],
@@ -135,6 +137,7 @@ def build_pipeline(cfg: dict) -> TopPickPipeline:
         x_limits_mm=x_limits,
         y_limits_mm=y_limits,
         yaw_tcp_compensator=comp,
+        yaw_servo_calibration=yaw_servo,
     )
 
 

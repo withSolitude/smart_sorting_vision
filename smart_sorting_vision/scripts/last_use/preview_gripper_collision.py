@@ -16,6 +16,7 @@ from runtime.app_config import load_runtime_config
 from vision.cameras.top_camera import TopCamera
 from vision.pipeline.top_pick_pipeline import TopPickPipeline
 from vision.calibration.yaw_tcp_compensation import YawTcpCompensator
+from vision.calibration.yaw_servo import YawServoCalibration
 
 
 def build_pipeline(cfg: dict, *, debug_rejections: bool) -> TopPickPipeline:
@@ -27,6 +28,7 @@ def build_pipeline(cfg: dict, *, debug_rejections: bool) -> TopPickPipeline:
     gc = top_cfg.get("gripper_collision", {}) or {}
     search = gc.get("grasp_search", {}) or {}
     body = gc.get("body", {}) or {}
+    yaw_servo = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
 
     mechanics = cfg.get("mechanics", {}) or {}
     x_limits = mechanics["workspace_mm"]["x"]
@@ -118,6 +120,7 @@ def build_pipeline(cfg: dict, *, debug_rejections: bool) -> TopPickPipeline:
         x_limits_mm=x_limits,
         y_limits_mm=y_limits,
         yaw_tcp_compensator=yaw_comp,
+        yaw_servo_calibration=yaw_servo,
     )
 
 

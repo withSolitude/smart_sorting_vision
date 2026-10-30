@@ -112,12 +112,6 @@ struct Struct_Sorting_Pick_Request
     float Grasp_Axis_Deg =
         0.0f;
 
-    // 双边Yaw物理分支：
-    // 0 = 当前分支；1 = 与Grasp_Axis_Deg相差180°的另一物理分支。
-    // 这里只保存上位机选好的分支，不在握手层重新选择。
-    uint8_t Yaw_Branch =
-        0U;
-
     // 视觉估计的“下降前夹爪目标预开口”，单位mm。
     // Valid=false 时 HoldingJaw 保持旧固定预收缩角。
     float Preopen_mm =
@@ -401,12 +395,10 @@ private:
     Struct_Sorting_Pick_Request
         Current_Pick{};
 
-    // PICK_PREOPEN / PICK_YAW_BRANCH 与 PICK_TARGET 分帧发送。
-    // 这里只保存“下一件”的参数；PICK_TARGET锁定后复制进Current_Pick并清空，
-    // 防止参数串到下一件。Yaw_Branch默认0以兼容原有单边PICK_TARGET调试工具。
+    // PICK_PREOPEN 与 PICK_TARGET 分帧发送。
+    // 这里只保存“下一件”的预开口；PICK_TARGET锁定后复制并清空，防止串件。
     float Pending_Preopen_mm = 0.0f;
     bool Pending_Preopen_Valid = false;
-    uint8_t Pending_Yaw_Branch = 0U;
 
     Struct_Sorting_Result_Request
         Current_Sort{};

@@ -643,7 +643,6 @@ ShapeClassifier → 真实形状
 
 ```text
 顶部识别
-→ PICK_YAW_BRANCH
 → PICK_TARGET
 → PICK_ACK
 → RECOGNITION_READY

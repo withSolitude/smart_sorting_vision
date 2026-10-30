@@ -52,10 +52,6 @@ class Mode(IntEnum):
     # 该命令只锁存参数，不立即驱动夹爪；真正预收缩仍在 PICK 流程内执行。
     PICK_PREOPEN = 0x07
 
-    # 双边抓取：锁存本次PICK使用的物理Yaw分支。
-    # AUX = 0/1；0表示轴向角本身这一侧，1表示其180°等效的另一侧。
-    PICK_YAW_BRANCH = 0x08
-
     STOP = 0x7F
 
     MCU_HEARTBEAT_ACK = 0x80
@@ -88,9 +84,6 @@ class Mode(IntEnum):
 
     # PICK_PREOPEN 参数已锁存。X字段回显量化后的预开口(mm)。
     MCU_PICK_PREOPEN_ACK = 0x90
-
-    # 双边抓取物理Yaw分支已锁存。AUX回显0/1。
-    MCU_PICK_YAW_BRANCH_ACK = 0x91
 
     MCU_ERROR = 0xE0
 
@@ -131,7 +124,6 @@ class SortingProtocol:
         STORAGE_TEST / STORAGE_TEST_ACK / STORAGE_TEST_DONE -> Box_ID
         RETRY_PICK / MCU_RETRY_PICK_READY -> 0
         PICK_PREOPEN / MCU_PICK_PREOPEN_ACK -> 0（X字段为预开口mm）
-        PICK_YAW_BRANCH / MCU_PICK_YAW_BRANCH_ACK -> 0/1（物理Yaw分支）
         MCU_ERROR -> Error_Code
         其他模式 -> 0
 
@@ -360,22 +352,6 @@ def make_pick_target(
     )
 
 
-
-def make_pick_yaw_branch(branch: int) -> SortingFrame:
-    """构造双边抓取物理Yaw分支命令。
-
-    branch=0: 使用轴向yaw本身对应的物理侧。
-    branch=1: 使用与其相差180°的另一物理侧。
-    """
-    value = int(branch)
-    if value not in (0, 1):
-        raise ValueError(f"PICK_YAW_BRANCH branch must be 0 or 1, got {branch}")
-    return SortingFrame(
-        mode=Mode.PICK_YAW_BRANCH,
-        x_mm=0.0,
-        y_mm=0.0,
-        box_id=value,
-    )
 
 def make_sort_result(
     box_id: int,

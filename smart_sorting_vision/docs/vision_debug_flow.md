@@ -214,7 +214,7 @@ python scripts/debug/test_side_shape.py
 2. 使用通信调试脚本发送心跳，确认持续收到 `MCU_HEARTBEAT_ACK`。
 3. 发送 `STOP`，确认收到安全 `MCU_STOP_ACK`；收到 ACK 前不要发送抓取命令。
 4. 用 `CALIB_MOVE` 做小范围单点移动，确认协议坐标、视觉坐标和机械实际方向一致。
-5. 用一个物体做完整链路：`PICK_PREOPEN → PICK_YAW_BRANCH → PICK_TARGET → PICK_ACK → RECOGNITION_READY → SORT_RESULT → SORT_DONE`。
+5. 用一个物体做完整链路：`PICK_PREOPEN → PICK_TARGET → PICK_ACK → RECOGNITION_READY → SORT_RESULT → SORT_DONE`。
 6. 测试拔插 USB-UART 或暂时停止下位机：上位机应进入 `LINK_OFFLINE`，停止当前周期并重连；恢复后重新 STOP 同步，不应退出进程。
 
 通信测试中只改变一个变量。若收到 `MCU_ERROR`，先查看下位机机械反馈和错误码，不要用提高超时阈值掩盖真实故障。

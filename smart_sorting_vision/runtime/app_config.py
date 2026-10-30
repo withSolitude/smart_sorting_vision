@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from vision.calibration.yaw_servo import YawServoCalibration
 
 
 class ConfigError(ValueError):
@@ -159,6 +160,12 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
     cfg["mechanics"]["workspace_mm"]["x"] = list(x_limits)
     cfg["mechanics"]["workspace_mm"]["y"] = list(y_limits)
 
+    # 抓取方向和TCP共用此标定，不再在其他块另存一组Yaw范围。
+    try:
+        YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConfigError(f"calibration.yaw_servo 无效: {exc}") from exc
+
     top_tcp_comp = cfg["vision"]["top"].get("yaw_tcp_compensation", {})
     if bool(top_tcp_comp.get("enabled", False)):
         try:
@@ -168,8 +175,6 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
                 raise ValueError("offset_axis0_mm 必须为 [x, y]")
             float(offset_axis0[0])
             float(offset_axis0[1])
-            min_axis = float(top_tcp_comp.get("min_axis_deg", -87.0))
-            max_axis = float(top_tcp_comp.get("max_axis_deg", 89.0))
             visual_to_command = top_tcp_comp.get(
                 "visual_to_command_matrix",
                 [[1.0, 0.0], [0.0, 1.0]],
@@ -186,8 +191,6 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
                 raise ValueError("visual_to_command_matrix 不可逆/退化")
         except (KeyError, TypeError, ValueError) as exc:
             raise ConfigError(f"vision.top.yaw_tcp_compensation 无效: {exc}") from exc
-        if min_axis >= max_axis:
-            raise ConfigError("vision.top.yaw_tcp_compensation: min_axis_deg 必须小于 max_axis_deg")
         _ = reference_axis
 
     descent_drift = cfg["vision"]["top"].get("descent_drift_compensation", {})

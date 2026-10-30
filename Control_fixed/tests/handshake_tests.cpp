@@ -37,7 +37,7 @@ struct Rig
     void queue(Enum_Sorting_Vision_Mode mode,float x=0,float y=0,uint8_t box=0)
     {
         Struct_Sorting_Vision_UART_Data d;d.Mode=mode;d.X_mm=x;d.Y_mm=y;d.Box_ID=box;
-        d.Yaw_Branch=box;incoming.push_back(d);
+        incoming.push_back(d);
     }
     void command(Enum_Sorting_Vision_Mode mode,float x=0,float y=0,uint8_t box=0)
     { queue(mode,x,y,box);handshake.Process(); }
@@ -132,7 +132,6 @@ static void test_stop_clears_retry_and_preopen()
 {
     Rig r;assert(r.handshake.Request_Start_Work());
     r.command(Sorting_Vision_Mode_PICK_PREOPEN,20);
-    r.command(Sorting_Vision_Mode_PICK_YAW_BRANCH,0,0,1);
     r.command(Sorting_Vision_Mode_PICK_TARGET,-10,10);
     assert(r.handshake.Notify_Recognition_Ready());
     r.command(Sorting_Vision_Mode_RETRY_PICK);
@@ -144,8 +143,24 @@ static void test_stop_clears_retry_and_preopen()
     r.command(Sorting_Vision_Mode_PICK_TARGET,-5,5);
     Struct_Sorting_Pick_Request pick;
     assert(r.handshake.Pop_Pick_Request(pick));
-    assert(!pick.Preopen_Valid && pick.Yaw_Branch==0);
-    std::puts("PASS: STOP clears retry, per-item preopen and yaw branch before the next transaction");
+    assert(!pick.Preopen_Valid);
+    std::puts("PASS: STOP clears retry and per-item preopen before the next transaction");
+}
+
+static void test_pick_without_branch_transaction()
+{
+    Rig r;
+    assert(r.handshake.Request_Start_Work());
+    r.command(Sorting_Vision_Mode_PICK_PREOPEN,21.6f);
+    assert(sent.back().Mode==Sorting_Vision_Mode_MCU_PICK_PREOPEN_ACK);
+    r.command(Sorting_Vision_Mode_PICK_TARGET,-146.7f,-88.0f);
+    assert(sent.back().Mode==Sorting_Vision_Mode_MCU_PICK_TARGET_ACK);
+    Struct_Sorting_Pick_Request pick;
+    assert(r.handshake.Pop_Pick_Request(pick));
+    assert(pick.Preopen_Valid && std::fabs(pick.Preopen_mm-21.6f)<0.001f);
+    assert(std::fabs(pick.X_mm+146.7f)<0.001f && std::fabs(pick.Y_mm+88.0f)<0.001f);
+    assert(!r.handshake.Pop_Pick_Request(pick));
+    std::puts("PASS: preopen ACK followed directly by PICK_TARGET creates one pick without a yaw branch command");
 }
 
 static void test_simultaneous_fault_preserves_explicit_stop()
@@ -181,6 +196,7 @@ static void test_error_notification_retries_before_start()
 
 int main()
 {
+    test_pick_without_branch_transaction();
     test_storage_exclusion_and_done_retry();test_stop_cancels_and_defers_ack();
     test_completion_notifications_preserve_state();test_stop_clears_retry_and_preopen();
     test_simultaneous_fault_preserves_explicit_stop();test_error_notification_retries_before_start();

@@ -16,6 +16,7 @@ from runtime.app_config import load_runtime_config
 from vision.cameras.top_camera import TopCamera
 from vision.pipeline.top_pick_pipeline import TopPickPipeline
 from vision.grasp.orientation_planner import polygon_long_axis_image_deg
+from vision.calibration.yaw_servo import YawServoCalibration
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,6 +53,7 @@ def main() -> int:
     top_consensus = top_vision_cfg["consensus"]
     top_orientation = top_vision_cfg.get("grasp_orientation", {})
     top_preopen = top_orientation.get("dynamic_preopen", {}) or {}
+    yaw_servo = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
     calibration = args.calibration or cfg["calibration"]["pixel_to_robot"]
 
     TopCamera.configure(
@@ -90,6 +92,7 @@ def main() -> int:
         preopen_standby_servo_deg=top_preopen.get("standby_servo_deg", -95.0),
         x_limits_mm=cfg["mechanics"]["workspace_mm"]["x"],
         y_limits_mm=cfg["mechanics"]["workspace_mm"]["y"],
+        yaw_servo_calibration=yaw_servo,
     )
 
     win = "TOP DYNAMIC YAW PREVIEW - Q quit / R reset consensus"

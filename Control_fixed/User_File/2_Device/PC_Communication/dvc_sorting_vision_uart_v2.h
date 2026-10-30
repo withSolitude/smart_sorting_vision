@@ -18,7 +18,6 @@
 // [6] Y_H
 // [7] AUX
 //     PICK_TARGET / MCU_PICK_TARGET_ACK: signed int8 抓取闭合轴角度(deg)
-//     PICK_YAW_BRANCH / MCU_PICK_YAW_BRANCH_ACK: Yaw_Branch(0/1)
 //     SORT_RESULT / SORT_ACK / SORT_DONE: Box_ID
 //     MCU_ERROR: Error_Code
 // [8] 0D
@@ -100,13 +99,6 @@ enum Enum_Sorting_Vision_Mode : uint8_t
     // 只锁存参数，不立即动作；真正预收缩仍由抓取状态机执行。
     Sorting_Vision_Mode_PICK_PREOPEN =
         0x07,
-
-    // 双边Yaw物理分支选择。AUX = 0/1。
-    // 0: 使用PICK_TARGET中的轴向Yaw本支；
-    // 1: 使用与其180°等价的另一物理分支。
-    // 该命令只锁存参数，不立即动作。
-    Sorting_Vision_Mode_PICK_YAW_BRANCH =
-        0x08,
 
     // 上位机主动急停/取消
     //
@@ -203,10 +195,6 @@ enum Enum_Sorting_Vision_Mode : uint8_t
     Sorting_Vision_Mode_MCU_PICK_PREOPEN_ACK =
         0x90,
 
-    // 双边Yaw物理分支参数已锁存。AUX回显Yaw_Branch(0/1)。
-    Sorting_Vision_Mode_MCU_PICK_YAW_BRANCH_ACK =
-        0x91,
-
     // 错误
     Sorting_Vision_Mode_MCU_ERROR =
         0xE0,
@@ -279,11 +267,6 @@ struct Struct_Sorting_Vision_UART_Data
 
     float Grasp_Axis_Deg =
         0.0f;
-
-    // 仅 PICK_YAW_BRANCH / MCU_PICK_YAW_BRANCH_ACK 使用。
-    // 0 = 当前物理分支；1 = 180°等价的另一物理分支。
-    uint8_t Yaw_Branch =
-        0U;
 
     uint32_t Sequence =
         0;
@@ -378,22 +361,6 @@ public:
             Preopen_mm,
             0.0f,
             0
-        );
-    }
-
-
-    // ========================================================
-    // 双边Yaw物理分支 ACK
-    // ========================================================
-
-    inline HAL_StatusTypeDef
-    Send_Pick_Yaw_Branch_Ack(const uint8_t &Yaw_Branch)
-    {
-        return Send_Frame(
-            Sorting_Vision_Mode_MCU_PICK_YAW_BRANCH_ACK,
-            0.0f,
-            0.0f,
-            Yaw_Branch
         );
     }
 

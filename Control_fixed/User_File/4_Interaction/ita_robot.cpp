@@ -1224,8 +1224,7 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
                     Pending_Pick_Request.Y_mm,
 
                     Convert_Grasp_Axis_To_Servo_Yaw_Rad(
-                        Pending_Pick_Request.Grasp_Axis_Deg,
-                        Pending_Pick_Request.Yaw_Branch
+                        Pending_Pick_Request.Grasp_Axis_Deg
                     ),
 
                     Pending_Pick_Request.Preopen_mm,
@@ -1445,132 +1444,37 @@ TIM_1ms_Calculate_Callback()
 }
 
 // ============================================================
-// 将机械XY坐标系中的夹爪“闭合轴”方向 + 物理分支
-// 转换成Yaw舵机命令
-//
-// 双边抓取约定：
-// 1. Jetson仍发送180°周期的轴向yaw，范围[-90, 90)；
-// 2. Yaw_Branch=0：使用轴向角本身；
-// 3. Yaw_Branch=1：使用与轴向角相差180°的另一物理姿态；
-// 4. 下位机不再自行“选最近分支”，只执行Jetson明确选择的分支；
-// 5. 若该物理姿态对应的舵机角超出实机安全范围，返回NaN，
-//    继续由Start_Grap按既有逻辑报Grap_Target_Invalid。
-//
-// 这样可保证：Jetson用于Yaw-TCP补偿的物理姿态，与STM32真正执行的
-// 物理姿态完全一致。
+// 单个 180° 周期的闭合轴方向转换。
+// 上下位机使用相同规则：先把相对标定参考轴的差角归一到 [-90,90)，
+// 再换算舵机命令。TCP 补偿也必须使用这一个物理姿态。
 // ============================================================
-float Class_Robot::Convert_Grasp_Axis_To_Servo_Yaw_Rad(
-    float Grasp_Axis_Robot_Deg,
-    uint8_t Yaw_Branch) const
+float Class_Robot::Convert_Grasp_Axis_To_Servo_Yaw_Rad(float Grasp_Axis_Robot_Deg) const
 {
     if (!std::isfinite(Grasp_Axis_Robot_Deg) ||
         !std::isfinite(Pick_Yaw_Reference_Closing_Axis_Robot_Deg) ||
         !std::isfinite(Pick_Yaw_Reference_Servo_Command_Deg) ||
         !std::isfinite(Pick_Yaw_Servo_Deg_Per_Gripper_Deg) ||
-        std::fabs(Pick_Yaw_Servo_Deg_Per_Gripper_Deg) < 1.0e-6f ||
-        Yaw_Branch > 1U)
+        std::fabs(Pick_Yaw_Servo_Deg_Per_Gripper_Deg) < 1.0e-6f)
     {
         return NAN;
     }
 
-    // --------------------------------------------------------
-    // 与Jetson normalize_axial_deg()保持完全相同的语义：
-    // 任意180°周期闭合轴统一归一到[-90, 90)。
-    // --------------------------------------------------------
-    float axial_yaw_deg =
-        std::fmod(
-            Grasp_Axis_Robot_Deg + 90.0f,
-            180.0f
-        );
+    float delta_deg = std::fmod(
+        Grasp_Axis_Robot_Deg - Pick_Yaw_Reference_Closing_Axis_Robot_Deg + 90.0f,
+        180.0f);
+    if (delta_deg < 0.0f) delta_deg += 180.0f;
+    delta_deg -= 90.0f;
 
-    if (axial_yaw_deg < 0.0f)
-    {
-        axial_yaw_deg += 180.0f;
-    }
-
-    axial_yaw_deg -= 90.0f;
-
-    if (axial_yaw_deg >= 90.0f)
-    {
-        axial_yaw_deg -= 180.0f;
-    }
-
-    // --------------------------------------------------------
-    // 根据Jetson已经选好的branch得到唯一“有向物理Yaw”。
-    //
-    // 例：
-    //   axial=-88°, branch=0 -> physical=-88°
-    //   axial=-88°, branch=1 -> physical=+92°
-    //
-    //   axial=+60°, branch=0 -> physical=+60°
-    //   axial=+60°, branch=1 -> physical=-120°
-    // --------------------------------------------------------
-    float physical_yaw_deg = axial_yaw_deg;
-
-    if (Yaw_Branch == 1U)
-    {
-        physical_yaw_deg =
-            (axial_yaw_deg < 0.0f)
-            ?
-            (axial_yaw_deg + 180.0f)
-            :
-            (axial_yaw_deg - 180.0f);
-
-        // ----------------------------------------------------
-        // branch=1 专用方向微调
-        //
-        // 注意：Jetson 端必须使用完全相同的修正值，
-        // 否则上位机的 Yaw-TCP 补偿与实际物理Yaw会不一致。
-        // ----------------------------------------------------
-        physical_yaw_deg +=
-            Pick_Yaw_Branch1_Axis_Correction_Deg;
-
-        // 统一到 [-180, 180)
-        physical_yaw_deg =
-            std::fmod(
-                physical_yaw_deg + 180.0f,
-                360.0f
-            );
-
-        if (physical_yaw_deg < 0.0f)
-        {
-            physical_yaw_deg += 360.0f;
-        }
-
-        physical_yaw_deg -= 180.0f;
-    }
-
-    // --------------------------------------------------------
-    // 最终Yaw实机标定：
-    // q = q0 + k * (theta - theta0)
-    //
-    // theta现在必须使用上面已经确定的physical_yaw_deg，
-    // 不能再对theta自动加/减180°重新选分支。
-    // --------------------------------------------------------
-    const float gripper_delta_deg =
-        physical_yaw_deg -
-        Pick_Yaw_Reference_Closing_Axis_Robot_Deg;
-
-    const float servo_command_deg =
-        Pick_Yaw_Reference_Servo_Command_Deg +
-        Pick_Yaw_Servo_Deg_Per_Gripper_Deg *
-        gripper_delta_deg;
-
-    // --------------------------------------------------------
-    // 保留原有硬安全限制：绝不clip。
-    // 选中的branch如果实际不可执行，直接返回NaN，
-    // 后续Start_Grap会按原逻辑拒绝目标。
-    // --------------------------------------------------------
+    const float servo_command_deg = Pick_Yaw_Reference_Servo_Command_Deg +
+        Pick_Yaw_Servo_Deg_Per_Gripper_Deg * delta_deg;
     if (!std::isfinite(servo_command_deg) ||
         servo_command_deg < Pick_Yaw_Servo_Command_Min_Deg ||
         servo_command_deg > Pick_Yaw_Servo_Command_Max_Deg)
     {
         return NAN;
     }
-
     return servo_command_deg * PI / 180.0f;
 }
-
 
 HAL_StatusTypeDef Class_Robot::Confirm_XY_Origin_mm(float X_mm, float Y_mm)
 {
