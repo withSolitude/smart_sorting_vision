@@ -1,5 +1,5 @@
-# Python虚拟环境
-.venv/
+# Python虚拟环境及重建备份（如 .venv_backup_before_rebuild）
+.venv*/
 
 # Python缓存
 __pycache__/
