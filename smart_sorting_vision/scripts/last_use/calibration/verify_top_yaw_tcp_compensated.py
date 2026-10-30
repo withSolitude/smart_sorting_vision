@@ -19,42 +19,43 @@ if str(ROOT) not in sys.path:
 from communication.sorting_protocol import Mode, SortingFrame, make_calib_yaw
 from communication.stm32_link import STM32Link
 from runtime.app_config import load_runtime_config
+from vision.calibration.yaw_servo import YawServoCalibration
 from vision.cameras.top_camera import TopCamera
 from vision.calibration.pixel_to_robot import PixelToRobotTransform
 from vision.calibration.yaw_tcp_compensation import YawTcpCompensator
 
 
-# Must match the final firmware parameters in ita_robot.h.
-# ============================================================
-# Final Yaw calibration - 2026-09-25
-# calibration XY = (-30, 3)
-# ============================================================
-
-YAW_REF_AXIS_DEG = 43.590200
-YAW_REF_SERVO_DEG = -0.622672
-YAW_SERVO_PER_AXIS = -1.10205336
-
-YAW_SERVO_MIN_DEG = -60.0
-YAW_SERVO_MAX_DEG = 135.0
-
+# 验证报告字段由运行 YAML 初始化，不再维护旧标定常量。
+YAW_CALIBRATION: YawServoCalibration | None = None
+YAW_REF_AXIS_DEG = None
+YAW_REF_SERVO_DEG = None
+YAW_SERVO_PER_AXIS = None
+YAW_SERVO_MIN_DEG = None
+YAW_SERVO_MAX_DEG = None
 
 def apply_yaw_config(cfg: dict) -> None:
-    """从 YAML 读取 Yaw 映射，避免 TCP 验证使用旧硬编码。"""
-    values = cfg.get("calibration", {}).get("yaw_servo", {})
-    required = (
-        "reference_axis_deg", "reference_servo_deg",
-        "servo_deg_per_axis_deg", "safe_command_min_deg",
-        "safe_command_max_deg",
-    )
-    if not all(key in values for key in required):
-        raise ValueError("calibration.yaw_servo 配置不完整")
+    """与正式抓取共用同一份 YAML 标定和唯一 180° 物理姿态映射。"""
+    global YAW_CALIBRATION
     global YAW_REF_AXIS_DEG, YAW_REF_SERVO_DEG, YAW_SERVO_PER_AXIS
     global YAW_SERVO_MIN_DEG, YAW_SERVO_MAX_DEG
-    YAW_REF_AXIS_DEG = float(values["reference_axis_deg"])
-    YAW_REF_SERVO_DEG = float(values["reference_servo_deg"])
-    YAW_SERVO_PER_AXIS = float(values["servo_deg_per_axis_deg"])
-    YAW_SERVO_MIN_DEG = float(values["safe_command_min_deg"])
-    YAW_SERVO_MAX_DEG = float(values["safe_command_max_deg"])
+    YAW_CALIBRATION = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
+    YAW_REF_AXIS_DEG = YAW_CALIBRATION.reference_axis_deg
+    YAW_REF_SERVO_DEG = YAW_CALIBRATION.reference_servo_deg
+    YAW_SERVO_PER_AXIS = YAW_CALIBRATION.servo_deg_per_axis_deg
+    YAW_SERVO_MIN_DEG = YAW_CALIBRATION.safe_command_min_deg
+    YAW_SERVO_MAX_DEG = YAW_CALIBRATION.safe_command_max_deg
+    global TCP_REFERENCE_AXIS_DEG, TCP_OFFSET_AXIS0_X_MM, TCP_OFFSET_AXIS0_Y_MM
+    global TCP_MIN_AXIS_DEG, TCP_MAX_AXIS_DEG, VISUAL_TO_COMMAND_MATRIX
+    global COMMAND_TO_VISUAL_TCP_MATRIX, TCP_CLOSING_BIAS_MM, TCP_LONGITUDINAL_BIAS_MM
+    tcp = cfg["vision"]["top"]["yaw_tcp_compensation"]
+    TCP_REFERENCE_AXIS_DEG = float(tcp["reference_axis_deg"])
+    TCP_OFFSET_AXIS0_X_MM, TCP_OFFSET_AXIS0_Y_MM = map(float, tcp["offset_axis0_mm"])
+    TCP_MIN_AXIS_DEG = YAW_CALIBRATION.physical_min_deg
+    TCP_MAX_AXIS_DEG = YAW_CALIBRATION.physical_max_deg
+    VISUAL_TO_COMMAND_MATRIX = tuple(tuple(map(float, row)) for row in tcp["visual_to_command_matrix"])
+    COMMAND_TO_VISUAL_TCP_MATRIX = tuple(tuple(map(float, row)) for row in np.linalg.inv(VISUAL_TO_COMMAND_MATRIX))
+    TCP_CLOSING_BIAS_MM = float(tcp.get("closing_bias_mm", 0.0))
+    TCP_LONGITUDINAL_BIAS_MM = float(tcp.get("longitudinal_bias_mm", 0.0))
 
 
 # ============================================================
@@ -75,51 +76,18 @@ DEFAULT_TARGETS_DEG = [
 ]
 
 
-# ============================================================
-# Reference yaw of the NEW XY/H teaching pose
-#
-# New H teaching kept Yaw/Lift/Claw geometry fixed.
-# Standby Yaw servo command during that calibration = 110 deg.
-#
-# Using the final yaw calibration:
-# physical closing axis at servo=110 deg ~= -56.788489 deg
-# ============================================================
-
-TCP_REFERENCE_AXIS_DEG = -56.788489
-
-
-# ============================================================
-# TCP rotating-offset fit
-# XY=(-30,3), positive-angle fit
-#
-# radius = 15.446985 mm
-# fit RMSE = 0.100565 mm
-# fit MAX  = 0.164872 mm
-# ============================================================
-
-TCP_OFFSET_AXIS0_X_MM = 0.2362879328
-TCP_OFFSET_AXIS0_Y_MM = 15.4451777630
-
-# Verification range only.
-# 0 deg is a very small extrapolation from the 10..60 deg fit
-# and was independently visible/testable.
-TCP_MIN_AXIS_DEG = 0.0
-TCP_MAX_AXIS_DEG = 60.0
+# TCP 参数也由 apply_yaw_config 从同一份 YAML 读取。
+TCP_REFERENCE_AXIS_DEG = None
+TCP_OFFSET_AXIS0_X_MM = None
+TCP_OFFSET_AXIS0_Y_MM = None
+TCP_MIN_AXIS_DEG = None
+TCP_MAX_AXIS_DEG = None
+VISUAL_TO_COMMAND_MATRIX = None
+COMMAND_TO_VISUAL_TCP_MATRIX = None
+TCP_CLOSING_BIAS_MM = None
+TCP_LONGITUDINAL_BIAS_MM = None
 
 
-# ============================================================
-# New XY command <-> visual TCP Jacobian
-# ============================================================
-
-VISUAL_TO_COMMAND_MATRIX = (
-    (0.72533465, 0.01675850),
-    (0.00479271, 0.64797763),
-)
-
-COMMAND_TO_VISUAL_TCP_MATRIX = (
-    (1.37890961, -0.03566244),
-    (-0.01019898, 1.54352692),
-)
 class UserStopRequested(RuntimeError):
     pass
 
@@ -138,14 +106,10 @@ def axial_error_deg(measured_deg: float, target_deg: float) -> float:
 
 
 def axis_to_servo_deg(target_axis_deg: float, current_servo_deg: float = 0.0) -> float:
-    """Mirror production firmware's unique directed-yaw branch."""
-    target_axis_deg = normalize_axial_deg(target_axis_deg)
-    q = YAW_REF_SERVO_DEG + YAW_SERVO_PER_AXIS * (target_axis_deg - YAW_REF_AXIS_DEG)
-    if not (YAW_SERVO_MIN_DEG <= q <= YAW_SERVO_MAX_DEG):
-        raise ValueError(
-            f"unique yaw branch is outside calibrated servo range: axis={target_axis_deg:+.2f}, q={q:+.2f}"
-        )
-    return float(q)
+    """固定映射到唯一姿态；保留 current_servo_deg 形参兼容既有验证调用。"""
+    if YAW_CALIBRATION is None:
+        raise RuntimeError("请先从 runtime_config.yaml 调用 apply_yaw_config")
+    return YAW_CALIBRATION.command_deg(target_axis_deg)
 
 
 def parse_targets(text: str) -> list[float]:
@@ -497,6 +461,8 @@ def main() -> int:
         min_axis_deg=TCP_MIN_AXIS_DEG,
         max_axis_deg=TCP_MAX_AXIS_DEG,
         visual_to_command_matrix=VISUAL_TO_COMMAND_MATRIX,
+        closing_bias_mm=TCP_CLOSING_BIAS_MM,
+        longitudinal_bias_mm=TCP_LONGITUDINAL_BIAS_MM,
     )
 
     print("=" * 92)
@@ -518,7 +484,8 @@ def main() -> int:
 
         for idx, target_axis in enumerate(args.targets, start=1):
             target_axis = normalize_axial_deg(target_axis)
-            corrected = compensator.apply(float(args.x), float(args.y), target_axis)
+            physical_axis = YAW_CALIBRATION.physical_axis_deg(target_axis)
+            corrected = compensator.apply(float(args.x), float(args.y), physical_axis)
             cmd_x = float(corrected.x_mm)
             cmd_y = float(corrected.y_mm)
             if not (x_lim[0] <= cmd_x <= x_lim[1] and y_lim[0] <= cmd_y <= y_lim[1]):

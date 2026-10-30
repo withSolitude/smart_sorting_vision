@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 from runtime.app_config import load_runtime_config
 from vision.cameras.top_camera import TopCamera
 from vision.pipeline.top_pick_pipeline import TopPickPipeline
+from vision.calibration.yaw_servo import YawServoCalibration
 from vision.grasp.orientation_planner import polygon_long_axis_image_deg
 
 
@@ -60,6 +61,7 @@ def main() -> int:
     )
     camera = TopCamera()
     pipeline = TopPickPipeline(
+        yaw_servo_calibration=YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"]),
         model_path=top_model_cfg["path"],
         calibration_path=calibration,
         camera_config=cfg["camera"]["top"],

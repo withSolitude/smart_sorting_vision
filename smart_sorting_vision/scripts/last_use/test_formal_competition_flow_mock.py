@@ -1,3 +1,6 @@
+from pathlib import Path
+from runtime.app_config import load_runtime_config
+from vision.calibration.yaw_servo import YawServoCalibration
 from types import SimpleNamespace
 import numpy as np
 
@@ -16,7 +19,7 @@ class FakeTop:
     def process(self, image):
         if not self.used:
             self.used=True
-            return SimpleNamespace(ready=True, object_count=1, x_mm=-50.0, y_mm=20.0, yaw_deg=15.0)
+            return SimpleNamespace(ready=True, object_count=1, x_mm=-50.0, y_mm=20.0, yaw_deg=15.0, preopen_mm=20.0, grasp_width_mm=15.0)
         return SimpleNamespace(ready=False, object_count=1)
 
 class FakeSide:
@@ -35,18 +38,21 @@ class FakeSTM:
     def send_frame(self, f): self.sent.append(f); return b''
     def describe(self, f): return f'{f.mode.name} x={f.x_mm} y={f.y_mm} box={f.box_id} yaw={f.yaw_deg}'
 
+root=Path(__file__).resolve().parents[2]
+cfg=load_runtime_config(root, root / "config/runtime_config.yaml")
 records=[]
 stm=FakeSTM()
 r=SortingRuntime(FakeCam(), FakeCam(), FakeTop(), FakeSide(), StorageManager(6), stm,
+    yaw_servo_calibration=YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"]),
     minimum_items_before_empty_finish=12, empty_finish_hold_s=3.0,
     on_finished=records.append, pick_ack_timeout_s=3, sort_ack_timeout_s=3,
     recognition_ready_timeout_s=30, side_recognition_timeout_s=10, sort_done_timeout_s=30)
 r.start()
 r.run_once()
-assert r.state == RuntimeState.WAIT_PICK_YAW_BRANCH_ACK
+assert r.state == RuntimeState.WAIT_PICK_PREOPEN_ACK
 pick=r.current_pick_command
 assert pick is not None
-r.process_message(SortingFrame(mode=Mode.MCU_PICK_YAW_BRANCH_ACK, box_id=0))
+r.process_message(SortingFrame(mode=Mode.MCU_PICK_PREOPEN_ACK, x_mm=20.0))
 assert r.state == RuntimeState.WAIT_PICK_ACK
 r.process_message(SortingFrame(mode=Mode.MCU_PICK_TARGET_ACK, x_mm=pick.x_mm, y_mm=pick.y_mm, yaw_deg=pick.yaw_deg))
 assert r.state == RuntimeState.WAIT_RECOGNITION_READY

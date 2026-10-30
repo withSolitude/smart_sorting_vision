@@ -10,6 +10,10 @@
 `tests/host/` 的 HAL/CAN 替身链接，不连接或驱动实物。编译使用
 `-Wall -Wextra -Werror`，可执行文件输出到 `tests/.build/`。
 
+`integration_tests.exe --lift-only` 可单独运行 Lift 下降专项回归，验证当前
+28° 抬升到 -40° 下降终点的轨迹、终点指令 BUSY 重试、TOF 无效暂停和近距离停止。
+该可执行文件由下述全量脚本的机械上层编译步骤生成；运行既有二进制前须确认已经重新编译。
+
 测试覆盖：
 
 - Emm V5 扩展 CAN ID、FD 两包内容、正负号、数值边界和双帧 FIFO 预检查。
@@ -50,6 +54,10 @@ CAN 反馈和 UART BUSY。该独立程序不会替换或编译进固件，覆盖
 `robot_tests.cpp` 将真实 Robot、Handshake、HoldingJaw 和 SortingStorage 一同编译，
 只替换硬件设备和通信收发，验证 XY 标定完成后的 START 必须先真实回待机、
 XY 故障但已停稳时可回复 STOP 而不能自动重新开工，以及储物完成遇发送忙保留事件。
+
+单 180° 抓取专项可运行 `tests/.build/robot_tests.exe --single-yaw-only`：
+通过真实 Robot→Handshake→HoldingJaw 扫描全部整数轴向角，检查 ±180° 等价，
+并复现 `-82° → -19.1562°`。抓取仅需 PREOPEN 和 TARGET，不再发送分支选择帧。
 
 目前共 11 组驱动/XY 动态回归、1 组默认标定锁回归、11 组机械上层动态回归、
 6 组通信握手动态回归和 3 组整机调度联合回归，共 32 组。

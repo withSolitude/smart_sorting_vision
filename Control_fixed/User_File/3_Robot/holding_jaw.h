@@ -338,7 +338,7 @@ private:
         0.0f;
 
     float Tray_Y_mm =
-        4.0f;
+        0.0f;
 
     float Tray_Yaw_Angle =
         90.0f * PI / 180.0f;
@@ -355,16 +355,16 @@ private:
     // ========================================================
 
     float Recognition_X_mm =
-        -72.0f;
+        0.0f;
 
     float Recognition_Y_mm =
         0.0f;
 
     float Recognition_Yaw_Angle =
-        110.0f * PI / 180.0f;
+        20.0f * PI / 180.0f;
 
     float Recognition_Lift_Angle =
-        -65.0f * PI / 180.0f;
+        28.0f * PI / 180.0f;
 
     float Recognition_Claw_Angle =
         ClawPreopen::kStandbyAngleDeg * PI / 180.0f;
@@ -481,7 +481,7 @@ private:
     // --------------------------------------------------------
 
     float Lift_Servo_Motor_Angle_Recognition_Tray_Descend =
-        -45.0f * PI / 180.0f;
+        -20.0f * PI / 180.0f;
 
 
     // --------------------------------------------------------
@@ -497,7 +497,7 @@ private:
     // --------------------------------------------------------
 
     float Lift_Servo_Motor_Angle_Lift =
-        -65.0f * PI / 180.0f;
+        28.0f * PI / 180.0f;
 
 
     // --------------------------------------------------------
@@ -560,7 +560,7 @@ private:
     //
     // 单位：rad/s
     //
-    // 当前10°/s
+    // 必须为正值；运动方向由抬升位置和下降终点自动确定。
     // --------------------------------------------------------
 
     float Lift_Descend_Speed =
@@ -569,13 +569,11 @@ private:
 
 
     // --------------------------------------------------------
-    // Lift下降机械极限
-    //
-    // 当前-5°
+    // Lift下降终点：指机械最低位置，不要求它是数值最大的角度。
     // --------------------------------------------------------
 
     float Lift_Descend_Max_Angle =
-        15.0f *
+        -40.0f *
         PI / 180.0f;
 
 
@@ -584,8 +582,7 @@ private:
     // --------------------------------------------------------
 
     float Lift_Descend_Target_Angle =
-        -65.0f *
-        PI / 180.0f;
+        Lift_Servo_Motor_Angle_Lift;
 
 
     // --------------------------------------------------------

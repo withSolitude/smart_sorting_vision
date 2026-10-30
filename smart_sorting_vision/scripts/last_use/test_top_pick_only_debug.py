@@ -5,7 +5,7 @@ Top-only real grasp diagnostic test.
 
 Purpose
 -------
-1. Use the SAME top-camera / TopPickPipeline / TCP / yaw-branch / dynamic-preopen
+1. Use the SAME top-camera / TopPickPipeline / TCP / single-period yaw / dynamic-preopen
    configuration as the production program.
 2. Execute only the production first-stage pick sequence.
 3. Never open the side camera and never run side recognition / SORT_RESULT.
@@ -69,7 +69,6 @@ from communication.sorting_protocol import (  # noqa: E402
     SortingFrame,
     SortingProtocol,
     make_pick_target,
-    make_pick_yaw_branch,
     make_stop,
 )
 from communication.stm32_link import STM32Link  # noqa: E402
@@ -77,6 +76,7 @@ from runtime.app_config import load_runtime_config  # noqa: E402
 from vision.cameras.top_camera import TopCamera  # noqa: E402
 from vision.pipeline.top_pick_pipeline import TopPickPipeline  # noqa: E402
 from vision.calibration.yaw_tcp_compensation import YawTcpCompensator  # noqa: E402
+from vision.calibration.yaw_servo import YawServoCalibration  # noqa: E402
 from vision.calibration.descent_drift_compensation import DescentDriftCompensator  # noqa: E402
 
 
@@ -125,18 +125,7 @@ def normalize_axial_deg(angle_deg: float) -> float:
     return 0.0 if abs(value) < 1.0e-12 else float(value)
 
 
-def physical_yaw_for_branch(axial_yaw_deg: float, branch: int, branch1_axis_correction_deg: float) -> float:
-    axial = normalize_axial_deg(axial_yaw_deg)
-    if int(branch) == 0:
-        return float(axial)
-    if int(branch) == 1:
-        physical = axial + 180.0 if axial < 0.0 else axial - 180.0
-        physical += float(branch1_axis_correction_deg)
-        return float((physical + 180.0) % 360.0 - 180.0)
-    raise ValueError(f"yaw branch must be 0 or 1, got {branch}")
-
-
-def build_tcp_compensator(top_cfg: dict) -> YawTcpCompensator | None:
+def build_tcp_compensator(top_cfg: dict, yaw: YawServoCalibration) -> YawTcpCompensator | None:
     comp = top_cfg.get("yaw_tcp_compensation", {}) or {}
     if not bool(comp.get("enabled", False)):
         return None
@@ -146,8 +135,8 @@ def build_tcp_compensator(top_cfg: dict) -> YawTcpCompensator | None:
         reference_axis_deg=float(comp["reference_axis_deg"]),
         offset_axis0_x_mm=float(offset[0]),
         offset_axis0_y_mm=float(offset[1]),
-        min_axis_deg=float(comp.get("min_axis_deg", -87.0)),
-        max_axis_deg=float(comp.get("max_axis_deg", 89.0)),
+        min_axis_deg=yaw.physical_min_deg,
+        max_axis_deg=yaw.physical_max_deg,
         visual_to_command_matrix=comp.get(
             "visual_to_command_matrix", [[1.0, 0.0], [0.0, 1.0]]
         ),
@@ -173,7 +162,7 @@ def build_descent_drift_compensator(top_cfg: dict) -> DescentDriftCompensator | 
     )
 
 
-def build_pipeline(cfg: dict) -> tuple[TopPickPipeline, dict[str, float]]:
+def build_pipeline(cfg: dict) -> tuple[TopPickPipeline, YawServoCalibration]:
     top_model_cfg = cfg["model"]["top"]
     top_vision_cfg = cfg["vision"]["top"]
     top_consensus = top_vision_cfg["consensus"]
@@ -181,7 +170,6 @@ def build_pipeline(cfg: dict) -> tuple[TopPickPipeline, dict[str, float]]:
     preopen = orient.get("dynamic_preopen", {}) or {}
     collision = top_vision_cfg.get("gripper_collision", {}) or {}
     search = collision.get("grasp_search", {}) or {}
-    tcp_cfg = top_vision_cfg.get("yaw_tcp_compensation", {}) or {}
     mechanics_cfg = cfg.get("mechanics", {}) or {}
 
     allowed_polygon_mm = collision.get(
@@ -189,11 +177,7 @@ def build_pipeline(cfg: dict) -> tuple[TopPickPipeline, dict[str, float]]:
         mechanics_cfg.get("allowed_polygon_mm", None),
     )
 
-    branch_cfg = {
-        "axis_correction_deg": float(tcp_cfg.get("branch1_axis_correction_deg", 0.0)),
-        "closing_bias_mm": float(tcp_cfg.get("branch1_closing_bias_mm", 0.0)),
-        "longitudinal_bias_mm": float(tcp_cfg.get("branch1_longitudinal_bias_mm", 0.0)),
-    }
+    yaw = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
 
     pipeline = TopPickPipeline(
         model_path=top_model_cfg["path"],
@@ -264,12 +248,10 @@ def build_pipeline(cfg: dict) -> tuple[TopPickPipeline, dict[str, float]]:
         grasp_search_max_trials_per_object=search.get("max_trials_per_object", 40),
         x_limits_mm=cfg["mechanics"]["workspace_mm"]["x"],
         y_limits_mm=cfg["mechanics"]["workspace_mm"]["y"],
-        yaw_tcp_compensator=build_tcp_compensator(top_vision_cfg),
-        branch1_axis_correction_deg=branch_cfg["axis_correction_deg"],
-        branch1_closing_bias_mm=branch_cfg["closing_bias_mm"],
-        branch1_longitudinal_bias_mm=branch_cfg["longitudinal_bias_mm"],
+        yaw_tcp_compensator=build_tcp_compensator(top_vision_cfg, yaw),
+        yaw_servo_calibration=yaw,
     )
-    return pipeline, branch_cfg
+    return pipeline, yaw
 
 
 def draw_axis(image: np.ndarray, center: tuple[float, float], angle_deg: float, length_px: float, color, thickness: int = 2) -> None:
@@ -328,7 +310,7 @@ def draw_pipeline_overlay(frame: np.ndarray, result, *, state_text: str, started
             label = (
                 f"#{candidate.object_index} {candidate.class_name} {candidate.confidence:.2f} "
                 f"XY=({candidate.x_mm:.1f},{candidate.y_mm:.1f}) "
-                f"Y={candidate.yaw_deg:+.1f} B={candidate.yaw_branch} "
+                f"Y={candidate.yaw_deg:+.1f} "
                 f"gap={candidate.gripper_clearance_mm:.1f}mm"
             )
             tx = max(5, min(vis.shape[1] - 620, gx - 250))
@@ -349,7 +331,7 @@ def draw_pipeline_overlay(frame: np.ndarray, result, *, state_text: str, started
         if result.ready:
             lines.append(
                 f"READY TARGET: X={float(result.x_mm):.2f} Y={float(result.y_mm):.2f} "
-                f"Yaw={float(result.yaw_deg):+.1f} branch={int(result.yaw_branch)} "
+                f"Yaw={float(result.yaw_deg):+.1f} "
                 f"preopen={result.preopen_mm}mm"
             )
     lines.append("P=REAL PICK | R=reacquire | S=STOP | Q=quit")
@@ -382,7 +364,7 @@ def draw_frozen_overlay(frame: np.ndarray, frozen: dict, *, phase: str, started:
         f"VIS/TCP ALIGN: X={frozen['alignment_x_mm']:.2f} Y={frozen['alignment_y_mm']:.2f}",
         f"FINAL CMD: X={frozen['command_x_mm']:.2f} Y={frozen['command_y_mm']:.2f} "
         f"dXY=({frozen['descent_precomp_dx_mm']:+.2f},{frozen['descent_precomp_dy_mm']:+.2f})",
-        f"Yaw(axis)={frozen['yaw_deg']:+.1f} branch={frozen['yaw_branch']} "
+        f"Yaw(axis)={frozen['yaw_deg']:+.1f} "
         f"physical={frozen['physical_yaw_deg']:+.1f} preopen={frozen['preopen_mm']}mm",
         f"pixel center=({cx:.1f},{cy:.1f}) grasp=({gx:.0f},{gy:.0f}) "
         f"width={frozen['grasp_width_mm']}mm clearance={frozen['gripper_clearance_mm']:.2f}mm",
@@ -451,11 +433,6 @@ def wait_for_specific_ack(
                     raise RuntimeError(
                         f"PICK_PREOPEN_ACK mismatch expected={expected.x_mm:.1f} got={rx.x_mm:.1f}"
                     )
-            elif ack_mode == Mode.MCU_PICK_YAW_BRANCH_ACK:
-                if int(rx.box_id) != int(expected.box_id):
-                    raise RuntimeError(
-                        f"PICK_YAW_BRANCH_ACK mismatch expected={expected.box_id} got={rx.box_id}"
-                    )
             return rx
 
         if now - last_send >= float(retry_interval_s):
@@ -485,7 +462,6 @@ def execute_pick(
 ) -> dict:
     result = {
         "preopen_ack": frozen["preopen_mm"] is None,
-        "yaw_branch_ack": False,
         "pick_ack": False,
         "recognition_ready": False,
         "elapsed_s": None,
@@ -507,20 +483,6 @@ def execute_pick(
         )
         result["preopen_ack"] = True
 
-    branch_command = make_pick_yaw_branch(int(frozen["yaw_branch"]))
-    wait_for_specific_ack(
-        link,
-        camera,
-        frozen,
-        state,
-        command=branch_command,
-        ack_mode=Mode.MCU_PICK_YAW_BRANCH_ACK,
-        timeout_s=ack_timeout_s,
-        phase="WAIT_YAW_BRANCH_ACK",
-        retry_interval_s=retry_interval_s,
-    )
-    result["yaw_branch_ack"] = True
-
     pick_command = quantized(
         make_pick_target(
             float(frozen["command_x_mm"]),
@@ -531,7 +493,7 @@ def execute_pick(
     raw = link.send_frame(pick_command)
     print(
         f"[TX] PICK_TARGET X={pick_command.x_mm:.1f} Y={pick_command.y_mm:.1f} "
-        f"Yaw={pick_command.yaw_deg:+.0f} branch={frozen['yaw_branch']} | {raw.hex(' ').upper()}"
+        f"Yaw={pick_command.yaw_deg:+.0f} | {raw.hex(' ').upper()}"
     )
 
     ack_deadline = time.monotonic() + float(ack_timeout_s)
@@ -610,11 +572,13 @@ def send_stop_and_wait(link: STM32Link, state: dict, timeout_s: float = 2.0) -> 
         time.sleep(0.003)
 
 
-def make_frozen_target(result, branch_cfg: dict, drift_compensator: DescentDriftCompensator | None) -> dict:
+def make_frozen_target(result, yaw: YawServoCalibration, drift_compensator: DescentDriftCompensator | None) -> dict:
     if not result.ready:
         raise ValueError("top result is not READY")
-    if result.x_mm is None or result.y_mm is None or result.yaw_deg is None or result.yaw_branch is None:
-        raise ValueError("READY result is missing XY/Yaw/branch")
+    if result.x_mm is None or result.y_mm is None or result.yaw_deg is None:
+        raise ValueError("READY result is missing XY/Yaw")
+    if result.preopen_mm is None:
+        raise ValueError("READY result is missing calibrated preopen")
 
     selected = candidate_for_result(result)
     if selected is None:
@@ -623,12 +587,10 @@ def make_frozen_target(result, branch_cfg: dict, drift_compensator: DescentDrift
     alignment_x = float(result.x_mm)
     alignment_y = float(result.y_mm)
     yaw_deg = normalize_axial_deg(float(result.yaw_deg))
-    yaw_branch = int(result.yaw_branch)
-    physical_yaw = physical_yaw_for_branch(
-        yaw_deg,
-        yaw_branch,
-        float(branch_cfg["axis_correction_deg"]),
-    )
+    # 与生产程序一致：先量化协议角度，再确定唯一物理姿态并校验舵机限位。
+    yaw_deg = quantized(make_pick_target(alignment_x, alignment_y, yaw_deg)).yaw_deg
+    physical_yaw = yaw.physical_axis_deg(yaw_deg)
+    yaw.command_deg(yaw_deg)
 
     command_x = alignment_x
     command_y = alignment_y
@@ -663,7 +625,6 @@ def make_frozen_target(result, branch_cfg: dict, drift_compensator: DescentDrift
         "predicted_descent_drift_x_mm": predicted_dx,
         "predicted_descent_drift_y_mm": predicted_dy,
         "yaw_deg": yaw_deg,
-        "yaw_branch": yaw_branch,
         "physical_yaw_deg": physical_yaw,
         "preopen_mm": None if result.preopen_mm is None else float(result.preopen_mm),
         "grasp_width_mm": None if result.grasp_width_mm is None else float(result.grasp_width_mm),
@@ -701,7 +662,7 @@ def main() -> int:
         calibration_file=cfg["calibration"]["top_intrinsics"],
     )
     camera = TopCamera()
-    pipeline, branch_cfg = build_pipeline(cfg)
+    pipeline, yaw_calibration = build_pipeline(cfg)
     drift_compensator = build_descent_drift_compensator(cfg["vision"]["top"])
 
     link = STM32Link(
@@ -776,7 +737,7 @@ def main() -> int:
             result = pipeline.process(frame)
             latest_result = result
             if result.ready:
-                latest_ready = make_frozen_target(result, branch_cfg, drift_compensator)
+                latest_ready = make_frozen_target(result, yaw_calibration, drift_compensator)
 
             state_text = "WAIT PHYSICAL START" if not state["started"] else "TOP DETECT / READY FOR P"
             vis = draw_pipeline_overlay(frame, result, state_text=state_text, started=bool(state["started"]))
@@ -810,7 +771,7 @@ def main() -> int:
                 continue
 
             # Freeze exactly the target visible when P is pressed.
-            frozen = make_frozen_target(latest_result, branch_cfg, drift_compensator)
+            frozen = make_frozen_target(latest_result, yaw_calibration, drift_compensator)
             pick_index += 1
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
             stem = f"pick_{pick_index:03d}_{stamp}"
@@ -842,7 +803,7 @@ def main() -> int:
                 "[REAL PICK] "
                 f"ALIGN=({frozen['alignment_x_mm']:.2f},{frozen['alignment_y_mm']:.2f}) "
                 f"CMD=({frozen['command_x_mm']:.2f},{frozen['command_y_mm']:.2f}) "
-                f"Yaw={frozen['yaw_deg']:+.1f} branch={frozen['yaw_branch']} "
+                f"Yaw={frozen['yaw_deg']:+.1f} "
                 f"physical={frozen['physical_yaw_deg']:+.1f} preopen={frozen['preopen_mm']}"
             )
             print("[REAL PICK] Robot motion starts now. Physical STOP remains the emergency stop.")

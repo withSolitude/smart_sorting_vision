@@ -8,6 +8,7 @@ import time
 import cv2
 import numpy as np
 
+from communication.sorting_protocol import YAW_SCALE_DEG
 from vision.models.top_segmenter import TopSegmenter
 from vision.grasp.collision_aware_grasp_planner import (
     CollisionAwareGraspPlanner,
@@ -32,6 +33,7 @@ from vision.grasp.grasp_pose_search import (
     normalize_axial_deg,
 )
 from vision.calibration.yaw_tcp_compensation import YawTcpCompensator
+from vision.calibration.yaw_servo import YawServoCalibration
 
 
 @dataclass
@@ -83,7 +85,7 @@ class TopPickCandidate:
     # 两个指爪（以及可选主体）的名义二维包络，仅用于调试/预览绘制。
     gripper_footprint_polygons_px: list[np.ndarray]
 
-    # 视觉估计的动态预开口。None 时下位机自动回退旧固定预收缩角。
+    # 视觉估计的动态预开口；无法可靠估计时不输出可抓取候选。
     preopen_mm: float | None
 
     # 同一物体多姿态搜索相对基础 antipodal 姿态的修正量。
@@ -94,10 +96,6 @@ class TopPickCandidate:
     search_safe_count: int
 
     score: float
-
-    # 双边抓取物理Yaw分支：0=当前轴向侧，1=180°等效另一侧。
-    # 放在末尾并提供默认值，避免影响已有调试代码的构造参数。
-    yaw_branch: int = 0
 
 
 @dataclass
@@ -128,10 +126,6 @@ class TopPickPipelineResult:
     inference_ms: float
 
     candidates: list[TopPickCandidate]
-
-    # 与yaw_deg配套的物理Yaw分支；READY时必须为0或1。
-    # 放在末尾提供默认值，兼容原有测试/调试构造方式。
-    yaw_branch: int | None = None
 
 
 class TopPickPipeline:
@@ -246,9 +240,7 @@ class TopPickPipeline:
             tuple[float, float] | None
         ) = None,
         yaw_tcp_compensator: YawTcpCompensator | None = None,
-        branch1_axis_correction_deg: float = 0.0,
-        branch1_closing_bias_mm: float = 0.0,
-        branch1_longitudinal_bias_mm: float = 0.0,
+        yaw_servo_calibration: YawServoCalibration | None = None,
     ) -> None:
         self.model_path = Path(
             model_path
@@ -397,37 +389,7 @@ class TopPickPipeline:
             self.grasp_search_offsets = [(0.0, 0.0, 0.0)]
 
         self.yaw_tcp_compensator = yaw_tcp_compensator
-
-        # branch=1 专用微调：
-        # - axis_correction_deg：另一物理侧的实际夹爪方向角修正；
-        # - closing_bias_mm：另一物理侧沿夹爪闭合轴的抓取中心左右修正；
-        # - longitudinal_bias_mm：另一物理侧沿夹爪前后方向
-        #   （闭合轴 +90°）的抓取中心修正。
-        #
-        # branch=0 完全不受这三个参数影响。
-        self.branch1_axis_correction_deg = float(branch1_axis_correction_deg)
-        self.branch1_closing_bias_mm = float(branch1_closing_bias_mm)
-        self.branch1_longitudinal_bias_mm = float(branch1_longitudinal_bias_mm)
-
-        if not math.isfinite(self.branch1_axis_correction_deg):
-            raise ValueError("branch1_axis_correction_deg must be finite")
-        if not math.isfinite(self.branch1_closing_bias_mm):
-            raise ValueError("branch1_closing_bias_mm must be finite")
-        if not math.isfinite(self.branch1_longitudinal_bias_mm):
-            raise ValueError("branch1_longitudinal_bias_mm must be finite")
-        if abs(self.branch1_axis_correction_deg) > 15.0:
-            raise ValueError(
-                "branch1_axis_correction_deg absolute value must be <= 15 deg; "
-                "larger error should be recalibrated instead of patched"
-            )
-        if abs(self.branch1_closing_bias_mm) > 10.0:
-            raise ValueError(
-                "branch1_closing_bias_mm absolute value must be <= 10 mm"
-            )
-        if abs(self.branch1_longitudinal_bias_mm) > 10.0:
-            raise ValueError(
-                "branch1_longitudinal_bias_mm absolute value must be <= 10 mm"
-            )
+        self.yaw_servo_calibration = yaw_servo_calibration
 
         if self.min_orientation_aspect_ratio < 1.0:
             raise ValueError("min_orientation_aspect_ratio must be >= 1.0")
@@ -612,165 +574,39 @@ class TopPickPipeline:
             raise ValueError("new claw requires a measured width; no legacy fixed preopen")
         return self.claw_preopen_profile.command_for_width(width_mm)
 
-    def _physical_yaw_for_branch(
-        self,
-        axial_yaw_deg: float,
-        branch: int,
-    ) -> float:
-        """把[-90,90)轴向抓取角展开成唯一的有向物理Yaw。
+    @staticmethod
+    def _wire_yaw(axial_yaw_deg: float) -> float:
+        """先按协议的1°分辨率量化，再规划实际物理姿态，避免窗口边界错侧。"""
+        axial = normalize_axial_deg(axial_yaw_deg)
+        return normalize_axial_deg(round(axial / YAW_SCALE_DEG) * YAW_SCALE_DEG)
 
-        branch=0:
-            保持原轴向角，不施加 branch=1 微调。
+    def _physical_yaw(self, axial_yaw_deg: float) -> float:
+        """将闭合轴映射到标定参考轴附近唯一的180°区间，并检查舵机行程。"""
+        if self.yaw_servo_calibration is None:
+            raise ValueError("未配置 calibration.yaw_servo，无法确定真实抓取角度")
+        # 该校验独立于 TCP 补偿开关，不能将不可执行角度发给下位机。
+        self.yaw_servo_calibration.command_deg(axial_yaw_deg)
+        return self.yaw_servo_calibration.physical_axis_deg(axial_yaw_deg)
 
-        branch=1:
-            先切换到相差180°的另一物理侧，再叠加
-            branch1_axis_correction_deg。
-
-        注意：
-        这个返回值就是 Jetson 做 Yaw-TCP 补偿时使用的真实物理Yaw，
-        STM32 必须使用完全相同的 branch=1 角度修正。
-        """
-        axial = normalize_axial_deg(float(axial_yaw_deg))
-
-        if int(branch) == 0:
-            return float(axial)
-
-        if int(branch) == 1:
-            physical = (
-                axial + 180.0
-                if axial < 0.0
-                else axial - 180.0
-            )
-            physical += self.branch1_axis_correction_deg
-
-            # 统一到 [-180, 180)
-            physical = ((physical + 180.0) % 360.0) - 180.0
-            return float(physical)
-
-        raise ValueError(f"yaw branch must be 0 or 1, got {branch}")
-
-    def _workspace_margin_mm(self, x_mm: float, y_mm: float) -> float:
-        """返回候选点到当前XY工作区最近边界的余量；余量越大越稳。"""
-        margins: list[float] = []
-        if self.x_limits_mm is not None:
-            x_min, x_max = self.x_limits_mm
-            margins.extend((float(x_mm) - x_min, x_max - float(x_mm)))
-        if self.y_limits_mm is not None:
-            y_min, y_max = self.y_limits_mm
-            margins.extend((float(y_mm) - y_min, y_max - float(y_mm)))
-        return float(min(margins)) if margins else 0.0
-
-    def _select_yaw_branch(
+    def _compensate_yaw_xy(
         self,
         base_x_mm: float,
         base_y_mm: float,
-        axial_yaw_deg: float,
-    ) -> tuple[float, float, int, float] | None:
-        """评估两个180°等效物理Yaw分支，并选择实际可执行的一侧。
-
-        选择规则只新增双边能力，不改变原有抓取姿态/碰撞评分：
-        1) 当前Yaw-TCP补偿器必须接受该物理Yaw；
-        2) 补偿后的XY必须位于现有机械工作区；
-        3) 两边都可用时，优先工作区边界余量更大的分支；
-        4) 完全同分时优先branch 0，保持原行为。
-        """
-        # 没有Yaw-TCP补偿时无法安全区分两种偏心物理姿态，保持原branch 0。
-        if self.yaw_tcp_compensator is None:
-            if self._inside_machine_limits(base_x_mm, base_y_mm):
-                return float(base_x_mm), float(base_y_mm), 0, float(axial_yaw_deg)
-            return None
-
-        feasible: list[tuple[float, int, float, float, float]] = []
-        for branch in (0, 1):
-            physical_yaw_deg = self._physical_yaw_for_branch(axial_yaw_deg, branch)
+        physical_yaw_deg: float,
+    ) -> tuple[float, float] | None:
+        """只为唯一执行姿态补偿TCP，再核对机械工作区。"""
+        x_cmd, y_cmd = float(base_x_mm), float(base_y_mm)
+        if self.yaw_tcp_compensator is not None:
             try:
                 compensated = self.yaw_tcp_compensator.apply(
-                    base_x_mm,
-                    base_y_mm,
-                    physical_yaw_deg,
+                    x_cmd, y_cmd, physical_yaw_deg,
                 )
             except (ValueError, RuntimeError):
-                continue
-
-            x_cmd = float(compensated.x_mm)
-            y_cmd = float(compensated.y_mm)
-
-            # --------------------------------------------------------
-            # branch=1 专用二维抓取中心修正
-            #
-            # closing:
-            #   沿真实夹爪闭合轴 [cos(theta), sin(theta)]。
-            #
-            # longitudinal:
-            #   沿闭合轴逆时针 +90°：
-            #   [-sin(theta), cos(theta)]。
-            #
-            # 两个修正先定义在视觉/H物理平面(mm)，再复用现有 J^-1
-            # (visual_to_command_matrix) 转成真正的 XY 命令毫米。
-            # branch=0 完全不受影响。
-            # --------------------------------------------------------
-            if int(branch) == 1:
-                closing_bias = float(
-                    self.branch1_closing_bias_mm
-                )
-                longitudinal_bias = float(
-                    self.branch1_longitudinal_bias_mm
-                )
-
-                if (
-                    abs(closing_bias) > 1.0e-12
-                    or abs(longitudinal_bias) > 1.0e-12
-                ):
-                    theta = math.radians(
-                        float(physical_yaw_deg)
-                    )
-
-                    close_x = math.cos(theta)
-                    close_y = math.sin(theta)
-
-                    long_x = -math.sin(theta)
-                    long_y = math.cos(theta)
-
-                    bias_vx = (
-                        closing_bias * close_x
-                        + longitudinal_bias * long_x
-                    )
-                    bias_vy = (
-                        closing_bias * close_y
-                        + longitudinal_bias * long_y
-                    )
-
-                    matrix = (
-                        self.yaw_tcp_compensator
-                        .visual_to_command_matrix
-                    )
-                    bias_dx = (
-                        matrix[0][0] * bias_vx
-                        + matrix[0][1] * bias_vy
-                    )
-                    bias_dy = (
-                        matrix[1][0] * bias_vx
-                        + matrix[1][1] * bias_vy
-                    )
-
-                    x_cmd += float(bias_dx)
-                    y_cmd += float(bias_dy)
-
-            if not self._inside_machine_limits(x_cmd, y_cmd):
-                continue
-
-            workspace_margin = self._workspace_margin_mm(x_cmd, y_cmd)
-            feasible.append(
-                (workspace_margin, int(branch), x_cmd, y_cmd, float(physical_yaw_deg))
-            )
-
-        if not feasible:
+                return None
+            x_cmd, y_cmd = float(compensated.x_mm), float(compensated.y_mm)
+        if not self._inside_machine_limits(x_cmd, y_cmd):
             return None
-
-        # margin最大优先；完全同分时branch 0优先。
-        feasible.sort(key=lambda item: (-item[0], item[1]))
-        _, branch, x_cmd, y_cmd, physical_yaw_deg = feasible[0]
-        return x_cmd, y_cmd, branch, physical_yaw_deg
+        return x_cmd, y_cmd
 
     def _build_candidates(
         self,
@@ -1087,8 +923,15 @@ class TopPickPipeline:
 
             for yaw_offset_deg, longitudinal_offset_mm, closing_offset_mm in trial_specs:
                 trial_count += 1
-                yaw_deg = normalize_axial_deg(base_yaw_deg + yaw_offset_deg)
-                closing_axis, longitudinal_axis = axis_vectors(yaw_deg)
+                yaw_deg = self._wire_yaw(base_yaw_deg + yaw_offset_deg)
+                try:
+                    physical_yaw_deg = self._physical_yaw(yaw_deg)
+                except ValueError as exc:
+                    reject("yaw_outside_calibrated_range", yaw=yaw_deg,
+                           meta={"yaw_error": str(exc)})
+                    continue
+                # 局部前后偏置、指爪包络与 TCP 均使用实际执行角，轴向角仅用于协议输出。
+                closing_axis, longitudinal_axis = axis_vectors(physical_yaw_deg)
                 candidate_center_robot = (
                     base_center_robot
                     + float(longitudinal_offset_mm) * longitudinal_axis
@@ -1125,7 +968,7 @@ class TopPickPipeline:
                 width_probe = evaluate_target_engagement(
                     target_robot,
                     candidate_center_robot,
-                    yaw_deg,
+                    physical_yaw_deg,
                     1.0e6,
                     finger_length_mm=self.gripper_footprint.finger_length_mm,
                     finger_longitudinal_offset_mm=self.gripper_footprint.finger_longitudinal_offset_mm,
@@ -1158,7 +1001,7 @@ class TopPickPipeline:
                 engagement = evaluate_target_engagement(
                     target_robot,
                     candidate_center_robot,
-                    yaw_deg,
+                    physical_yaw_deg,
                     engagement_opening,
                     finger_length_mm=self.gripper_footprint.finger_length_mm,
                     finger_longitudinal_offset_mm=self.gripper_footprint.finger_longitudinal_offset_mm,
@@ -1196,7 +1039,7 @@ class TopPickPipeline:
 
                 footprint_check = self.gripper_footprint.check(
                     grasp_pixel=candidate_px,
-                    yaw_deg=float(yaw_deg),
+                    yaw_deg=float(physical_yaw_deg),
                     opening_mm=preopen_mm,
                     other_polygons=other_polygons,
                     image_shape=frame.shape,
@@ -1242,19 +1085,17 @@ class TopPickPipeline:
                     reject("candidate_xy_not_finite", px=candidate_px, yaw=yaw_deg)
                     continue
 
-                # 双边Yaw：同一个轴向抓取角同时检查两个180°等效物理姿态。
-                # TCP补偿必须使用最终真实执行的physical_yaw，而PICK_TARGET仍发送
-                # 原来的[-90,90)轴向yaw；branch通过独立命令发送给STM32。
-                selected = self._select_yaw_branch(
+                # TCP 与碰撞模型共用已确定的物理角；协议仍只发送 [-90,90) 轴向角。
+                selected = self._compensate_yaw_xy(
                     float(x_mm),
                     float(y_mm),
-                    float(yaw_deg),
+                    physical_yaw_deg,
                 )
                 if selected is None:
-                    reject("dual_yaw_branch_unavailable", px=candidate_px, yaw=yaw_deg)
+                    reject("yaw_tcp_or_workspace_unavailable", px=candidate_px, yaw=yaw_deg)
                     continue
 
-                x_mm, y_mm, yaw_branch, physical_yaw_deg = selected
+                x_mm, y_mm = selected
 
                 safe_count += 1
 
@@ -1318,7 +1159,6 @@ class TopPickPipeline:
                     x_mm=float(x_mm),
                     y_mm=float(y_mm),
                     yaw_deg=float(yaw_deg),
-                    yaw_branch=int(yaw_branch),
                     object_long_axis_deg=float(long_axis_deg),
                     aspect_ratio=float(aspect_ratio),
                     orientation_reliable=bool(
@@ -1376,7 +1216,6 @@ class TopPickPipeline:
                     "object_index": int(obj.get("index", list_index)),
                     "grasp_pixel": candidate.grasp_pixel,
                     "yaw_deg": float(yaw_deg),
-                    "yaw_branch": int(yaw_branch),
                     "physical_yaw_deg": float(physical_yaw_deg),
                     "opening_mm": None if preopen_mm is None else float(preopen_mm),
                     "clearance_mm": float(footprint_check.clearance_mm),
@@ -1445,8 +1284,7 @@ class TopPickPipeline:
                     f"obj={best_candidate.object_index} "
                     f"trials={trial_count} safe={safe_count} "
                     f"best_yaw={best_candidate.yaw_deg:+.1f}deg "
-                    f"branch={best_candidate.yaw_branch} "
-                    f"physical={self._physical_yaw_for_branch(best_candidate.yaw_deg, best_candidate.yaw_branch):+.1f}deg "
+                    f"physical={self._physical_yaw(best_candidate.yaw_deg):+.1f}deg "
                     f"dyaw={best_candidate.search_yaw_offset_deg:+.1f}deg "
                     f"dlong={best_candidate.search_longitudinal_offset_mm:+.1f}mm "
                     f"gap={best_candidate.gripper_clearance_mm:.2f}mm"
@@ -1471,10 +1309,6 @@ class TopPickPipeline:
                 candidate.y_mm,
             "yaw_deg":
                 candidate.yaw_deg,
-            # TopPickConsensus会保留额外字段到history；不改原共识算法，
-            # 这里只让Pipeline在READY时确认两帧选择的是同一物理分支。
-            "yaw_branch":
-                candidate.yaw_branch,
             "orientation_reliable":
                 candidate.orientation_reliable,
             "orientation_mode":
@@ -1588,34 +1422,21 @@ class TopPickPipeline:
             )
         )
 
-        # 不改TopPickConsensus原有逻辑：候选dict中的yaw_branch会原样保存在history。
-        # READY时要求有效投票使用同一个物理分支，避免两帧在两侧之间跳变。
-        stable_yaw_branch: int | None = None
-        branch_consistent = True
-        if bool(stable.ready):
-            valid_history = [
-                item
-                for item in self.consensus.history
-                if item is not None
-            ]
-            branch_values = [
-                int(item.get("yaw_branch", 0))
-                for item in valid_history
-            ]
-            if branch_values and all(value in (0, 1) for value in branch_values):
-                if len(set(branch_values)) == 1:
-                    stable_yaw_branch = int(branch_values[0])
-                else:
-                    branch_consistent = False
-            else:
-                branch_consistent = False
-
-        output_ready = bool(stable.ready) and branch_consistent
-        output_reason = (
-            str(stable.reason)
-            if not bool(stable.ready)
-            else ("ready" if branch_consistent else "yaw_branch_mixed")
-        )
+        # 物理执行姿态由同一标定公式唯一确定，无需另做分支投票。
+        output_ready = bool(stable.ready)
+        output_reason = str(stable.reason)
+        output_yaw_deg = self._wire_yaw(stable.yaw_deg) if output_ready else None
+        if output_ready:
+            # 轴向均值可能跨唯一物理区间的接缝；该处相邻轴角对应的TCP方向相差180°。
+            # 复用已有角度稳定阈值，避免把两种真实姿态的XY平均后直接发出。
+            physical_yaw = self._physical_yaw(output_yaw_deg)
+            if any(
+                abs(self._physical_yaw(item["yaw_deg"]) - physical_yaw)
+                > self.consensus.max_yaw_spread_deg
+                for item in self.consensus.history if item is not None
+            ):
+                output_ready = False
+                output_reason = "yaw_window_boundary_unstable"
 
         return TopPickPipelineResult(
             ready=
@@ -1637,9 +1458,7 @@ class TopPickPipeline:
             y_mm=
                 stable.y_mm,
             yaw_deg=
-                stable.yaw_deg if output_ready else None,
-            yaw_branch=
-                stable_yaw_branch if output_ready else None,
+                output_yaw_deg if output_ready else None,
             grasp_width_mm=
                 stable.grasp_width_mm,
             preopen_mm=

@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 from communication.sorting_protocol import Mode, SortingFrame
 from runtime.app_config import load_runtime_config
+from vision.calibration.yaw_servo import YawServoCalibration
+
 from runtime.sorting_runtime import RuntimeState, SortingRuntime
 from vision.cameras.side_camera import SideCamera
 from vision.cameras.top_camera import TopCamera
@@ -44,7 +46,7 @@ class FakeTopPipeline:
         pass
 
     def process(self, frame):
-        return SimpleNamespace(ready=True, x_mm=self.x_mm, y_mm=self.y_mm)
+        return SimpleNamespace(ready=True, x_mm=self.x_mm, y_mm=self.y_mm, yaw_deg=0.0, preopen_mm=20.0, grasp_width_mm=15.0)
 
 
 class FakeSidePipeline:
@@ -54,6 +56,7 @@ class FakeSidePipeline:
 
 def make_runtime(x, y, *, limits_x=(-77.0, 0.0), limits_y=(0.0, 55.0)):
     link = FakeLink()
+    cfg = load_runtime_config(ROOT, ROOT / "config/runtime_config.yaml")
     runtime = SortingRuntime(
         FakeCamera(),
         FakeCamera(),
@@ -61,6 +64,7 @@ def make_runtime(x, y, *, limits_x=(-77.0, 0.0), limits_y=(0.0, 55.0)):
         FakeSidePipeline(),
         StorageManager(6),
         link,
+        yaw_servo_calibration=YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"]),
         pick_x_limits_mm=limits_x,
         pick_y_limits_mm=limits_y,
     )
@@ -126,7 +130,7 @@ def test_workspace_boundaries_are_valid():
         runtime, link = make_runtime(x, y, limits_x=limits_x, limits_y=limits_y)
         runtime.start()
         runtime.process_top()
-        runtime.process_message(SortingFrame(Mode.MCU_PICK_YAW_BRANCH_ACK, box_id=0))
+        runtime.process_message(SortingFrame(Mode.MCU_PICK_PREOPEN_ACK, x_mm=20.0))
         assert runtime.state == RuntimeState.WAIT_PICK_ACK
         assert any(frame.mode == Mode.PICK_TARGET for frame in link.sent)
 

@@ -19,6 +19,7 @@ from vision.cameras.top_camera import TopCamera
 from vision.pipeline.side_sort_pipeline import SideSortPipeline
 from vision.pipeline.top_pick_pipeline import TopPickPipeline
 from vision.calibration.yaw_tcp_compensation import YawTcpCompensator
+from vision.calibration.yaw_servo import YawServoCalibration
 from vision.calibration.descent_drift_compensation import DescentDriftCompensator
 from vision.storage.storage_manager import StorageManager
 
@@ -195,9 +196,15 @@ class SmartSortingApp:
         top_gripper_collision = top_vision_cfg["gripper_collision"]
         top_grasp_search = top_gripper_collision["grasp_search"]
         top_tcp_comp = top_vision_cfg["yaw_tcp_compensation"]
-        branch1_axis_correction_deg = float(top_tcp_comp["branch1_axis_correction_deg"])
-        branch1_closing_bias_mm = float(top_tcp_comp["branch1_closing_bias_mm"])
-        branch1_longitudinal_bias_mm = float(top_tcp_comp["branch1_longitudinal_bias_mm"])
+        yaw_servo_calibration = YawServoCalibration.from_config(self.config["calibration"]["yaw_servo"])
+        print(
+            "[CONFIG] 单 180° Yaw: "
+            f"theta0={yaw_servo_calibration.reference_axis_deg:.6f}, "
+            f"q0={yaw_servo_calibration.reference_servo_deg:.6f}, "
+            f"k={yaw_servo_calibration.servo_deg_per_axis_deg:.9f}, "
+            f"physical=[{yaw_servo_calibration.physical_min_deg:.3f}, "
+            f"{yaw_servo_calibration.physical_max_deg:.3f}) deg"
+        )
 
         x_limits = self.config["mechanics"]["workspace_mm"]["x"]
         y_limits = self.config["mechanics"]["workspace_mm"]["y"]
@@ -213,8 +220,9 @@ class SmartSortingApp:
                 reference_axis_deg=float(top_tcp_comp["reference_axis_deg"]),
                 offset_axis0_x_mm=float(offset_axis0[0]),
                 offset_axis0_y_mm=float(offset_axis0[1]),
-                min_axis_deg=float(top_tcp_comp["min_axis_deg"]),
-                max_axis_deg=float(top_tcp_comp["max_axis_deg"]),
+                # TCP 与下位机使用同一个物理区间，不再另外配置一组角度限制。
+                min_axis_deg=yaw_servo_calibration.physical_min_deg,
+                max_axis_deg=yaw_servo_calibration.physical_max_deg,
                 visual_to_command_matrix=visual_to_command,
                 closing_bias_mm=float(top_tcp_comp["closing_bias_mm"]),
                 longitudinal_bias_mm=float(top_tcp_comp["longitudinal_bias_mm"]),
@@ -226,10 +234,7 @@ class SmartSortingApp:
                 f" {yaw_tcp_compensator.offset_axis0_y_mm:.3f}) mm, "
                 f"Jinv={yaw_tcp_compensator.visual_to_command_matrix}, "
                 f"closing_bias={yaw_tcp_compensator.closing_bias_mm:+.3f} mm, "
-                f"long_bias={yaw_tcp_compensator.longitudinal_bias_mm:+.3f} mm, "
-                f"branch1_axis_corr={branch1_axis_correction_deg:+.3f} deg, "
-                f"branch1_closing_bias={branch1_closing_bias_mm:+.3f} mm, "
-                f"branch1_long_bias={branch1_longitudinal_bias_mm:+.3f} mm"
+                f"long_bias={yaw_tcp_compensator.longitudinal_bias_mm:+.3f} mm"
             )
         else:
             print("[CONFIG] Yaw-TCP compensation OFF (verification required)")
@@ -348,9 +353,7 @@ class SmartSortingApp:
             x_limits_mm=x_limits,
             y_limits_mm=y_limits,
             yaw_tcp_compensator=yaw_tcp_compensator,
-            branch1_axis_correction_deg=branch1_axis_correction_deg,
-            branch1_closing_bias_mm=branch1_closing_bias_mm,
-            branch1_longitudinal_bias_mm=branch1_longitudinal_bias_mm,
+            yaw_servo_calibration=yaw_servo_calibration,
         )
 
         side_model_cfg = self.config["model"]["side"]
@@ -426,7 +429,7 @@ class SmartSortingApp:
             pick_x_limits_mm=x_limits,
             pick_y_limits_mm=y_limits,
             descent_drift_compensator=descent_drift_compensator,
-            branch1_axis_correction_deg=branch1_axis_correction_deg,
+            yaw_servo_calibration=yaw_servo_calibration,
             retry_interval_s=runtime_cfg["retry_interval_s"],
             link_reconnect_interval_s=runtime_cfg["link_reconnect_interval_s"],
             heartbeat_interval_s=runtime_cfg["heartbeat_interval_s"],

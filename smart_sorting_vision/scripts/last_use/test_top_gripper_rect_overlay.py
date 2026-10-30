@@ -19,6 +19,7 @@ from runtime.app_config import load_runtime_config
 from vision.cameras.top_camera import TopCamera
 from vision.pipeline.top_pick_pipeline import TopPickPipeline
 from vision.calibration.yaw_tcp_compensation import YawTcpCompensator
+from vision.calibration.yaw_servo import YawServoCalibration
 
 DEFAULT_CONFIG = ROOT / "config" / "runtime_config.yaml"
 
@@ -156,7 +157,7 @@ def put_panel(image, lines, *, x=10, y=10, line_height=22, scale=0.50):
         yy += line_height
 
 
-def build_yaw_tcp_compensator(top_vision_cfg: dict):
+def build_yaw_tcp_compensator(top_vision_cfg: dict, yaw: YawServoCalibration):
     top_tcp_comp = top_vision_cfg.get("yaw_tcp_compensation", {}) or {}
     if not bool(top_tcp_comp.get("enabled", False)):
         return None
@@ -170,8 +171,8 @@ def build_yaw_tcp_compensator(top_vision_cfg: dict):
         reference_axis_deg=float(top_tcp_comp["reference_axis_deg"]),
         offset_axis0_x_mm=float(offset_axis0[0]),
         offset_axis0_y_mm=float(offset_axis0[1]),
-        min_axis_deg=float(top_tcp_comp.get("min_axis_deg", -90.0)),
-        max_axis_deg=float(top_tcp_comp.get("max_axis_deg", 90.0)),
+        min_axis_deg=yaw.physical_min_deg,
+        max_axis_deg=yaw.physical_max_deg,
         visual_to_command_matrix=visual_to_command,
         closing_bias_mm=float(top_tcp_comp.get("closing_bias_mm", 0.0)),
         longitudinal_bias_mm=float(top_tcp_comp.get("longitudinal_bias_mm", 0.0)),
@@ -200,9 +201,11 @@ def build_top_pipeline(cfg: dict) -> TopPickPipeline:
     else:
         allowed_polygon_mm = mechanics_cfg.get("allowed_polygon_mm", None)
 
-    yaw_tcp_compensator = build_yaw_tcp_compensator(top_vision_cfg)
+    yaw = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
+    yaw_tcp_compensator = build_yaw_tcp_compensator(top_vision_cfg, yaw)
 
     kwargs = dict(
+        yaw_servo_calibration=yaw,
         model_path=top_model_cfg["path"],
         calibration_path=cfg["calibration"]["pixel_to_robot"],
         camera_config=cfg["camera"]["top"],
@@ -320,16 +323,6 @@ def build_top_pipeline(cfg: dict) -> TopPickPipeline:
         y_limits_mm=y_limits,
         yaw_tcp_compensator=yaw_tcp_compensator,
 
-        # Current dual-branch build supports these. Older builds filter them out.
-        branch1_axis_correction_deg=float(
-            top_tcp_comp.get("branch1_axis_correction_deg", 0.0)
-        ),
-        branch1_closing_bias_mm=float(
-            top_tcp_comp.get("branch1_closing_bias_mm", 0.0)
-        ),
-        branch1_longitudinal_bias_mm=float(
-            top_tcp_comp.get("branch1_longitudinal_bias_mm", 0.0)
-        ),
     )
 
     signature = inspect.signature(TopPickPipeline.__init__)
@@ -429,12 +422,7 @@ def draw_best_candidate(image, candidate, *, show_object_polygon):
         f"yaw={candidate.yaw_deg:+.1f} "
         f"gap={candidate.gripper_clearance_mm:.1f}mm"
     )
-
-    yaw_branch = getattr(candidate, "yaw_branch", None)
     physical_yaw = getattr(candidate, "physical_yaw_deg", None)
-
-    if yaw_branch is not None:
-        label += f" B{int(yaw_branch)}"
     if physical_yaw is not None:
         label += f" phy={float(physical_yaw):+.1f}"
 
@@ -622,12 +610,7 @@ def main() -> int:
                     f"BEST xy=({best.x_mm:.1f},{best.y_mm:.1f}) "
                     f"yaw={best.yaw_deg:+.1f}"
                 )
-
-                yaw_branch = getattr(best, "yaw_branch", None)
                 physical_yaw = getattr(best, "physical_yaw_deg", None)
-
-                if yaw_branch is not None:
-                    line += f" B{int(yaw_branch)}"
                 if physical_yaw is not None:
                     line += f" physical={float(physical_yaw):+.1f}"
 
@@ -710,8 +693,6 @@ def main() -> int:
                         f"({best.x_mm:.3f}, {best.y_mm:.3f}) mm",
                     )
                     print("yaw        =", f"{best.yaw_deg:+.3f} deg")
-                    if hasattr(best, "yaw_branch"):
-                        print("branch     =", best.yaw_branch)
                     if hasattr(best, "physical_yaw_deg"):
                         print(
                             "physical   =",

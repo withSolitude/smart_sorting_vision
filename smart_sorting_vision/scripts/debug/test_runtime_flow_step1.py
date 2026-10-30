@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from pathlib import Path
+
+from runtime.app_config import load_runtime_config
+from vision.calibration.yaw_servo import YawServoCalibration
+
 
 from communication.sorting_protocol import Mode, SortingFrame
 from runtime.sorting_runtime import RuntimeState, SortingRuntime
@@ -43,7 +48,7 @@ class FakeTopPipeline:
         self.reset_count += 1
 
     def process(self, frame):
-        return SimpleNamespace(ready=True, x_mm=-50.0, y_mm=20.0)
+        return SimpleNamespace(ready=True, x_mm=-50.0, y_mm=20.0, yaw_deg=0.0, preopen_mm=20.0, grasp_width_mm=15.0)
 
 
 class FakeSidePipeline:
@@ -77,6 +82,8 @@ class FakeSidePipeline:
 
 
 def make_runtime():
+    root = Path(__file__).resolve().parents[2]
+    cfg = load_runtime_config(root, root / "config/runtime_config.yaml")
     link = FakeLink()
     top = FakeTopPipeline()
     side = FakeSidePipeline()
@@ -88,6 +95,7 @@ def make_runtime():
         side,
         storage,
         link,
+        yaw_servo_calibration=YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"]),
     )
     return runtime, link, top, side, storage
 
@@ -96,15 +104,15 @@ def pick_ack(x=-50.0, y=20.0, yaw=0.0):
     return SortingFrame(Mode.MCU_PICK_TARGET_ACK, x_mm=x, y_mm=y, yaw_deg=yaw)
 
 
-def pick_yaw_branch_ack(branch=0):
-    return SortingFrame(Mode.MCU_PICK_YAW_BRANCH_ACK, box_id=branch)
+def preopen_ack(opening_mm=20.0):
+    return SortingFrame(Mode.MCU_PICK_PREOPEN_ACK, x_mm=opening_mm)
 
 
 def process_top_to_pick_ack(runtime):
-    """完成当前协议的 Yaw 分支握手，推进到等待 PICK_ACK。"""
+    """完成预开口锁存后，直接等待 PICK_TARGET 应答。"""
     runtime.process_top()
-    if runtime.state == RuntimeState.WAIT_PICK_YAW_BRANCH_ACK:
-        runtime.process_message(pick_yaw_branch_ack())
+    if runtime.state == RuntimeState.WAIT_PICK_PREOPEN_ACK:
+        runtime.process_message(preopen_ack(runtime.current_preopen_command.x_mm))
     assert runtime.state == RuntimeState.WAIT_PICK_ACK
 
 
@@ -157,7 +165,7 @@ def test_happy_path_and_cycle_reset():
     # 可能已经把状态推进到 WAIT_PICK_ACK；关键是 DONE 已提交且新周期已建立。
     assert r.state in (
         RuntimeState.WAIT_TOP_OBJECT,
-        RuntimeState.WAIT_PICK_YAW_BRANCH_ACK,
+        RuntimeState.WAIT_PICK_PREOPEN_ACK,
         RuntimeState.WAIT_PICK_ACK,
     )
     assert r.cycle_id == 2
@@ -215,7 +223,7 @@ def test_batched_ack_ready_and_ack_done_are_consumed_in_order():
 
     # 同一次 poll 收到 ACK + READY，必须连续推进，不丢 READY。
     link.rx = [
-        pick_yaw_branch_ack(),
+        preopen_ack(),
         pick_ack(),
         recognition_ready(),
     ]
@@ -233,7 +241,7 @@ def test_batched_ack_ready_and_ack_done_are_consumed_in_order():
     assert r.cycle_id == 2
     assert r.state in (
         RuntimeState.WAIT_TOP_OBJECT,
-        RuntimeState.WAIT_PICK_YAW_BRANCH_ACK,
+        RuntimeState.WAIT_PICK_PREOPEN_ACK,
         RuntimeState.WAIT_PICK_ACK,
     )
 
@@ -245,7 +253,7 @@ def test_urgent_event_blocks_action_after_inference():
     def process_and_receive_stop(frame):
         # 模拟视觉推理执行期间，接收线程已经收到 STOP/ERROR。
         r._urgent_stop_event.set()
-        return SimpleNamespace(ready=True, x_mm=-50.0, y_mm=20.0)
+        return SimpleNamespace(ready=True, x_mm=-50.0, y_mm=20.0, yaw_deg=0.0, preopen_mm=20.0, grasp_width_mm=15.0)
 
     r.top_pipeline.process = process_and_receive_stop
     r.process_top()

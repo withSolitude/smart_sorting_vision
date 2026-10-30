@@ -304,23 +304,21 @@ TIM_1ms_PeriodElapsedCallback()
 
 
     // ========================================================
-    // Lift按照固定角速度持续下降
-    //
-    // 当前：
-    //
-    // 10° / s
-    //
-    // 1ms一次：
-    //
-    // delta =
-    // 10°/s × 0.001s
-    //
-    // = 0.01°
+    // 朝下降终点匀速运动，速度配置始终为正值。
+    // 方向由剩余角度决定，支持当前 28° -> -40°，也支持角度递增的机构。
     // ========================================================
 
-    Lift_Descend_Target_Angle +=
-        Lift_Descend_Speed *
-        0.001f;
+    const float remaining_angle = Lift_Descend_Max_Angle - Lift_Descend_Target_Angle;
+    const float angle_step = Lift_Descend_Speed * 0.001f;
+    if (std::fabs(remaining_angle) <= angle_step)
+    {
+        // 最后一步直接到终点，避免越界和来回振荡。
+        Lift_Descend_Target_Angle = Lift_Descend_Max_Angle;
+    }
+    else
+    {
+        Lift_Descend_Target_Angle += remaining_angle > 0.0f ? angle_step : -angle_step;
+    }
 
 
     // ========================================================
@@ -338,14 +336,6 @@ TIM_1ms_PeriodElapsedCallback()
     // 注意：这里只对“有效TOF一直大于阈值、但Lift已经到底”做兜底。
     // TOF失效/超时仍然按故障处理，不盲目继续下降。
     // ========================================================
-
-    if (Lift_Descend_Target_Angle >=
-        Lift_Descend_Max_Angle)
-    {
-        Lift_Descend_Target_Angle =
-            Lift_Descend_Max_Angle;
-    }
-
 
     // ========================================================
     // 1ms内部计算
@@ -414,9 +404,10 @@ TIM_1ms_PeriodElapsedCallback()
     // 再让夹爪闭合，避免“最后几毫米还没下完就先夹”。
     // ========================================================
 
+    // 到位判断与角度增减方向无关；串口忙时继续重试终点指令。
     if (lift_tx_status == HAL_OK &&
-        Lift_Descend_Target_Angle >=
-            (Lift_Descend_Max_Angle - 0.0001f) && !Grap_Lift_Limit_Commanded)
+        std::fabs(Lift_Descend_Target_Angle - Lift_Descend_Max_Angle) <= 0.0001f &&
+        !Grap_Lift_Limit_Commanded)
     {
         Grap_Lift_Limit_Command_Tick = HAL_GetTick();
         Grap_Lift_Limit_Commanded =
@@ -1832,9 +1823,7 @@ void Class_Holding_Jaw::Set_Grap_Move_Status(
         Enum_Grap_Move_Descend)
     {
         // ----------------------------------------------------
-        // 从当前抬升位置开始
-        //
-        // -70°
+        // 每次从配置的抬升位置开始，下降方向由终点自动确定。
         // ----------------------------------------------------
 
         Lift_Descend_Target_Angle =
@@ -2007,7 +1996,6 @@ bool Class_Holding_Jaw::Motion_Configuration_Valid() const
         angle_valid(Lift_Servo_Motor_Angle_Recognition_Tray_Descend) &&
         angle_valid(Claw_Servo_Motor_Angle_Clip) && angle_valid(Claw_Servo_Motor_Angle_Release) &&
         angle_valid(Lift_Servo_Motor_Angle_Lift) && angle_valid(Lift_Descend_Max_Angle) &&
-        Lift_Servo_Motor_Angle_Lift <= Lift_Descend_Max_Angle &&
         std::isfinite(Lift_Descend_Speed) && Lift_Descend_Speed > 0.0f;
 }
 

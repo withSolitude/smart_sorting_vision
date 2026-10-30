@@ -88,13 +88,13 @@ calibration:
     warning_error_px: 0.8  # 标定误差警告阈值（像素）。
     max_view_error_px: 2.0  # 单张标定图最大允许重投影误差（像素）。
   yaw_servo:
-    # 顶部相机 Yaw 标定报告生成后，把报告中的三项拟合参数更新到这里。
-    # 验证脚本只读取此块，不再在代码中维护另一份旧标定值。
-    reference_axis_deg: 43.590200  # 参考舵机姿态下夹爪闭合轴在机械XY中的方向（度）。
-    reference_servo_deg: -0.622672  # 参考闭合轴对应的舵机命令（度）。
-    servo_deg_per_axis_deg: -1.10205336  # 夹爪物理轴每转1度对应舵机命令变化（度/度）。
-    safe_command_min_deg: -60.0  # 已通过机械行程测试的舵机最小命令（度）。
-    safe_command_max_deg: 135.0  # 已通过机械行程测试的舵机最大命令（度）。
+    # 2026-10-29 最新五点Yaw标定；q=q0+k*wrap180(axis-theta0)。
+    # 每个抓取闭合轴只使用参考轴附近唯一的180°物理区间。
+    reference_axis_deg: -63.85644350593594  # theta0，参考闭合轴方向（度）。
+    reference_servo_deg: 0.39494545820893734  # q0，参考舵机命令（度）。
+    servo_deg_per_axis_deg: 1.0775825104837484  # k，舵机角/闭合轴角。
+    safe_command_min_deg: -135.0  # 与当前下位机舵机限位一致（度）。
+    safe_command_max_deg: 135.0  # 与当前下位机舵机限位一致（度）。
   side_background_capture:
     settle_frames: 15  # 采集背景前等待的稳定帧数。
     frame_count: 30  # 用于生成背景的采样帧数。
@@ -146,21 +146,20 @@ vision:
       max_opening_mm: null  # 夹爪最大允许开口（mm）。
 
       # 动态预收缩：视觉使用“当前夹取方向上的真实夹持宽度”计算预开口。
-      # command = grasp_width_mm + margin_mm；圆形/几何回退无法可靠估宽时，
-      # 不发送该命令，下位机自动使用旧固定 10° 预收缩。
+      # command = grasp_width_mm + margin_mm；没有可靠宽度时继续识别，不发抓取命令。
       dynamic_preopen:
         enabled: true  # 是否根据物体宽度计算夹爪预开口。
         configured: true  # 是否已经完成动态预开口标定。
         # 线性公式：angle = closed + (standby - closed) * opening / max_opening。
-        # 新夹爪开合舵机：-35°闭合，-95°待机张开；不是Yaw角。
-        closed_servo_deg: -35.0  # 夹爪闭合舵机角度（度）。
-        standby_servo_deg: -95.0  # 夹爪待机张开舵机角度（度）。
+        # 使用最新实测预开口公式；此角度为夹爪开合舵机角度。
+        closed_servo_deg: 0.710004610  # 零开口拟合截距（度）；下位机也用于正式夹紧，须实机确认。
+        standby_servo_deg: -89.283079760  # 夹爪待机张开舵机角度（度）。
         # command 是两片硅胶内侧之间的目标净开口。
         # 物体宽度 + 总余量；薄硅胶安装后先使用5mm（两侧合计）。
-        margin_mm: 6.0  # 物体宽度之外增加的安全余量（mm）。
+        margin_mm: 5.0  # 物体宽度之外增加的安全余量（mm）。
         # 安全协议范围；STM32 与 PC 使用同一条线性公式。
-        min_command_mm: 0.9  # 预开口命令最小值（mm）。
-        max_command_mm: 46.5  # 预开口命令最大值（mm）。
+        min_command_mm: 13.0  # 预开口命令最小值（mm）。
+        max_command_mm: 77.0  # 预开口命令最大值（mm）。
 
     # Yaw-TCP 偏心补偿。
     # H 是在 CALIB_MOVE/待机 Yaw 姿态下建立的；旧代码240°会被驱动夹到+135°，
@@ -179,26 +178,6 @@ vision:
       # 垂直于闭合轴，沿夹爪前后修正
       longitudinal_bias_mm: 0.0  # 沿夹爪前后方向的中心修正（mm）。
 
-      # ======================================================
-      # branch=1 专用微调
-      #
-      # branch1_axis_correction_deg:
-      #   只修另一物理侧的夹爪实际方向角，branch=0不受影响。
-      #   必须与 STM32 ita_robot.h 中的
-      #   Pick_Yaw_Branch1_Axis_Correction_Deg 保持完全相同。
-      #
-      # branch1_closing_bias_mm:
-      #   只修另一物理侧的抓取中心左右偏差。
-      #   正值沿真实夹爪闭合轴方向移动，负值反向。
-      #
-      # branch1_longitudinal_bias_mm:
-      #   只修另一物理侧的抓取中心前后偏差。
-      #   正值沿真实夹爪闭合轴 +90° 方向移动，负值反向。
-      # ======================================================
-      branch1_axis_correction_deg: 0.0  # 第二物理抓取分支的角度修正（度）。
-      branch1_closing_bias_mm: 10.0  # 第二分支沿闭合方向的中心修正（mm）。
-      branch1_longitudinal_bias_mm: 10.0  # 第二分支沿前后方向的中心修正（mm）。
-
       visual_to_command_matrix:  # 视觉坐标到下发坐标的2x2矩阵。
         - [0.72533465, 0.01675850]
         - [0.00479271, 0.64797763]
@@ -207,11 +186,7 @@ vision:
         - [1.37890961, -0.03566244]
         - [-0.01019898, 1.54352692]
 
-      # 双边抓取时这里表示“有向物理Yaw”的可执行范围，不是协议轴向yaw。
-      # 由当前下位机Yaw标定 q=q0+k*(theta-theta0) 与舵机±135°范围换算；
-      # 留少量边界余量，branch 0/1都会先经过此范围检查再做TCP补偿。
-      min_axis_deg: -79.0  # 可执行物理 Yaw 最小角度（度）。
-      max_axis_deg: 165.0  # 可执行物理 Yaw 最大角度（度）。
+      # 执行区间从 calibration.yaw_servo 自动计算，不在此重复配置。
 
       xy_calibration_claw_angle_deg: 45.0  # XY 标定时的夹爪角度（度）。
       tcp_fit_claw_angle_deg: 5.0  # TCP 拟合时的夹爪角度（度）。

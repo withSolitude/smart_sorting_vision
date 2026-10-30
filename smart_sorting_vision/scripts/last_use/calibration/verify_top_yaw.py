@@ -19,39 +19,33 @@ if str(ROOT) not in sys.path:
 from communication.sorting_protocol import Mode, SortingFrame, make_calib_yaw
 from communication.stm32_link import STM32Link
 from runtime.app_config import load_runtime_config
+from vision.calibration.yaw_servo import YawServoCalibration
 from vision.cameras.top_camera import TopCamera
 from vision.calibration.pixel_to_robot import PixelToRobotTransform
 
 
-# Must match the final firmware parameters in ita_robot.h.
-# Must match the final firmware parameters in ita_robot.h.
-YAW_REF_AXIS_DEG = 43.590200
-YAW_REF_SERVO_DEG = -0.622672
-YAW_SERVO_PER_AXIS = -1.10205336
-
-YAW_SERVO_MIN_DEG = -60.0
-YAW_SERVO_MAX_DEG = 135.0
+# 验证报告字段由运行 YAML 初始化，不再维护旧标定常量。
+YAW_CALIBRATION: YawServoCalibration | None = None
+YAW_REF_AXIS_DEG = None
+YAW_REF_SERVO_DEG = None
+YAW_SERVO_PER_AXIS = None
+YAW_SERVO_MIN_DEG = None
+YAW_SERVO_MAX_DEG = None
 
 DEFAULT_TARGETS_DEG = [75.0, 45.0, 15.0, -15.0, -45.0, -75.0]
 
 
 def apply_yaw_config(cfg: dict) -> None:
-    """从 YAML 读取 Yaw 映射，避免验证继续使用旧硬编码。"""
-    values = cfg.get("calibration", {}).get("yaw_servo", {})
-    required = (
-        "reference_axis_deg", "reference_servo_deg",
-        "servo_deg_per_axis_deg", "safe_command_min_deg",
-        "safe_command_max_deg",
-    )
-    if not all(key in values for key in required):
-        raise ValueError("calibration.yaw_servo 配置不完整")
+    """与正式抓取共用同一份 YAML 标定和唯一 180° 物理姿态映射。"""
+    global YAW_CALIBRATION
     global YAW_REF_AXIS_DEG, YAW_REF_SERVO_DEG, YAW_SERVO_PER_AXIS
     global YAW_SERVO_MIN_DEG, YAW_SERVO_MAX_DEG
-    YAW_REF_AXIS_DEG = float(values["reference_axis_deg"])
-    YAW_REF_SERVO_DEG = float(values["reference_servo_deg"])
-    YAW_SERVO_PER_AXIS = float(values["servo_deg_per_axis_deg"])
-    YAW_SERVO_MIN_DEG = float(values["safe_command_min_deg"])
-    YAW_SERVO_MAX_DEG = float(values["safe_command_max_deg"])
+    YAW_CALIBRATION = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
+    YAW_REF_AXIS_DEG = YAW_CALIBRATION.reference_axis_deg
+    YAW_REF_SERVO_DEG = YAW_CALIBRATION.reference_servo_deg
+    YAW_SERVO_PER_AXIS = YAW_CALIBRATION.servo_deg_per_axis_deg
+    YAW_SERVO_MIN_DEG = YAW_CALIBRATION.safe_command_min_deg
+    YAW_SERVO_MAX_DEG = YAW_CALIBRATION.safe_command_max_deg
 
 
 class UserStopRequested(RuntimeError):
@@ -66,18 +60,11 @@ def normalize_axial_deg(angle_deg: float) -> float:
     return value
 
 
-def axis_to_servo_deg(target_axis_deg: float, current_servo_deg: float) -> float:
-    """Mirror the firmware's 180-degree-equivalent solution selection."""
-    target_axis_deg = normalize_axial_deg(target_axis_deg)
-    raw_delta = target_axis_deg - YAW_REF_AXIS_DEG
-    candidates: list[float] = []
-    for n in range(-4, 5):
-        q = YAW_REF_SERVO_DEG + YAW_SERVO_PER_AXIS * (raw_delta + 180.0 * n)
-        if YAW_SERVO_MIN_DEG <= q <= YAW_SERVO_MAX_DEG:
-            candidates.append(float(q))
-    if not candidates:
-        raise ValueError(f"no calibrated servo solution for target axis {target_axis_deg:+.2f} deg")
-    return min(candidates, key=lambda q: abs(q - current_servo_deg))
+def axis_to_servo_deg(target_axis_deg: float, current_servo_deg: float = 0.0) -> float:
+    """固定映射到唯一姿态；保留 current_servo_deg 形参兼容既有验证调用。"""
+    if YAW_CALIBRATION is None:
+        raise RuntimeError("请先从 runtime_config.yaml 调用 apply_yaw_config")
+    return YAW_CALIBRATION.command_deg(target_axis_deg)
 
 
 def parse_targets(text: str) -> list[float]:

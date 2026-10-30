@@ -16,9 +16,11 @@ from runtime.app_config import load_runtime_config
 from vision.cameras.top_camera import TopCamera
 from vision.pipeline.top_pick_pipeline import TopPickPipeline
 from vision.calibration.yaw_tcp_compensation import YawTcpCompensator
+from vision.calibration.yaw_servo import YawServoCalibration
 
 
 def build_pipeline(cfg: dict, *, debug_rejections: bool) -> TopPickPipeline:
+    yaw = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
     top_model = cfg["model"]["top"]
     top_cfg = cfg["vision"]["top"]
     consensus = top_cfg["consensus"]
@@ -41,14 +43,15 @@ def build_pipeline(cfg: dict, *, debug_rejections: bool) -> TopPickPipeline:
             reference_axis_deg=float(tcp_cfg["reference_axis_deg"]),
             offset_axis0_x_mm=float(d0[0]),
             offset_axis0_y_mm=float(d0[1]),
-            min_axis_deg=float(tcp_cfg.get("min_axis_deg", -87.0)),
-            max_axis_deg=float(tcp_cfg.get("max_axis_deg", 89.0)),
+            min_axis_deg=yaw.physical_min_deg,
+            max_axis_deg=yaw.physical_max_deg,
             visual_to_command_matrix=tcp_cfg.get(
                 "visual_to_command_matrix", [[1.0, 0.0], [0.0, 1.0]]
             ),
         )
 
     return TopPickPipeline(
+        yaw_servo_calibration=yaw,
         model_path=top_model["path"],
         calibration_path=cfg["calibration"]["pixel_to_robot"],
         camera_config=cfg["camera"]["top"],

@@ -12,7 +12,7 @@ import torch
 
 ROOT = Path(
     __file__
-).resolve().parents[1]
+).resolve().parents[2]
 
 if str(ROOT) not in sys.path:
     sys.path.insert(
@@ -21,6 +21,8 @@ if str(ROOT) not in sys.path:
     )
 
 
+from runtime.app_config import load_runtime_config
+from vision.calibration.yaw_servo import YawServoCalibration
 from vision.cameras.top_camera import TopCamera
 from vision.pipeline.top_pick_pipeline import (
     TopPickPipeline,
@@ -142,7 +144,9 @@ def main() -> None:
         exist_ok=True,
     )
 
+    cfg = load_runtime_config(ROOT, ROOT / "config/runtime_config.yaml")
     pipeline = TopPickPipeline(
+        yaw_servo_calibration=YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"]),
         model_path=
             MODEL_PATH,
         calibration_path=

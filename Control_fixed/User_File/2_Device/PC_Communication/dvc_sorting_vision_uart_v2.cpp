@@ -369,21 +369,11 @@ Process_Frame(
     data.Yaw_Raw =
         static_cast<int8_t>(box_id);
 
-    data.Yaw_Branch =
-        0U;
-
     if (mode == Sorting_Vision_Mode_PICK_TARGET ||
         mode == Sorting_Vision_Mode_MCU_PICK_TARGET_ACK)
     {
         data.Grasp_Axis_Deg =
             Yaw_Raw_To_Deg(data.Yaw_Raw);
-        data.Box_ID = 0U;
-    }
-    else if (mode == Sorting_Vision_Mode_PICK_YAW_BRANCH ||
-             mode == Sorting_Vision_Mode_MCU_PICK_YAW_BRANCH_ACK)
-    {
-        data.Yaw_Branch =
-            box_id;
         data.Box_ID = 0U;
     }
 
@@ -441,8 +431,6 @@ Validate_Mode(
 
         case Sorting_Vision_Mode_PICK_PREOPEN:
 
-        case Sorting_Vision_Mode_PICK_YAW_BRANCH:
-
         case Sorting_Vision_Mode_STOP:
 
 
@@ -479,8 +467,6 @@ Validate_Mode(
         case Sorting_Vision_Mode_MCU_RETRY_PICK_READY:
 
         case Sorting_Vision_Mode_MCU_PICK_PREOPEN_ACK:
-
-        case Sorting_Vision_Mode_MCU_PICK_YAW_BRANCH_ACK:
 
         case Sorting_Vision_Mode_MCU_ERROR:
         {
@@ -532,12 +518,6 @@ Validate_Box_ID(
         {
             const int8_t yaw_raw = static_cast<int8_t>(Box_ID);
             return yaw_raw >= -90 && yaw_raw <= 90;
-        }
-
-        case Sorting_Vision_Mode_PICK_YAW_BRANCH:
-        case Sorting_Vision_Mode_MCU_PICK_YAW_BRANCH_ACK:
-        {
-            return Box_ID <= 1U;
         }
 
         case Sorting_Vision_Mode_MCU_ERROR:
