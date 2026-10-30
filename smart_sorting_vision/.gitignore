@@ -27,3 +27,7 @@ preopen_yaml_backups/
 
 # 日志
 *.log
+
+.venv*/
+
+.venv*/
