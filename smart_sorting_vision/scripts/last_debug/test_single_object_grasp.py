@@ -1,8 +1,9 @@
 """顶部相机单物体抓取规划预览。
 
-这个脚本只运行顶部视觉和抓取规划，不打开 STM32，不发送任何运动命令。
+默认只运行顶部视觉和抓取规划，不打开 STM32。按 Space 后才会连接下位机，
+执行一次动态预开口 + PICK_TARGET 实抓，并在第一阶段完成后发送 STOP。
 画面中会显示当前选中的一个物体、规划抓取点、闭合轴方向、夹爪纵向方向、
-机械坐标、协议 Yaw、实际物理 Yaw 和动态预开口，适合先检查视觉规划是否合理。
+机械坐标、协议 Yaw、实际物理 Yaw 和动态预开口。
 
 运行：
     python -m scripts.last_debug.test_single_object_grasp
@@ -10,6 +11,7 @@
 
 按键：
     [ / ]  切换可显示的候选物体
+    Space    在下位机已收到物理 START 且画面 READY 时实抓一次
     R      清空多帧稳定计数
     P      暂停/继续画面
     S      保存当前标注图
@@ -181,7 +183,9 @@ def _print_candidate(candidate, yaw: YawServoCalibration) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="单物体抓取点和方向规划预览（不连接下位机）")
+    parser = argparse.ArgumentParser(
+        description="单物体抓取点/方向预览；按 Space 后执行一次真实抓取"
+    )
     parser.add_argument(
         "--config",
         type=Path,
@@ -218,6 +222,14 @@ def main() -> int:
 
     selected_index = args.object_index
     paused = False
+    link = None
+    link_state = {"started": False, "last_error": ""}
+    pick_helpers = None
+    drift_compensator = None
+    runtime_cfg = cfg.get("runtime", {}) or {}
+    ack_timeout_s = float(runtime_cfg.get("pick_ack_timeout_s", 1.5))
+    ready_timeout_s = float(runtime_cfg.get("recognition_ready_timeout_s", 18.0))
+    retry_interval_s = float(runtime_cfg.get("retry_interval_s", 0.25))
     last_frame = None
     last_result = None
     save_count = 0
@@ -225,13 +237,79 @@ def main() -> int:
     fps_count = 0
     fps = 0.0
 
-    print("[INFO] 只做顶部视觉规划，不连接 STM32，不会驱动电机。")
+    print("[INFO] 启动时只打开顶部相机；按 Space 才会打开 STM32 并执行一次实抓。")
     print("[INFO] 绿色=目标轮廓/抓取点，紫色=夹爪闭合轴，青色=夹爪纵向轴。")
-    print("[INFO] [ / ] 切换物体，R 重置稳定计数，P 暂停，S 保存，I 打印，Q/ESC 退出。")
+    print("[INFO] 实抓前必须先按下机械物理 START，并等待 READY。")
+    print("[INFO] [ / ] 切换物体，Space 实抓，R 重置，P 暂停，S 保存，I 打印，Q/ESC 退出。")
+
+    def load_pick_helpers():
+        """延迟加载已验证的单次抓取事务，避免预览启动时打开串口。"""
+        from scripts.last_use.test_top_pick_only_debug import (
+            PhysicalStop,
+            UserQuit,
+            build_descent_drift_compensator,
+            execute_pick,
+            make_frozen_target,
+            send_stop_and_wait,
+        )
+
+        return {
+            "PhysicalStop": PhysicalStop,
+            "UserQuit": UserQuit,
+            "build_descent_drift_compensator": build_descent_drift_compensator,
+            "execute_pick": execute_pick,
+            "make_frozen_target": make_frozen_target,
+            "send_stop_and_wait": send_stop_and_wait,
+        }
+
+    def open_pick_link():
+        """第一次实抓时打开串口并先让下位机回到安全 STOP。"""
+        nonlocal link, pick_helpers, drift_compensator
+        if link is not None and link.is_open:
+            return True
+
+        from communication.stm32_link import STM32Link
+
+        pick_helpers = pick_helpers or load_pick_helpers()
+        drift_compensator = drift_compensator or pick_helpers[
+            "build_descent_drift_compensator"
+        ](cfg["vision"]["top"])
+        link = STM32Link(
+            device=cfg["stm32"]["device"],
+            baudrate=cfg["stm32"]["baud"],
+        )
+        link.open()
+        pick_helpers["send_stop_and_wait"](link, link_state, timeout_s=2.0)
+        print("[STM32] 已同步到 STOP；请按机械物理 START 后再按 Space。")
+        return True
+
+    def poll_link_state() -> None:
+        """只读取启动/停止/错误状态，保持预览循环不阻塞。"""
+        if link is None or not link.is_open:
+            return
+        try:
+            from communication.sorting_protocol import Mode
+
+            for message in link.poll():
+                print(f"[RX] {link.describe(message)}")
+                if message.mode == Mode.MCU_START_WORK:
+                    link_state["started"] = True
+                    link_state["last_error"] = ""
+                    print("[READY] 已收到机械 START，可以按 Space 实抓。")
+                elif message.mode in (Mode.MCU_STOP_WORK, Mode.MCU_STOP_ACK):
+                    link_state["started"] = False
+                elif message.mode == Mode.MCU_ERROR:
+                    link_state["started"] = False
+                    link_state["last_error"] = f"MCU_ERROR code={int(message.box_id)}"
+        except Exception as exc:
+            link_state["started"] = False
+            link_state["last_error"] = str(exc)
+            print(f"[STM32][ERROR] {exc}")
 
     try:
         camera.open()
         while True:
+            poll_link_state()
             if not paused or last_frame is None:
                 frame = camera.read()
                 if frame is None:
@@ -284,7 +362,10 @@ def main() -> int:
                 f"objects={0 if result is None else result.object_count}  candidates={0 if result is None else result.candidate_count}",
                 f"READY={ready}  consensus={0 if result is None else result.votes}/{0 if result is None else result.required_hits}",
                 f"selected={selected_index if selected_index is not None else 'best-score'}",
+                f"MCU={'STARTED' if link_state['started'] else 'STOPPED/OFFLINE'}",
             ]
+            if link_state["last_error"]:
+                panel.append(f"MCU error={link_state['last_error']}")
             if candidate is not None:
                 physical_yaw = yaw_calibration.physical_axis_deg(float(candidate.yaw_deg))
                 servo_yaw = yaw_calibration.command_deg(float(candidate.yaw_deg))
@@ -310,6 +391,58 @@ def main() -> int:
             elif key in (ord("r"), ord("R")):
                 pipeline.reset()
                 print("[INFO] consensus reset")
+            elif key == 32:
+                # 只有多帧 READY 且下位机收到机械 START 才允许实抓。
+                if result is None or not result.ready:
+                    print("[BLOCK] 当前抓取规划还没有 READY，继续等待稳定结果。")
+                    continue
+                try:
+                    open_pick_link()
+                    if not link_state["started"]:
+                        print("[BLOCK] 尚未收到 MCU_START_WORK，请先按机械物理 START。")
+                        continue
+                    pick_helpers = pick_helpers or load_pick_helpers()
+                    frozen = pick_helpers["make_frozen_target"](
+                        result,
+                        yaw_calibration,
+                        drift_compensator,
+                    )
+                    print(
+                        "[REAL PICK] "
+                        f"XY=({frozen['command_x_mm']:.2f},{frozen['command_y_mm']:.2f}) "
+                        f"Yaw={frozen['yaw_deg']:+.1f} "
+                        f"physical={frozen['physical_yaw_deg']:+.1f} "
+                        f"preopen={frozen['preopen_mm']:.1f}"
+                    )
+                    pick_helpers["execute_pick"](
+                        link,
+                        camera,
+                        frozen,
+                        link_state,
+                        ack_timeout_s=ack_timeout_s,
+                        ready_timeout_s=ready_timeout_s,
+                        retry_interval_s=retry_interval_s,
+                    )
+                    # 单次测试完成后主动 STOP，避免继续进入比赛分拣流程。
+                    pick_helpers["send_stop_and_wait"](link, link_state, timeout_s=2.0)
+                    print("[DONE] 单次抓取第一阶段完成，已发送 STOP。")
+                    pipeline.reset()
+                    last_result = None
+                except Exception as exc:
+                    if pick_helpers is not None and isinstance(
+                        exc, pick_helpers["UserQuit"]
+                    ):
+                        break
+                    if pick_helpers is not None and isinstance(
+                        exc, pick_helpers["PhysicalStop"]
+                    ):
+                        print(f"[STOP] {exc}")
+                        if link is not None and link.is_open:
+                            pick_helpers["send_stop_and_wait"](link, link_state, timeout_s=2.0)
+                        continue
+                    print(f"[REAL PICK][FAIL] {exc}")
+                    if link is not None and link.is_open and pick_helpers is not None:
+                        pick_helpers["send_stop_and_wait"](link, link_state, timeout_s=2.0)
             elif key in (ord("["), ord("]")):
                 available = sorted(
                     {int(c.object_index) for c in getattr(result, "candidates", []) or []}
@@ -333,8 +466,19 @@ def main() -> int:
                 else:
                     _print_candidate(candidate, yaw_calibration)
     finally:
+        if link is not None:
+            try:
+                if link.is_open:
+                    pick_helpers = pick_helpers or load_pick_helpers()
+                    pick_helpers["send_stop_and_wait"](link, link_state, timeout_s=1.5)
+            except Exception as exc:
+                print(f"[WARN] cleanup STOP failed: {exc}")
+            try:
+                link.close()
+            except Exception:
+                pass
         try:
-            camera.close()
+            camera.release()
         finally:
             cv2.destroyAllWindows()
     return 0
