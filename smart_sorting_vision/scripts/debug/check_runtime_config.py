@@ -5,7 +5,8 @@ from pathlib import Path
 from runtime.app_config import load_runtime_config
 
 
-ROOT = Path(__file__).resolve().parents[1]
+# 当前文件位于 smart_sorting_vision/scripts/debug/，项目根是 parents[2]。
+ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "config" / "runtime_config.yaml"
 
 

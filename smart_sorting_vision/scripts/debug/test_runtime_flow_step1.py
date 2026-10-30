@@ -96,6 +96,18 @@ def pick_ack(x=-50.0, y=20.0, yaw=0.0):
     return SortingFrame(Mode.MCU_PICK_TARGET_ACK, x_mm=x, y_mm=y, yaw_deg=yaw)
 
 
+def pick_yaw_branch_ack(branch=0):
+    return SortingFrame(Mode.MCU_PICK_YAW_BRANCH_ACK, box_id=branch)
+
+
+def process_top_to_pick_ack(runtime):
+    """完成当前协议的 Yaw 分支握手，推进到等待 PICK_ACK。"""
+    runtime.process_top()
+    if runtime.state == RuntimeState.WAIT_PICK_YAW_BRANCH_ACK:
+        runtime.process_message(pick_yaw_branch_ack())
+    assert runtime.state == RuntimeState.WAIT_PICK_ACK
+
+
 def recognition_ready(x=-50.0, y=20.0):
     return SortingFrame(Mode.MCU_RECOGNITION_READY, x_mm=x, y_mm=y)
 
@@ -114,8 +126,7 @@ def test_happy_path_and_cycle_reset():
     r.start()
     assert r.state == RuntimeState.WAIT_TOP_OBJECT
 
-    r.process_top()
-    assert r.state == RuntimeState.WAIT_PICK_ACK
+    process_top_to_pick_ack(r)
 
     r.process_message(pick_ack())
     assert r.state == RuntimeState.WAIT_RECOGNITION_READY
@@ -144,12 +155,16 @@ def test_happy_path_and_cycle_reset():
     assert r.cycle_id == 2
     # run_once 在处理 DONE 后可以立即读取下一帧顶部图像，因此 FakeTopPipeline
     # 可能已经把状态推进到 WAIT_PICK_ACK；关键是 DONE 已提交且新周期已建立。
-    assert r.state in (RuntimeState.WAIT_TOP_OBJECT, RuntimeState.WAIT_PICK_ACK)
+    assert r.state in (
+        RuntimeState.WAIT_TOP_OBJECT,
+        RuntimeState.WAIT_PICK_YAW_BRANCH_ACK,
+        RuntimeState.WAIT_PICK_ACK,
+    )
     assert r.cycle_id == 2
 
     # R02: 新周期必须清空侧面锁存，不能一帧返回上一物体。
     side.value.update(color="blue", shape="ball", qr_present=False)
-    r.process_top()
+    process_top_to_pick_ack(r)
     r.process_message(pick_ack())
     r.process_message(recognition_ready())
     r.process_side()
@@ -160,7 +175,7 @@ def test_happy_path_and_cycle_reset():
 def test_wrong_done_box_and_mcu_error():
     r, _, _, _, storage = make_runtime()
     r.start()
-    r.process_top()
+    process_top_to_pick_ack(r)
     r.process_message(pick_ack())
     r.process_message(recognition_ready())
     recognize_side(r)
@@ -180,14 +195,15 @@ def test_wrong_done_box_and_mcu_error():
 def test_send_failure_does_not_commit_inventory():
     r, link, _, _, storage = make_runtime()
     r.start()
-    r.process_top()
+    process_top_to_pick_ack(r)
     r.process_message(pick_ack())
     r.process_message(recognition_ready())
 
     # 只让 SORT_RESULT 发送失败。
     link.fail_send = True
     recognize_side(r)
-    assert r.state == RuntimeState.ERROR
+    # 直接抛出串口 OSError 也必须按链路掉线恢复，不能锁死业务状态。
+    assert r.state == RuntimeState.LINK_OFFLINE
     assert storage.boxes[0].count == 0
     assert storage.get_pending_reservations() == []
 
@@ -199,6 +215,7 @@ def test_batched_ack_ready_and_ack_done_are_consumed_in_order():
 
     # 同一次 poll 收到 ACK + READY，必须连续推进，不丢 READY。
     link.rx = [
+        pick_yaw_branch_ack(),
         pick_ack(),
         recognition_ready(),
     ]
@@ -214,7 +231,11 @@ def test_batched_ack_ready_and_ack_done_are_consumed_in_order():
     r.run_once()
     assert storage.boxes[0].count == 1
     assert r.cycle_id == 2
-    assert r.state in (RuntimeState.WAIT_TOP_OBJECT, RuntimeState.WAIT_PICK_ACK)
+    assert r.state in (
+        RuntimeState.WAIT_TOP_OBJECT,
+        RuntimeState.WAIT_PICK_YAW_BRANCH_ACK,
+        RuntimeState.WAIT_PICK_ACK,
+    )
 
 
 def test_urgent_event_blocks_action_after_inference():
@@ -239,7 +260,7 @@ def test_mismatched_echoes_are_rejected():
     # 旧/串周期PICK ACK不得推进当前动作。
     r, _, _, _, _ = make_runtime()
     r.start()
-    r.process_top()
+    process_top_to_pick_ack(r)
     r.process_message(pick_ack(x=-49.0))
     assert r.state == RuntimeState.ERROR
     assert "PICK_ACK echo mismatch" in r.fault_reason
@@ -247,7 +268,7 @@ def test_mismatched_echoes_are_rejected():
     # 正确PICK/READY后，错误箱号SORT ACK也必须拒绝。
     r, _, _, _, storage = make_runtime()
     r.start()
-    r.process_top()
+    process_top_to_pick_ack(r)
     r.process_message(pick_ack())
     r.process_message(recognition_ready())
     recognize_side(r)
@@ -258,18 +279,18 @@ def test_mismatched_echoes_are_rejected():
     assert "SORT_ACK box mismatch" in r.fault_reason
 
 
-def test_absolute_timeout_enters_error():
+def test_action_timeout_keeps_runtime_running():
     r, _, _, _, _ = make_runtime()
     r.start()
-    r.process_top()
-    assert r.state == RuntimeState.WAIT_PICK_ACK
+    process_top_to_pick_ack(r)
 
-    # 不需要真实等待：把状态进入时间向前移动，模拟 ACK 超时。
+    # 不需要真实等待：把状态进入时间向前移动，模拟 ACK 等待超时。
+    # 新逻辑只记录提示并继续等待，链路掉线由心跳 watchdog 单独判定。
     r.state_entered_at -= (r.pick_ack_timeout_s + 0.5)
     r._check_timeout()
-    assert r.state == RuntimeState.ERROR
-    assert not r.running
-    assert r.fault_reason == "PICK_ACK timeout"
+    assert r.state == RuntimeState.WAIT_PICK_ACK
+    assert r.running
+    assert r.fault_reason is None
 
 
 def main():
@@ -280,7 +301,7 @@ def main():
         test_batched_ack_ready_and_ack_done_are_consumed_in_order,
         test_urgent_event_blocks_action_after_inference,
         test_mismatched_echoes_are_rejected,
-        test_absolute_timeout_enters_error,
+        test_action_timeout_keeps_runtime_running,
     ]
 
     for test in tests:

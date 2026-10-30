@@ -27,7 +27,7 @@ from __future__ import annotations
 
 运行后：
 1. 数字选择 train / val / test
-2. 数字选择具体采集目录
+2. 按层级数字选择采集目录
 3. 打开顶部相机
 
 相机窗口：
@@ -144,50 +144,25 @@ def _read_top_camera_config() -> tuple[dict, Path]:
 # 数据集目录扫描
 # ============================================================================
 
-def _leaf_capture_folders(
-    split_root: Path,
+def _direct_child_folders(
+    parent: Path,
 ) -> list[Path]:
-    """
-    自动寻找 split 下所有“叶子目录”。
+    """只返回当前目录的直接子目录，不递归展开更深层目录。"""
 
-    例如：
-
-        train/contact
-        train/edge
-        train/empty
-        train/single/red/圆柱
-        train/single/red/圆锥
-
-    如果 single/red 下面还有圆柱、圆锥等目录，
-    那么 single/red 本身不会出现在采集列表里，
-    只显示真正可以放图片的最底层目录。
-    """
-
-    if not split_root.exists():
+    if not parent.exists():
         return []
 
-    result: list[Path] = []
+    folders = [
+        path
+        for path in parent.iterdir()
+        if path.is_dir()
+    ]
 
-    for path in split_root.rglob("*"):
-
-        if not path.is_dir():
-            continue
-
-        child_dirs = [
-            p
-            for p in path.iterdir()
-            if p.is_dir()
-        ]
-
-        if not child_dirs:
-            result.append(path)
-
-    result.sort(
-        key=lambda p:
-        p.relative_to(split_root).as_posix()
+    folders.sort(
+        key=lambda path: path.name.casefold()
     )
 
-    return result
+    return folders
 
 
 # ============================================================================
@@ -223,14 +198,14 @@ def _select_split() -> str:
             DATASET_ROOT / name
         )
 
-        folders = _leaf_capture_folders(
+        folders = _direct_child_folders(
             split_root
         )
 
         print(
             f"  [{i}] "
             f"{name:<5} "
-            f"({len(folders)} 个采集目录)"
+            f"({len(folders)} 个一级目录)"
         )
 
     print()
@@ -284,57 +259,98 @@ def _select_capture_folder(
     split: str,
 ) -> tuple[str, Path]:
     """
-    自动扫描当前 split 的所有叶子目录，
-    然后通过数字选择。
+    按层级选择当前 split 下的采集目录。
+
+    例如目录结构为：
+
+        train/single/yellow/cube
+        train/single/white/cylinder
+        train/stacked/yellow
+
+    菜单会依次显示：
+
+        train -> single / stacked
+        single -> yellow / white
+        yellow -> cube
+
+    每次只显示当前目录的直接子目录，
+    不会把所有深层目录一次性列出来。
     """
 
     split_root = (
         DATASET_ROOT / split
     )
 
-    folders = _leaf_capture_folders(
-        split_root
-    )
-
-    if not folders:
+    if not split_root.exists():
         raise RuntimeError(
-            f"没有找到可采集目录："
+            f"没有找到数据集目录："
             f"{split_root}\n"
             f"请先建立数据集文件夹结构。"
         )
 
-    print()
-    print("=" * 72)
-    print(
-        f" 数据集："
-        f"{DATASET_VERSION}/{split}"
-    )
-    print("=" * 72)
-    print()
-    print(
-        "请选择图片保存目录："
-    )
-    print()
-
-    for index, folder in enumerate(
-        folders,
-        start=1,
-    ):
-
-        relative = folder.relative_to(
-            split_root
-        ).as_posix()
-
-        print(
-            f"  [{index:>3}] "
-            f"{relative}"
+    # current_root 表示当前所在层级；每次只读取这一层的直接子目录。
+    current_root = split_root
+    while True:
+        folders = _direct_child_folders(
+            current_root
         )
 
-    print()
-    print("  [  0] 返回")
-    print()
+        # 没有子目录时，当前目录就是最终图片保存目录。
+        if not folders:
+            if current_root == split_root:
+                raise RuntimeError(
+                    f"没有找到可采集目录："
+                    f"{split_root}\n"
+                    f"请先建立数据集文件夹结构。"
+                )
 
-    while True:
+            relative = current_root.relative_to(
+                split_root
+            ).as_posix()
+
+            print()
+            print(
+                "[SELECT] "
+                f"{split}/{relative}"
+            )
+
+            return relative, current_root
+
+        relative_current = current_root.relative_to(
+            split_root
+        ).as_posix()
+        display_current = (
+            "根目录"
+            if relative_current == "."
+            else relative_current
+        )
+
+        print()
+        print("=" * 72)
+        print(
+            f" 数据集："
+            f"{DATASET_VERSION}/{split}"
+        )
+        print(
+            f" 当前层级：{display_current}"
+        )
+        print("=" * 72)
+        print()
+        print("请选择下一级目录：")
+        print()
+
+        for index, folder in enumerate(
+            folders,
+            start=1,
+        ):
+            print(
+                f"  [{index:>3}] "
+                f"{folder.name}"
+            )
+
+        print()
+        print("  [  0] 返回上一级")
+        print()
 
         text = input(
             "请输入数字序号：\n> "
@@ -350,28 +366,17 @@ def _select_capture_folder(
             continue
 
         if number == 0:
-            return "", Path()
+            if current_root == split_root:
+                return "", Path()
+
+            current_root = current_root.parent
+            continue
 
         if 1 <= number <= len(folders):
-
-            target = folders[
+            current_root = folders[
                 number - 1
             ]
-
-            relative = target.relative_to(
-                split_root
-            ).as_posix()
-
-            print()
-            print(
-                "[SELECT] "
-                f"{split}/{relative}"
-            )
-
-            return (
-                relative,
-                target,
-            )
+            continue
 
         print(
             f"[ERROR] 请输入 "
@@ -386,7 +391,7 @@ def _interactive_select_target(
 
         选择 split
         ↓
-        选择采集目录
+        按层级进入采集目录
     """
 
     while True:

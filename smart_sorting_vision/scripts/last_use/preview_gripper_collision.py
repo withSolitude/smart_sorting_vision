@@ -51,6 +51,7 @@ def build_pipeline(cfg: dict, *, debug_rejections: bool) -> TopPickPipeline:
     return TopPickPipeline(
         model_path=top_model["path"],
         calibration_path=cfg["calibration"]["pixel_to_robot"],
+        camera_config=cfg["camera"]["top"],
         conf=top_model["conf"],
         imgsz=top_model["imgsz"],
         device=top_model["device"],

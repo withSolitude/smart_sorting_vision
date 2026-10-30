@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import subprocess
-from typing import Optional
+import time
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -92,18 +93,9 @@ class SideCamera:
 
     只保留左侧长条托盘。
 
-    当前 ROI：
-
-        x = 220 ~ 745
-        y = 105 ~ 720
-
-    得到：
-
-        width  = 525
-        height = 615
-
-    后续如果需要微调托盘范围，
-    只修改下面四个 ROI 参数。
+    正式 ROI、曝光、分辨率等参数统一由
+    config/runtime_config.yaml 提供；下面的类常量只作为未调用
+    configure() 时的最小兜底。
     """
 
     # ==========================================================
@@ -145,6 +137,10 @@ class SideCamera:
     
     ROI_WIDTH = ROI_X2 - ROI_X1
     ROI_HEIGHT = ROI_Y2 - ROI_Y1
+
+    # 手工标注的托盘多边形，使用完整侧面图坐标。
+    # 输出仍保持 ROI 外接矩形尺寸，便于复用原有背景和识别坐标系。
+    ROI_POLYGON: tuple[tuple[int, int], ...] | None = None
 
     # ==========================================================
     # 4. 曝光
@@ -223,6 +219,9 @@ class SideCamera:
 
     WARMUP_FRAMES = 10
 
+    # 运行中 USB 相机掉线时的重连节流周期，避免每帧重复打开设备。
+    RECONNECT_INTERVAL_S = 0.5
+
     # ==========================================================
     # 12. 运行时配置入口
     # ==========================================================
@@ -234,24 +233,43 @@ class SideCamera:
     ) -> None:
         """Apply the production side-camera profile from runtime_config.yaml."""
         cls.DEVICE = str(config["device"])
-        cls.WIDTH = int(config.get("width", cls.WIDTH))
-        cls.HEIGHT = int(config.get("height", cls.HEIGHT))
-        cls.FPS = int(config.get("fps", cls.FPS))
-        cls.FOURCC = str(config.get("fourcc", cls.FOURCC))
-        cls.BUFFER_SIZE = int(config.get("buffer_size", cls.BUFFER_SIZE))
+        cls.WIDTH = int(config["width"])
+        cls.HEIGHT = int(config["height"])
+        cls.FPS = int(config["fps"])
+        cls.FOURCC = str(config["fourcc"])
+        cls.BUFFER_SIZE = int(config["buffer_size"])
+        cls.WARMUP_FRAMES = int(config["warmup_frames"])
+        cls.RECONNECT_INTERVAL_S = float(config["reconnect_interval_s"])
 
-        roi = config.get("roi")
-        if roi is not None:
-            if not isinstance(roi, (list, tuple)) or len(roi) != 4:
-                raise ValueError("camera.side.roi 必须是 [x1, y1, x2, y2]")
-            cls.ROI_X1, cls.ROI_Y1, cls.ROI_X2, cls.ROI_Y2 = map(int, roi)
-            cls.ROI_WIDTH = cls.ROI_X2 - cls.ROI_X1
-            cls.ROI_HEIGHT = cls.ROI_Y2 - cls.ROI_Y1
+        roi = config["roi"]
+        if not isinstance(roi, (list, tuple)) or len(roi) != 4:
+            raise ValueError("camera.side.roi 必须是 [x1, y1, x2, y2]")
+        cls.ROI_X1, cls.ROI_Y1, cls.ROI_X2, cls.ROI_Y2 = map(int, roi)
+        cls.ROI_WIDTH = cls.ROI_X2 - cls.ROI_X1
+        cls.ROI_HEIGHT = cls.ROI_Y2 - cls.ROI_Y1
+
+        polygon = config.get("roi_polygon")
+        if polygon is None:
+            cls.ROI_POLYGON = None
+        else:
+            cls.ROI_POLYGON = cls._parse_roi_polygon(
+                polygon,
+                name="camera.side.roi_polygon",
+            )
 
         if not (0 <= cls.ROI_X1 < cls.ROI_X2 <= cls.WIDTH):
             raise ValueError("camera.side.roi 的 X 范围超出图像")
         if not (0 <= cls.ROI_Y1 < cls.ROI_Y2 <= cls.HEIGHT):
             raise ValueError("camera.side.roi 的 Y 范围超出图像")
+
+        if cls.ROI_POLYGON is not None:
+            points = np.asarray(cls.ROI_POLYGON, dtype=np.int32)
+            if np.any(points[:, 0] < cls.ROI_X1) or np.any(points[:, 0] >= cls.ROI_X2):
+                raise ValueError("camera.side.roi_polygon 必须位于 roi 外接矩形内")
+            if np.any(points[:, 1] < cls.ROI_Y1) or np.any(points[:, 1] >= cls.ROI_Y2):
+                raise ValueError("camera.side.roi_polygon 必须位于 roi 外接矩形内")
+            if cv2.contourArea(points.reshape(-1, 1, 2)) <= 1.0:
+                raise ValueError("camera.side.roi_polygon 面积过小")
 
         controls = config.get("controls", {})
         mapping = {
@@ -273,6 +291,18 @@ class SideCamera:
             if key in controls:
                 setattr(cls, attr, int(controls[key]))
 
+    @staticmethod
+    def _parse_roi_polygon(value: Any, *, name: str) -> tuple[tuple[int, int], ...]:
+        """校验 YAML 中的手工 ROI 多边形，并转换成整数像素点。"""
+        if not isinstance(value, (list, tuple)) or len(value) < 3:
+            raise ValueError(f"{name} 必须至少包含 3 个 [x, y] 点")
+        points: list[tuple[int, int]] = []
+        for point in value:
+            if not isinstance(point, (list, tuple)) or len(point) != 2:
+                raise ValueError(f"{name} 的每个点必须是 [x, y]")
+            points.append((int(round(float(point[0]))), int(round(float(point[1])))))
+        return tuple(points)
+
     # ==========================================================
     # 12. 初始化
     # ==========================================================
@@ -284,6 +314,9 @@ class SideCamera:
         self.cap: Optional[
             cv2.VideoCapture
         ] = None
+        self._online = False
+        self._last_error: str | None = None
+        self._next_reconnect_at = 0.0
 
     # ==========================================================
     # 13. 设置单个 V4L2 参数
@@ -810,11 +843,47 @@ class SideCamera:
                         "阶段读取失败"
                     )
 
+            self._online = True
+            self._last_error = None
+
         except Exception:
 
             self.release()
 
             raise
+
+    @property
+    def is_online(self) -> bool:
+        """返回最近一次读帧是否成功，供 Runtime 判断是否暂停分拣。"""
+        return bool(self._online and self.cap is not None and self.cap.isOpened())
+
+    @property
+    def last_error(self) -> str | None:
+        """返回最近一次相机错误，便于记录掉线原因。"""
+        return self._last_error
+
+    def _try_reconnect(self) -> bool:
+        """以固定间隔重开相机，成功后由下一次读帧恢复业务。"""
+        now = time.monotonic()
+        if now < self._next_reconnect_at:
+            return False
+        self._next_reconnect_at = now + self.RECONNECT_INTERVAL_S
+        try:
+            self.release()
+            self.open()
+            print(f"[CAMERA][SIDE] 已重新连接: {self.device}")
+            return True
+        except Exception as exc:
+            self._online = False
+            self._last_error = str(exc)
+            print(f"[CAMERA][SIDE] 掉线，等待重连: {exc}")
+            return False
+
+    def reconnect_once(self) -> bool:
+        """供 Runtime 在暂停状态调用的一次重连尝试，不读取业务图像。"""
+        if self.is_online:
+            return True
+        return self._try_reconnect()
 
     # ==========================================================
     # 20. 读取完整画面
@@ -880,7 +949,7 @@ class SideCamera:
 
     def read(
         self,
-    ) -> np.ndarray:
+    ) -> np.ndarray | None:
 
         """
         正式视觉程序统一调用这个函数。
@@ -889,7 +958,22 @@ class SideCamera:
         而是左侧长条托盘 ROI。
         """
 
-        frame = self.read_full()
+        # 正式运行期间把读帧失败转换成离线状态，避免异常直接终止主线程。
+        try:
+            frame = self.read_full()
+        except Exception as exc:
+            self._online = False
+            self._last_error = str(exc)
+            self.release()
+            if not self._try_reconnect():
+                return None
+            try:
+                frame = self.read_full()
+            except Exception as retry_exc:
+                self._online = False
+                self._last_error = str(retry_exc)
+                self.release()
+                return None
 
         roi = frame[
             self.ROI_Y1:self.ROI_Y2,
@@ -898,6 +982,15 @@ class SideCamera:
 
         # 返回独立连续内存。
         roi = roi.copy()
+
+        if self.ROI_POLYGON is not None:
+            # 多边形之外的托盘外区域不参与背景差分和分类。
+            polygon = np.asarray(self.ROI_POLYGON, dtype=np.int32).copy()
+            polygon[:, 0] -= self.ROI_X1
+            polygon[:, 1] -= self.ROI_Y1
+            mask = np.zeros(roi.shape[:2], dtype=np.uint8)
+            cv2.fillPoly(mask, [polygon.reshape(-1, 1, 2)], 255)
+            roi[mask == 0] = 0
 
         expected_shape = (
             self.ROI_HEIGHT,
@@ -913,6 +1006,8 @@ class SideCamera:
                 f"expected = {expected_shape}"
             )
 
+        self._online = True
+        self._last_error = None
         return roi
 
     # ==========================================================
@@ -1017,6 +1112,8 @@ class SideCamera:
             "roi_height":
                 self.ROI_HEIGHT,
 
+            "roi_polygon": self.ROI_POLYGON,
+
             "auto_exposure":
                 self.AUTO_EXPOSURE,
 
@@ -1080,6 +1177,8 @@ class SideCamera:
             self.cap.release()
 
             self.cap = None
+
+        self._online = False
 
     close = release
 

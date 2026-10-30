@@ -1,357 +1,108 @@
+"""实时检查完整的侧面识别流水线。
+
+输入先经过完整 ROI 的形状/空背景分类；确认有物体后才运行颜色和二维码，
+最后用 YAML 中的多帧共识参数输出 READY。
+"""
+
 from __future__ import annotations
 
 import sys
-import time
 from pathlib import Path
 
 import cv2
-import torch
 
 
-ROOT = Path(
-    __file__
-).resolve().parents[1]
-
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
-    sys.path.insert(
-        0,
-        str(ROOT),
-    )
+    sys.path.insert(0, str(ROOT))
 
-
-from vision.cameras.side_camera import (
-    SideCamera,
-)
-from vision.pipeline.side_sort_pipeline import (
-    SideSortPipeline,
-)
-
-
-BACKGROUND_PATH = (
-    ROOT
-    / "data"
-    / "calibration"
-    / "side_camera"
-    / "side_mechanical_roi_background.png"
-)
-
-SHAPE_MODEL_PATH = (
-    ROOT
-    / "outputs"
-    / "training"
-    / "side_cls"
-    / "v2_yolo26n_cls"
-    / "weights"
-    / "best.pt"
-)
-
-DEVICE = (
-    0
-    if torch.cuda.is_available()
-    else "cpu"
-)
-
-
-def safe_release_camera(
-    camera,
-) -> None:
-    if hasattr(
-        camera,
-        "release",
-    ):
-        try:
-            camera.release()
-            return
-        except Exception:
-            pass
-
-    if hasattr(
-        camera,
-        "close",
-    ):
-        try:
-            camera.close()
-        except Exception:
-            pass
+from runtime.app_config import load_runtime_config
+from vision.cameras.side_camera import SideCamera
+from vision.pipeline.side_sort_pipeline import SideSortPipeline
 
 
 def main() -> None:
-    pipeline = SideSortPipeline(
-        background_path=
-            BACKGROUND_PATH,
-        shape_model_path=
-            SHAPE_MODEL_PATH,
-        shape_device=
-            DEVICE,
+    cfg = load_runtime_config(ROOT, ROOT / "config" / "runtime_config.yaml")
+    SideCamera.configure(cfg["camera"]["side"])
 
-        # 当前侧面继续保持原来的 4/5
-        consensus_window=
-            5,
-        consensus_required=
-            4,
+    model_cfg = cfg["model"]["side"]
+    side_cfg = cfg["vision"]["side"]
+    recognition_cfg = side_cfg["recognition"]
+    color_cfg = dict(recognition_cfg["color"])
+    qr_cfg = dict(recognition_cfg["qr"])
+    shape_cfg = dict(recognition_cfg["shape"])
+    enable_color = bool(color_cfg.pop("enabled"))
+    enable_qr = bool(qr_cfg.pop("enabled"))
+    qr_check_content = bool(qr_cfg.pop("check_content_consistency", False))
+    enable_shape = bool(shape_cfg.pop("enabled"))
+    no_object_labels = tuple(shape_cfg.pop("no_object_labels", ("no_object",)))
+
+    pipeline = SideSortPipeline(
+        background_path=cfg["calibration"]["side_background"],
+        shape_model_path=model_cfg["path"],
+        shape_device=model_cfg.get("device"),
+        shape_imgsz=int(model_cfg.get("imgsz", 224)),
+        shape_confidence_threshold=float(model_cfg.get("confidence_threshold", 0.50)),
+        shape_topk=int(model_cfg.get("topk", 3)),
+        padding_ratio=float(side_cfg.get("padding_ratio", 0.15)),
+        consensus_window=int(side_cfg["consensus"]["window"]),
+        consensus_required=int(side_cfg["consensus"]["required"]),
+        extractor_config=side_cfg["crop_extractor"]["extractor"],
+        color_config=color_cfg,
+        qr_config=qr_cfg,
+        qr_check_content=qr_check_content,
+        no_object_labels=no_object_labels,
+        enable_color=enable_color,
+        enable_qr=enable_qr,
+        enable_shape=enable_shape,
     )
 
     camera = SideCamera()
-
-    print()
-    print(
-        "=" * 72
-    )
-    print(
-        "FORMAL SIDE SORT PIPELINE TEST"
-    )
-    print(
-        "=" * 72
-    )
-    print(
-        "SideCamera"
-        " -> ObjectExtractor"
-        " -> Color/QR/Shape"
-        " -> 4/5 Consensus"
-        " -> READY"
-    )
-    print(
-        "本步骤只输出识别属性，暂不映射 Box_ID。"
-    )
-    print(
-        "=" * 72
-    )
-    print(
-        "R : reset"
-    )
-    print(
-        "Q / ESC : quit"
-    )
-    print(
-        "=" * 72
-    )
-
-    last_ready_signature = None
-
+    print("侧面完整识别流水线调试")
+    print("R：清空多帧共识；Q/ESC：退出")
     try:
         camera.open()
-
-        cv2.namedWindow(
-            "SideSortPipeline",
-            cv2.WINDOW_NORMAL,
-        )
-
         while True:
-            frame = (
-                camera.read()
-            )
-
-            result = (
-                pipeline.process(
-                    frame
-                )
-            )
-
-            display = (
-                frame.copy()
-            )
-
-            if (
-                result.crop_bbox
-                is not None
-            ):
-                (
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                ) = (
-                    result.crop_bbox
-                )
-
-                cv2.rectangle(
-                    display,
-                    (
-                        int(x1),
-                        int(y1),
-                    ),
-                    (
-                        int(x2),
-                        int(y2),
-                    ),
-                    (
-                        0,
-                        255,
-                        0,
-                    ),
-                    2,
-                )
+            frame = camera.read()
+            if frame is None:
+                continue
+            result = pipeline.process(frame)
+            view = frame.copy()
 
             if not result.found:
-                line1 = "NO OBJECT"
-                line2 = (
-                    f"{result.reason}"
-                )
-
+                line1 = f"NO OBJECT  ({result.reason})"
+                line2 = "返回 Disable 后重新开始顶部识别"
+                color = (0, 165, 255)
             elif result.ready:
-                line1 = (
-                    "READY "
-                    f"{result.votes}/"
-                    f"{result.window}"
-                )
-
+                line1 = f"READY {result.votes}/{result.window}"
                 line2 = (
-                    f"{result.color} | "
-                    f"QR="
-                    f"{'Y' if result.qr_present else 'N'} | "
-                    f"{result.shape}"
+                    f"color={result.color}  QR={'Y' if result.qr_present else 'N'} "
+                    f"shape={result.shape}"
                 )
-
-                signature = (
-                    result.color,
-                    result.qr_present,
-                    result.shape,
-                )
-
-                if (
-                    signature
-                    !=
-                    last_ready_signature
-                ):
-                    print()
-                    print(
-                        "[SIDE READY]"
-                    )
-                    print(
-                        f"Color : "
-                        f"{result.color}"
-                    )
-                    print(
-                        f"QR    : "
-                        f"{result.qr_present}"
-                    )
-                    print(
-                        f"Shape : "
-                        f"{result.shape}"
-                    )
-                    print(
-                        f"ColorConf : "
-                        f"{result.color_confidence:.3f}"
-                    )
-                    print(
-                        f"ShapeConf : "
-                        f"{result.shape_confidence:.3f}"
-                    )
-
-                    last_ready_signature = (
-                        signature
-                    )
-
+                color = (0, 255, 0)
             else:
-                line1 = (
-                    "WAIT "
-                    f"{result.votes}/"
-                    f"{result.window} "
-                    f"(need "
-                    f"{result.required_hits})"
-                )
-
+                line1 = f"WAIT {result.votes}/{result.window} need={result.required_hits}"
                 line2 = (
-                    f"{result.color} | "
-                    f"QR="
-                    f"{'Y' if result.qr_present else 'N'} | "
-                    f"{result.shape}"
+                    f"color={result.color}  QR={'Y' if result.qr_present else 'N'} "
+                    f"shape={result.shape}  {result.reason}"
                 )
+                color = (0, 165, 255)
 
-                last_ready_signature = (
-                    None
-                )
+            if result.crop_bbox is not None:
+                x1, y1, x2, y2 = result.crop_bbox
+                cv2.rectangle(view, (x1, y1), (x2, y2), (0, 255, 255), 2)
+            cv2.putText(view, line1, (16, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.68, color, 2, cv2.LINE_AA)
+            cv2.putText(view, line2, (16, 62), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(view, "R=reset  Q/ESC=quit", (16, view.shape[0] - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.imshow("Side Sort Pipeline", view)
 
-            cv2.putText(
-                display,
-                line1,
-                (
-                    16,
-                    34,
-                ),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
-                (
-                    0,
-                    255,
-                    0,
-                )
-                if result.ready
-                else (
-                    0,
-                    165,
-                    255,
-                ),
-                2,
-                cv2.LINE_AA,
-            )
-
-            cv2.putText(
-                display,
-                line2,
-                (
-                    16,
-                    64,
-                ),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.52,
-                (
-                    255,
-                    255,
-                    255,
-                ),
-                1,
-                cv2.LINE_AA,
-            )
-
-            cv2.imshow(
-                "SideSortPipeline",
-                display,
-            )
-
-            if (
-                result.crop
-                is not None
-            ):
-                cv2.imshow(
-                    "SideSortPipeline Crop",
-                    result.crop,
-                )
-
-            key = (
-                cv2.waitKey(
-                    1
-                )
-                &
-                0xFF
-            )
-
-            if key in (
-                ord("q"),
-                ord("Q"),
-                27,
-            ):
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), ord("Q"), 27):
                 break
-
-            if key in (
-                ord("r"),
-                ord("R"),
-            ):
+            if key in (ord("r"), ord("R")):
                 pipeline.reset()
-
-                last_ready_signature = (
-                    None
-                )
-
-                print(
-                    "[SIDE] pipeline reset"
-                )
-
     finally:
-        safe_release_camera(
-            camera
-        )
-
+        camera.close()
         cv2.destroyAllWindows()
 
 

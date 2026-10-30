@@ -135,11 +135,16 @@ def send_calib_yaw_and_wait(
     link: STM32Link,
     servo_deg: float,
     *,
+    min_deg: float = -135.0,
+    max_deg: float = 135.0,
     ack_timeout: float,
     reach_timeout: float,
 ) -> None:
-    if not (-135.0 <= servo_deg <= 135.0):
-        raise ValueError(f"Yaw servo command out of range: {servo_deg:.2f} deg")
+    if not (min_deg <= servo_deg <= max_deg):
+        raise ValueError(
+            f"Yaw servo command outside configured safe range "
+            f"[{min_deg:.2f}, {max_deg:.2f}]: {servo_deg:.2f} deg"
+        )
 
     drain_before_command(link)
     raw = link.send_frame(make_calib_yaw(float(servo_deg)))
@@ -337,6 +342,11 @@ def main() -> int:
         raise ValueError("--step must be > 0")
 
     cfg = load_runtime_config(ROOT, args.config)
+    yaw_cfg = cfg.get("calibration", {}).get("yaw_servo", {})
+    safe_min = float(yaw_cfg.get("safe_command_min_deg", -135.0))
+    safe_max = float(yaw_cfg.get("safe_command_max_deg", 135.0))
+    if not -135.0 <= safe_min < safe_max <= 135.0:
+        raise ValueError("calibration.yaw_servo 的安全范围必须位于 [-135,135]")
     x_lim = tuple(float(v) for v in cfg["mechanics"]["workspace_mm"]["x"])
     y_lim = tuple(float(v) for v in cfg["mechanics"]["workspace_mm"]["y"])
 
@@ -346,11 +356,13 @@ def main() -> int:
         raise ValueError(f"calibration XY out of workspace: ({x_cal}, {y_cal})")
 
     current_yaw = float(args.initial_yaw)
-    if not (-135.0 <= current_yaw <= 135.0):
-        raise ValueError("--initial-yaw must be within [-135, 135]")
+    if not (safe_min <= current_yaw <= safe_max):
+        raise ValueError(
+            f"--initial-yaw must be within configured safe range [{safe_min}, {safe_max}]"
+        )
 
     mapping_path = Path(cfg["calibration"]["pixel_to_robot"])
-    transform = PixelToRobotTransform.load(mapping_path)
+    transform = PixelToRobotTransform.load(mapping_path, camera_config=cfg["camera"]["top"])
 
     output_dir = mapping_path.parent
     samples_path = output_dir / "yaw_calibration_samples.csv"
@@ -373,6 +385,7 @@ def main() -> int:
     print("YAW CALIBRATION: DIRECT SERVO COMMAND -> TWO-CLICK PHYSICAL CLOSING AXIS")
     print("=" * 86)
     print("下位机必须使用本补丁，并保持自动分拣 STOPPED。")
+    print(f"本次标定使用 YAML 安全舵机范围：[{safe_min:.1f}, {safe_max:.1f}] deg")
     print(f"XY calibration position: X={x_cal:.2f} mm, Y={y_cal:.2f} mm")
     print("请确保此XY位置下：夹爪抬高、不接触物体、Yaw全范围转动不会碰撞/拉线。")
     print("两个点击点必须沿『夹爪闭合轴』，即两夹指相互靠近的方向；点的先后顺序无所谓。")
@@ -405,6 +418,8 @@ def main() -> int:
         send_calib_yaw_and_wait(
             link,
             current_yaw,
+            min_deg=safe_min,
+            max_deg=safe_max,
             ack_timeout=args.ack_timeout,
             reach_timeout=args.reach_timeout,
         )
@@ -514,7 +529,9 @@ def main() -> int:
             elif key == 32:  # SPACE
                 target = current_yaw
             elif key in (ord("m"), ord("M")):
-                text = input("输入直接Yaw舵机命令角度[-135,135] deg，回车取消：").strip()
+                text = input(
+                    f"输入直接Yaw舵机命令角度[{safe_min:.1f},{safe_max:.1f}] deg，回车取消："
+                ).strip()
                 if text:
                     try:
                         target = float(text)
@@ -522,12 +539,17 @@ def main() -> int:
                         print("[WARN] angle must be numeric")
 
             if target is not None:
-                if not (-135.0 <= target <= 135.0):
-                    print(f"[BLOCK] target {target:.2f}deg outside [-135,135]")
+                if not (safe_min <= target <= safe_max):
+                    print(
+                        f"[BLOCK] target {target:.2f}deg outside "
+                        f"[{safe_min:.1f},{safe_max:.1f}]"
+                    )
                     continue
                 send_calib_yaw_and_wait(
                     link,
                     float(target),
+                    min_deg=safe_min,
+                    max_deg=safe_max,
                     ack_timeout=args.ack_timeout,
                     reach_timeout=args.reach_timeout,
                 )

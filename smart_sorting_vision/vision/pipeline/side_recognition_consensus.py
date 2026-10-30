@@ -17,6 +17,10 @@ class SideRecognitionConsensus:
 
             (color, qr_present, shape)
 
+        如果启用二维码内容校验，则比较键追加：
+
+            qr_content
+
         才认为本次识别稳定。
 
     注意：
@@ -41,6 +45,7 @@ class SideRecognitionConsensus:
         *,
         window_size: int = 5,
         required_hits: int = 4,
+        check_qr_content: bool = False,
     ) -> None:
 
         window_size = int(window_size)
@@ -63,6 +68,7 @@ class SideRecognitionConsensus:
 
         self.window_size = window_size
         self.required_hits = required_hits
+        self.check_qr_content = bool(check_qr_content)
 
         self.history = deque(
             maxlen=window_size
@@ -79,8 +85,8 @@ class SideRecognitionConsensus:
         self.history.clear()
         self.latched_result = None
 
-    @staticmethod
     def _candidate_key(
+        self,
         result: dict[str, Any] | None,
     ):
         """
@@ -127,11 +133,21 @@ class SideRecognitionConsensus:
             )
         )
 
-        return (
+        key = [
             color,
             qr_present,
             shape,
-        )
+        ]
+
+        if self.check_qr_content:
+            # QRDetector 成功时应当有非空文本。若内容缺失，不能把
+            # “无法确认内容”当成合法内容参与 READY。
+            qr_content = str(result.get("qr_content", "") or "")
+            if qr_present and not qr_content:
+                return None
+            key.append(qr_content if qr_present else "")
+
+        return tuple(key)
 
     def update(
         self,
@@ -159,18 +175,7 @@ class SideRecognitionConsensus:
                 "required_hits":
                     self.required_hits,
 
-                "candidate":
-                    (
-                        self.latched_result[
-                            "color"
-                        ],
-                        self.latched_result[
-                            "qr_present"
-                        ],
-                        self.latched_result[
-                            "shape"
-                        ],
-                    ),
+                "candidate": self._candidate_key(self.latched_result),
 
                 "result":
                     deepcopy(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,6 +35,7 @@ class SideSortPipelineResult:
         这里只输出稳定的识别属性：
             color
             qr_present
+            qr_content（仅启用内容共识时向上层暴露）
             shape
 
         暂时不在这里硬编码 Box_ID 映射。
@@ -52,6 +52,7 @@ class SideSortPipelineResult:
 
     color: str | None
     qr_present: bool | None
+    qr_content: str | None
     shape: str | None
 
     color_confidence: float
@@ -72,12 +73,12 @@ class SideSortPipeline:
     侧面识别正式流水线。
 
     输入：
-        SideCamera.read() 返回的 mechanical ROI
+        SideCamera.read() 返回的完整 mechanical ROI
 
     内部：
-        SideObjectExtractor
-            ↓
-        crop + crop_mask
+        ShapeClassifier（先判断物体/空背景）
+            ↓ no_object：直接结束本周期
+        SideObjectExtractor（只用于已有物体的颜色/二维码裁剪）
             ↓
         SideRecognizer
             ├─ ColorClassifier
@@ -110,9 +111,15 @@ class SideSortPipeline:
         padding_ratio: float = 0.15,
         consensus_window: int = 5,
         consensus_required: int = 4,
-        presence_window: int = 4,
-        presence_required: int = 3,
         extractor_config: dict[str, Any] | None = None,
+        color_config: dict[str, Any] | None = None,
+        qr_config: dict[str, Any] | None = None,
+        qr_check_content: bool = False,
+        no_object_labels: tuple[str, ...] | list[str] = (
+            "no_object",
+            "empty",
+            "background",
+        ),
         enable_color: bool = True,
         enable_qr: bool = True,
         enable_shape: bool = True,
@@ -124,11 +131,13 @@ class SideSortPipeline:
         self.enable_color = bool(enable_color)
         self.enable_qr = bool(enable_qr)
         self.enable_shape = bool(enable_shape)
+        self.qr_check_content = bool(qr_check_content)
 
         print(
             "[SIDE CONFIG] "
             f"color={self.enable_color} "
             f"qr={self.enable_qr} "
+            f"qr_content_check={self.qr_check_content} "
             f"shape={self.enable_shape}"
         )
 
@@ -162,25 +171,15 @@ class SideSortPipeline:
             )
         )
 
-        self.presence_window = max(
-            1,
-            int(presence_window),
-        )
-        self.presence_required = max(
-            1,
-            int(presence_required),
-        )
-        if self.presence_required > self.presence_window:
-            raise ValueError(
-                "presence_required 不能大于 presence_window"
-            )
-        self._presence_history = deque(
-            maxlen=self.presence_window
+        self.color_classifier = (
+            ColorClassifier(**dict(color_config or {}))
+            if self.enable_color else None
         )
 
-        self.color_classifier = ColorClassifier() if self.enable_color else None
-
-        self.qr_detector = QRDetector() if self.enable_qr else None
+        self.qr_detector = (
+            QRDetector(**dict(qr_config or {}))
+            if self.enable_qr else None
+        )
 
         self.shape_classifier = (
             ShapeClassifier(
@@ -194,6 +193,7 @@ class SideSortPipeline:
                     shape_confidence_threshold,
                 topk=
                     shape_topk,
+                no_object_labels=no_object_labels,
             )
             if self.enable_shape else None
         )
@@ -209,6 +209,7 @@ class SideSortPipeline:
                 enable_color=self.enable_color,
                 enable_qr=self.enable_qr,
                 enable_shape=self.enable_shape,
+                qr_check_content=self.qr_check_content,
             )
         )
 
@@ -218,6 +219,7 @@ class SideSortPipeline:
                     consensus_window,
                 required_hits=
                     consensus_required,
+                check_qr_content=self.qr_check_content,
             )
         )
 
@@ -239,7 +241,6 @@ class SideSortPipeline:
         self,
     ) -> None:
         self.consensus.reset()
-        self._presence_history.clear()
 
     def _check_frame(
         self,
@@ -269,6 +270,8 @@ class SideSortPipeline:
         found: bool = False,
         votes: int = 0,
         window: int = 0,
+        shape: str | None = None,
+        raw_result: dict[str, Any] | None = None,
     ) -> SideSortPipelineResult:
         return SideSortPipelineResult(
             found=bool(found),
@@ -279,12 +282,13 @@ class SideSortPipeline:
                 required_hits,
             color=None,
             qr_present=None,
-            shape=None,
+            qr_content=None,
+            shape=shape,
             color_confidence=0.0,
             shape_confidence=0.0,
             reason=
                 str(reason),
-            raw_result=None,
+            raw_result=raw_result,
             final_result=None,
             crop=None,
             crop_mask=None,
@@ -299,71 +303,59 @@ class SideSortPipeline:
             frame
         )
 
-        object_result = (
-            self.extractor.extract(
-                frame
-            )
-        )
+        # 第一步始终对完整侧面 ROI 做形状分类。空托盘必须作为训练集中的
+        # no_object/empty/background 类别，不再通过背景差分决定有无物体。
+        if self.enable_shape and self.shape_classifier is not None:
+            shape_probe = self.shape_classifier.classify(frame)
+            object_present = bool(shape_probe.get("object_present", False))
+            if not object_present:
+                self.consensus.reset()
+                probe_reason = str(shape_probe.get("reason", "unknown"))
+                # 只有模型明确判为 no_object 才立即触发回待机；低置信度
+                # 留在当前识别周期等待后续帧，避免一帧抖动误触发重抓。
+                if probe_reason == "no_object":
+                    return self._empty_result(
+                        reason="no_object",
+                        required_hits=self.required_hits,
+                        found=False,
+                        shape="no_object",
+                        raw_result={"shape_probe": shape_probe},
+                    )
+                return self._empty_result(
+                    reason=f"shape_pending:{probe_reason}",
+                    required_hits=self.required_hits,
+                    found=True,
+                    shape="unknown",
+                    raw_result={"shape_probe": shape_probe},
+                )
+        else:
+            shape_probe = {
+                "found": True,
+                "object_present": True,
+                "shape": "disabled",
+                "confidence": 0.0,
+                "reason": "shape_disabled",
+            }
 
-        object_candidate = bool(
-            object_result.found
-            and object_result.crop is not None
+        # 形状已经确认有物体后，背景差分只作为颜色/二维码的裁剪辅助。
+        # 裁剪失败时退回完整 ROI，绝不能把裁剪失败伪装成 no_object。
+        object_result = self.extractor.extract(frame)
+        if (
+            object_result.crop is not None
             and object_result.crop_mask is not None
-        )
-        self._presence_history.append(
-            object_candidate
-        )
+        ):
+            crop = object_result.crop
+            crop_mask = object_result.crop_mask
+            crop_bbox = getattr(object_result, "crop_bbox", None)
+        else:
+            crop = frame
+            crop_mask = np.full(frame.shape[:2], 255, dtype=np.uint8)
+            crop_bbox = None
 
-        presence_votes = int(
-            sum(self._presence_history)
-        )
-        presence_window_now = int(
-            len(self._presence_history)
-        )
-        presence_confirmed = bool(
-            object_candidate
-            and presence_votes >= self.presence_required
-        )
-
-        if not object_candidate:
-            # 当前帧没有提取到物体：识别属性共识必须清空，避免把上一件
-            # 或上一段抖动结果带到后续帧。是否真的“掉落”由 Runtime 的
-            # 时间+帧数双门槛继续判断。
-            self.consensus.reset()
-
-            return self._empty_result(
-                reason=getattr(
-                    object_result,
-                    "reason",
-                    "no_object",
-                ),
-                required_hits=self.required_hits,
-                found=False,
-            )
-
-        if not presence_confirmed:
-            # 找到单帧候选，但还没有通过 3/4（配置值）存在确认。
-            # 这里故意返回 found=True，避免 Runtime 把“正在确认的真实物体”
-            # 误判为掉落；同时不进入颜色/QR/形状识别。
-            self.consensus.reset()
-            return self._empty_result(
-                reason=(
-                    "presence_pending:"
-                    f"{presence_votes}/{presence_window_now},"
-                    f"required={self.presence_required}/"
-                    f"{self.presence_window}"
-                ),
-                required_hits=self.required_hits,
-                found=True,
-                votes=presence_votes,
-                window=presence_window_now,
-            )
-
-        raw_result = (
-            self.recognizer.recognize(
-                object_result.crop,
-                object_result.crop_mask,
-            )
+        raw_result = self.recognizer.recognize(
+            crop,
+            crop_mask,
+            shape_result=shape_probe,
         )
 
         stable_state = (
@@ -425,6 +417,12 @@ class SideSortPipeline:
                         False,
                     )
                 ),
+                qr_content=(
+                    str(final_result.get("qr_content") or "")
+                    if self.qr_check_content
+                    and bool(final_result.get("qr_present", False))
+                    else None
+                ),
                 shape=str(
                     final_result.get(
                         "shape",
@@ -448,15 +446,9 @@ class SideSortPipeline:
                     raw_result,
                 final_result=
                     final_result,
-                crop=
-                    object_result.crop,
-                crop_mask=
-                    object_result.crop_mask,
-                crop_bbox=getattr(
-                    object_result,
-                    "crop_bbox",
-                    None,
-                ),
+                crop=crop,
+                crop_mask=crop_mask,
+                crop_bbox=crop_bbox,
             )
 
         return SideSortPipelineResult(
@@ -477,6 +469,11 @@ class SideSortPipeline:
                     "qr_present",
                     False,
                 )
+            ),
+            qr_content=(
+                str(raw_result.get("qr_content") or "")
+                if self.qr_check_content and bool(raw_result.get("qr_present", False))
+                else None
             ),
             shape=str(
                 raw_result.get(
@@ -500,13 +497,7 @@ class SideSortPipeline:
             raw_result=
                 raw_result,
             final_result=None,
-            crop=
-                object_result.crop,
-            crop_mask=
-                object_result.crop_mask,
-            crop_bbox=getattr(
-                object_result,
-                "crop_bbox",
-                None,
-            ),
+            crop=crop,
+            crop_mask=crop_mask,
+            crop_bbox=crop_bbox,
         )

@@ -298,6 +298,15 @@ def main() -> int:
         ROOT,
         Path(args.config),
     )
+    yaw_cfg = cfg.get("calibration", {}).get("yaw_servo", {})
+    safe_min = float(yaw_cfg.get("safe_command_min_deg", -135.0))
+    safe_max = float(yaw_cfg.get("safe_command_max_deg", 135.0))
+    if not -135.0 <= safe_min < safe_max <= 135.0:
+        raise ValueError("calibration.yaw_servo 的安全范围必须位于 [-135,135]")
+    if any(target < safe_min or target > safe_max for target in args.targets):
+        raise ValueError(
+            f"目标超出 YAML 已确认的安全范围 [{safe_min:.1f},{safe_max:.1f}] deg"
+        )
 
     link = STM32Link(
         device=cfg["stm32"]["device"],
@@ -319,6 +328,9 @@ def main() -> int:
     print(
         "[IMPORTANT] Remove objects and make sure "
         "the gripper/USB wires cannot hit anything."
+    )
+    print(
+        f"[SAFE RANGE] YAML allows only [{safe_min:.1f}, {safe_max:.1f}] deg."
     )
     print()
     print(

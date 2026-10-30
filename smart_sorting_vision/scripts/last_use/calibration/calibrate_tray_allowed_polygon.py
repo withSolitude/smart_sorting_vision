@@ -58,7 +58,9 @@ def main() -> None:
     TopCamera.configure(cfg["camera"]["top"], calibration_file=cfg["calibration"]["top_intrinsics"])
     camera = TopCamera()
     camera.open()
-    transform = PixelToRobotTransform.load(cfg["calibration"]["pixel_to_robot"])
+    transform = PixelToRobotTransform.load(
+        cfg["calibration"]["pixel_to_robot"], camera_config=cfg["camera"]["top"]
+    )
 
     window = "Tray Allowed Polygon 4-Point Calibration"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)

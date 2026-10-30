@@ -117,10 +117,6 @@ class GripperFootprintModel:
         if self.body_enabled and (self.body_width_mm <= 0.0 or self.body_length_mm <= 0.0):
             raise ValueError("body dimensions must be > 0 when body_enabled")
 
-        self._H_inv = np.linalg.inv(np.asarray(self.transform.H, dtype=np.float64))
-        if not np.all(np.isfinite(self._H_inv)):
-            raise ValueError("pixel_to_robot homography inverse invalid")
-
         self.forbidden_zones_mm = self._parse_forbidden_zones(forbidden_zones_mm or [])
         self.allowed_region_mm = self._parse_allowed_region(allowed_region_mm)
         self.allowed_polygon_mm = self._parse_allowed_polygon(allowed_polygon_mm)
@@ -248,9 +244,9 @@ class GripperFootprintModel:
         return np.asarray(local_points, dtype=np.float64) @ R.T + center
 
     def _robot_to_pixels(self, points_robot_mm: np.ndarray) -> np.ndarray:
-        pts = np.asarray(points_robot_mm, dtype=np.float64).reshape(-1, 1, 2)
-        out = cv2.perspectiveTransform(pts, self._H_inv).reshape(-1, 2)
-        return out
+        # 包络与禁区采用不含 TCP 偏置的机械坐标，返回当前识别 ROI 的局部像素。
+        pts = np.asarray(points_robot_mm, dtype=np.float64).reshape(-1, 2)
+        return self.transform.robot_to_pixels(pts, apply_tcp_offset=False)
 
     def _make_footprint_robot(
         self,

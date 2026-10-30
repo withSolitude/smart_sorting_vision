@@ -164,11 +164,14 @@ def check(args, root, cfg, TopCamera):
     if mapping_path.is_file():
         mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
         old_size = [mapping.get("image_width"), mapping.get("image_height")]
+        coordinate_space = mapping.get("coordinate_space", "roi")
+        expected_size = list(size) if coordinate_space == "undistorted_full" else roi_size
         mapping_info.update(sha256=digest(mapping_path), image_size=old_size,
-                            dimensions_match=(old_size == roi_size))
-        print(f"[H] image_size={old_size}; 当前ROI={roi_size}")
-        if old_size != roi_size:
-            print("[WARN] H的图像尺寸不一致，必须重做H。")
+                            coordinate_space=coordinate_space,
+                            dimensions_match=(old_size == expected_size))
+        print(f"[H] image_size={old_size}; 坐标系={coordinate_space}; 当前ROI={roi_size}")
+        if old_size != expected_size:
+            print("[WARN] H与对应坐标系的图像尺寸不一致，请核对配置或迁移旧ROI标定。")
     print("[KEY] G=开关辅助网格；S=保存同一帧的原图/去畸变全图/ROI与参数；Q/ESC=退出")
     print("[INFO] 本命令不打开串口、不移动机构，不修改配置。")
     grid = False

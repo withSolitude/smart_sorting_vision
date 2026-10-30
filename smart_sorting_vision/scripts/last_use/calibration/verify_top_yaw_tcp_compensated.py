@@ -38,6 +38,25 @@ YAW_SERVO_MIN_DEG = -60.0
 YAW_SERVO_MAX_DEG = 135.0
 
 
+def apply_yaw_config(cfg: dict) -> None:
+    """从 YAML 读取 Yaw 映射，避免 TCP 验证使用旧硬编码。"""
+    values = cfg.get("calibration", {}).get("yaw_servo", {})
+    required = (
+        "reference_axis_deg", "reference_servo_deg",
+        "servo_deg_per_axis_deg", "safe_command_min_deg",
+        "safe_command_max_deg",
+    )
+    if not all(key in values for key in required):
+        raise ValueError("calibration.yaw_servo 配置不完整")
+    global YAW_REF_AXIS_DEG, YAW_REF_SERVO_DEG, YAW_SERVO_PER_AXIS
+    global YAW_SERVO_MIN_DEG, YAW_SERVO_MAX_DEG
+    YAW_REF_AXIS_DEG = float(values["reference_axis_deg"])
+    YAW_REF_SERVO_DEG = float(values["reference_servo_deg"])
+    YAW_SERVO_PER_AXIS = float(values["servo_deg_per_axis_deg"])
+    YAW_SERVO_MIN_DEG = float(values["safe_command_min_deg"])
+    YAW_SERVO_MAX_DEG = float(values["safe_command_max_deg"])
+
+
 # ============================================================
 # Compensated verification targets
 #
@@ -453,13 +472,14 @@ def main() -> int:
         raise ValueError("--settle must be >=0 and --min-click-span must be >0")
 
     cfg = load_runtime_config(ROOT, args.config)
+    apply_yaw_config(cfg)
     x_lim = tuple(float(v) for v in cfg["mechanics"]["workspace_mm"]["x"])
     y_lim = tuple(float(v) for v in cfg["mechanics"]["workspace_mm"]["y"])
     if not (x_lim[0] <= args.x <= x_lim[1] and y_lim[0] <= args.y <= y_lim[1]):
         raise ValueError(f"verification XY out of workspace: ({args.x}, {args.y})")
 
     mapping_path = Path(cfg["calibration"]["pixel_to_robot"])
-    transform = PixelToRobotTransform.load(mapping_path)
+    transform = PixelToRobotTransform.load(mapping_path, camera_config=cfg["camera"]["top"])
     output_dir = mapping_path.parent
     csv_path = output_dir / "yaw_tcp_compensated_verification_samples.csv"
     report_path = output_dir / "yaw_tcp_compensated_verification_report.json"

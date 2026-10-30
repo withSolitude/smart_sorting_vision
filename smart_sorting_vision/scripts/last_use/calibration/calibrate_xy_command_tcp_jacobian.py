@@ -278,7 +278,7 @@ def main() -> int:
     target_axis = normalize_axial_deg(args.yaw)
     servo_cmd = axis_to_servo_deg(target_axis)
     mapping_path = Path(cfg["calibration"]["pixel_to_robot"])
-    transform = PixelToRobotTransform.load(mapping_path)
+    transform = PixelToRobotTransform.load(mapping_path, camera_config=cfg["camera"]["top"])
     output_dir = mapping_path.parent
     csv_path = output_dir / "xy_command_tcp_jacobian_samples.csv"
     report_path = output_dir / "xy_command_tcp_jacobian_report.json"

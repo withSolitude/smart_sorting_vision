@@ -1,0 +1,297 @@
+"""实时标注顶部/侧面相机的手工多边形 ROI。
+
+运行示例：
+    python -m scripts.last_debug.select_roi --camera top --write
+    python -m scripts.last_debug.select_roi --camera side --write
+
+窗口操作：
+    鼠标左键单击：添加一个多边形顶点；按住左键沿圆弧拖动：连续采点
+    S：保存当前画面和点集快照，不写入 YAML
+    R：清空当前顶点，重新标注
+    Backspace：删除最后一个顶点
+    Enter：确认并写入 YAML（不加 --write 时只打印）
+    Q / Esc：取消
+
+窗口中的坐标是当前实际显示帧的完整图坐标。顶部相机优先显示去畸变图；
+没有内参时自动退回原始完整图。保存时同时写入多边形和它的外接矩形，
+这样运行时仍保持原有 ROI 图像尺寸。
+"""
+from __future__ import annotations
+
+import argparse
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import cv2
+import numpy as np
+import yaml
+
+from .common import ROOT, load_context
+
+
+class PolygonPicker:
+    """在实时画面上逐点标注多边形。"""
+
+    def __init__(self, window: str, frame_size: tuple[int, int], initial: list[list[int]] | None = None):
+        self.window = window
+        self.width, self.height = frame_size
+        self.points: list[tuple[int, int]] = [
+            (int(point[0]), int(point[1])) for point in (initial or [])
+        ]
+        self.scale = 1.0
+        self.frame = None
+        self.dragging = False
+        cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+        cv2.setMouseCallback(window, self._on_mouse)
+
+    def _on_mouse(self, event: int, x: int, y: int, _flags: int, _param: Any) -> None:
+        if event == cv2.EVENT_LBUTTONDOWN:
+            self.dragging = True
+            self._append_point(x, y)
+        elif event == cv2.EVENT_MOUSEMOVE and self.dragging:
+            self._append_point(x, y)
+        elif event == cv2.EVENT_LBUTTONUP:
+            self.dragging = False
+
+    def _append_point(self, x: int, y: int) -> None:
+        # 显示窗口可能被缩放，点击坐标需要换回完整图坐标。
+        px = max(0, min(self.width - 1, int(round(x / self.scale))))
+        py = max(0, min(self.height - 1, int(round(y / self.scale))))
+        # 拖动时只保留相隔至少3像素的点，避免鼠标事件产生大量重复点。
+        if self.points and (px - self.points[-1][0]) ** 2 + (py - self.points[-1][1]) ** 2 < 9:
+            return
+        self.points.append((px, py))
+
+    def draw(self, frame):
+        self.height, self.width = frame.shape[:2]
+        max_w, max_h = 1600, 900
+        self.scale = min(1.0, max_w / max(self.width, 1), max_h / max(self.height, 1))
+        display = frame
+        if self.scale < 1.0:
+            display = cv2.resize(frame, None, fx=self.scale, fy=self.scale, interpolation=cv2.INTER_AREA)
+        for index, (px, py) in enumerate(self.points, start=1):
+            dx, dy = int(round(px * self.scale)), int(round(py * self.scale))
+            cv2.circle(display, (dx, dy), 6, (0, 0, 255), -1)
+            cv2.putText(display, str(index), (dx + 8, dy - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        if len(self.points) >= 2:
+            points = [(int(round(x * self.scale)), int(round(y * self.scale))) for x, y in self.points]
+            cv2.polylines(display, [np.array(points, dtype="int32")], False, (0, 255, 0), 2)
+        if len(self.points) >= 3:
+            points = [(int(round(x * self.scale)), int(round(y * self.scale))) for x, y in self.points]
+            cv2.polylines(display, [np.array(points, dtype="int32")], True, (0, 255, 0), 3)
+        cv2.putText(
+            display,
+            f"points={len(self.points)} | click/drag draw | Backspace undo | R clear | Enter save | Q cancel",
+            (20, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA,
+        )
+        return display
+
+
+def _read_frame(name: str, camera):
+    if name == "top":
+        # 顶部标定完成后 ROI 坐标属于去畸变图；从零调试时没有 map 就看原图。
+        try:
+            return camera.read_undistorted()
+        except RuntimeError:
+            return camera.read_full()
+    return camera.read_full()
+
+
+def _bounding_rect(points: list[tuple[int, int]]) -> list[int]:
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    return [min(xs), min(ys), max(xs) + 1, max(ys) + 1]
+
+
+def _update_roi_yaml(
+    config_path: Path,
+    camera_name: str,
+    polygon_key: str,
+    rect_key: str,
+    points: list[tuple[int, int]],
+    rect: list[int],
+) -> None:
+    """只替换相机 ROI 两行，保留 YAML 其它内容和全部注释。
+
+    PyYAML 的 safe_dump 会把整个文件重新序列化并丢失注释。这里按缩进定位
+    camera.<name> 下的两个字段，只改字段值，行尾的中文说明和其它格式原样保留。
+    """
+    with config_path.open("r", encoding="utf-8", newline="") as stream:
+        text = stream.read()
+    lines = text.splitlines(keepends=True)
+
+    camera_index = next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if line.strip().split("#", 1)[0].strip() == "camera:"
+            and not line.startswith((" ", "\t"))
+        ),
+        None,
+    )
+    if camera_index is None:
+        raise RuntimeError(f"YAML 中找不到 camera 段: {config_path}")
+
+    camera_line = next(
+        (
+            index
+            for index in range(camera_index + 1, len(lines))
+            if lines[index].startswith(f"  {camera_name}:")
+        ),
+        None,
+    )
+    if camera_line is None:
+        raise RuntimeError(f"YAML 中找不到 camera.{camera_name} 段")
+
+    section_end = len(lines)
+    for index in range(camera_line + 1, len(lines)):
+        stripped = lines[index].strip()
+        if stripped and not stripped.startswith("#") and not lines[index].startswith((" ", "\t")):
+            section_end = index
+            break
+
+    def replace_field(field: str, value: str) -> None:
+        for index in range(camera_line + 1, section_end):
+            line = lines[index]
+            if not line.startswith(f"    {field}:"):
+                continue
+            newline = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+            body = line[: -len(newline)] if newline else line
+            comment = ""
+            if "#" in body:
+                body_without_comment, comment_text = body.split("#", 1)
+                spacing = body_without_comment[len(body_without_comment.rstrip()):]
+                body = body_without_comment
+                comment = spacing + "#" + comment_text
+            prefix = body.split(":", 1)[0] + ": "
+            lines[index] = f"{prefix}{value}{comment}{newline}"
+            # 兼容旧脚本已经写成的多行 YAML 数组，例如：
+            #     safe_roi_polygon:
+            #     - - 10
+            #       - 20
+            # 这些续行也必须删除，否则新的一行后面会留下非法/错误数据。
+            continuation_end = index + 1
+            while continuation_end < section_end:
+                next_line = lines[continuation_end]
+                stripped = next_line.strip()
+                if not stripped or stripped.startswith("#"):
+                    break
+                indent = len(next_line) - len(next_line.lstrip(" \t"))
+                if indent > 4 or (indent == 4 and stripped.startswith("-")):
+                    continuation_end += 1
+                    continue
+                break
+            if continuation_end > index + 1:
+                del lines[index + 1:continuation_end]
+            return
+        raise RuntimeError(f"YAML 中找不到 camera.{camera_name}.{field}")
+
+    # 使用紧凑的 YAML 流式数组格式，避免引入多行结构。
+    replace_field(polygon_key, "[" + ", ".join(f"[{x}, {y}]" for x, y in points) + "]")
+    replace_field(rect_key, "[" + ", ".join(str(value) for value in rect) + "]")
+
+    updated_text = "".join(lines)
+    try:
+        parsed = yaml.safe_load(updated_text) or {}
+    except yaml.YAMLError as exc:
+        raise RuntimeError(f"ROI 写入后 YAML 语法检查失败: {exc}") from exc
+    camera_values = parsed.get("camera", {}).get(camera_name, {})
+    expected_polygon = [list(point) for point in points]
+    if camera_values.get(polygon_key) != expected_polygon or camera_values.get(rect_key) != rect:
+        raise RuntimeError(f"ROI 写入后数值校验失败: camera.{camera_name}")
+
+    with config_path.open("w", encoding="utf-8", newline="") as stream:
+        stream.write(updated_text)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="实时标注手工多边形 ROI")
+    parser.add_argument("--camera", choices=("top", "side"), required=True)
+    parser.add_argument("--config", default="config/runtime_config.yaml")
+    parser.add_argument("--write", action="store_true", help="按 Enter 时写回 YAML")
+    args = parser.parse_args()
+
+    config_path = ROOT / args.config
+    cfg, TopCamera, SideCamera = load_context(config_path)
+    camera = TopCamera() if args.camera == "top" else SideCamera()
+    camera_cfg = cfg["camera"][args.camera]
+    polygon_key = "safe_roi_polygon" if args.camera == "top" else "roi_polygon"
+    rect_key = "safe_roi" if args.camera == "top" else "roi"
+    initial = camera_cfg.get(polygon_key)
+    snapshot_dir = ROOT / cfg["debug"]["frames_dir"] / "roi_selection" / args.camera
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    picker = None
+    try:
+        camera.open(require_calibration=False) if args.camera == "top" else camera.open()
+        first = _read_frame(args.camera, camera)
+        picker = PolygonPicker(f"select {args.camera} polygon ROI", (first.shape[1], first.shape[0]), initial)
+        while True:
+            frame = first if picker.frame is None else _read_frame(args.camera, camera)
+            picker.frame = frame
+            display = picker.draw(frame.copy())
+            cv2.imshow(picker.window, display)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27):
+                print("[CANCEL] 未写入 ROI")
+                return
+            if key in (ord("r"), ord("R")):
+                picker.points.clear()
+                continue
+            if key in (8, 127):
+                if picker.points:
+                    picker.points.pop()
+                continue
+            if key in (ord("s"), ord("S")):
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                image_path = snapshot_dir / f"{stamp}_roi_selection.jpg"
+                meta_path = snapshot_dir / f"{stamp}_roi_selection.json"
+                if not cv2.imwrite(str(image_path), display):
+                    raise RuntimeError(f"保存 ROI 调试图失败: {image_path}")
+                meta_path.write_text(
+                    json.dumps(
+                        {
+                            "camera": args.camera,
+                            "frame_shape": list(frame.shape),
+                            "points": [list(point) for point in picker.points],
+                            "current_rect": _bounding_rect(picker.points)
+                            if len(picker.points) >= 3
+                            else None,
+                            "config_rect": camera_cfg.get(rect_key),
+                            "config_polygon": camera_cfg.get(polygon_key),
+                            "controls": camera_cfg.get("controls", {}),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+                print(f"[SNAPSHOT] {image_path}")
+                continue
+            if key in (10, 13):
+                if len(picker.points) < 3:
+                    print("[WARN] 至少点击 3 个点后才能保存")
+                    continue
+                rect = _bounding_rect(picker.points)
+                print(f"camera.{args.camera}.{polygon_key} = {[list(p) for p in picker.points]}")
+                print(f"camera.{args.camera}.{rect_key} = {rect}")
+                if not args.write:
+                    return
+                _update_roi_yaml(
+                    config_path,
+                    args.camera,
+                    polygon_key,
+                    rect_key,
+                    picker.points,
+                    rect,
+                )
+                print(f"[WRITE] {config_path}")
+                return
+    finally:
+        camera.release()
+        cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()

@@ -418,7 +418,7 @@ def main() -> int:
         raise ValueError(f"verification XY out of workspace: ({args.x}, {args.y})")
 
     mapping_path = Path(cfg["calibration"]["pixel_to_robot"])
-    transform = PixelToRobotTransform.load(mapping_path)
+    transform = PixelToRobotTransform.load(mapping_path, camera_config=cfg["camera"]["top"])
     output_dir = mapping_path.parent
     csv_path = output_dir / "yaw_tcp_offset_samples.csv"
     report_path = output_dir / "yaw_tcp_offset_report.json"

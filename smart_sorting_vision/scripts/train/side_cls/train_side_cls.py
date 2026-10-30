@@ -29,8 +29,16 @@ def main():
     print(f"DATASET_DIR = {DATASET_DIR}")
     print(f"OUTPUT_DIR  = {OUTPUT_DIR}")
 
+    # 数据集必须包含与正式配置一致的 no_object 类别，例如：
+    # data/datasets/side_cls/v1/train/no_object/*.jpg
+    # train/val/test 都建议采集不同曝光、轻微位置变化的空托盘图。
+    for split in ("train", "val", "test"):
+        no_object_dir = DATASET_DIR / split / "no_object"
+        if not no_object_dir.is_dir():
+            print(f"[WARN] 缺少空背景类别：{no_object_dir}")
+
     # ============================================================
-    # 1. 加载 YOLO26n 分类预训练模型
+    # 1. 加载 YOLO 分类预训练模型
     # ============================================================
 
     model = YOLO(

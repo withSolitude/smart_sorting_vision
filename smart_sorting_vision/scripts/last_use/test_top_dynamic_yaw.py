@@ -62,6 +62,7 @@ def main() -> int:
     pipeline = TopPickPipeline(
         model_path=top_model_cfg["path"],
         calibration_path=calibration,
+        camera_config=cfg["camera"]["top"],
         conf=top_model_cfg["conf"],
         imgsz=top_model_cfg["imgsz"],
         device=top_model_cfg["device"],

@@ -8,9 +8,10 @@
 - SORT_RESULT 发出后必须先等 SORT_ACK，再等匹配箱号的 SORT_DONE。
 - 视觉缓存按周期显式 reset。
 - 库存采用 reserve -> commit/cancel，DONE 前不计数。
-- MCU_ERROR / 真正控制超时进入 ERROR 并停止新增动作。
+- MCU_ERROR 仍作为真实下位机故障记录；动作等待超时只触发重发，
+  心跳/串口掉线进入可恢复的 LINK_OFFLINE。
 - 侧面识别超时不再直接 ERROR：有有效候选时按整个识别时段的多数票结果继续分拣。
-- 侧面识别台连续确认无物体时，不 STOP；走 RETRY_PICK 恢复链后自动重新顶部夹取。
+- 侧面形状分类确认 no_object 时，不 STOP；走 RETRY_PICK 恢复链后自动重新顶部夹取。
 - PICK/SORT 命令周期重发，利用下位机幂等握手恢复 ACK/READY/DONE 丢包。
 - 顶部连续无物体且已达到最小件数后自动结束比赛。
 """
@@ -21,9 +22,11 @@ import math
 import queue
 import threading
 import time
+from dataclasses import dataclass
 from enum import Enum
 
-from communication.sorting_protocol import SortingFrame, SortingProtocol, Mode
+from communication.sorting_protocol import SortingFrame, SortingProtocol, Mode, make_heartbeat
+from communication.stm32_link import LinkOfflineError
 from vision.storage.object_info import ObjectInfo
 
 
@@ -44,6 +47,24 @@ class RuntimeState(Enum):
     ERROR = 9
     # 双边抓取物理Yaw分支命令已发送，等待STM32锁存并ACK。
     WAIT_PICK_YAW_BRANCH_ACK = 10
+    # 串口暂时断开。该状态只暂停当前动作，不结束主程序或比赛会话。
+    LINK_OFFLINE = 11
+    # 串口已恢复，等待下位机确认 STOP 安全态后再继续分拣。
+    LINK_RECOVERY = 12
+
+
+@dataclass(frozen=True)
+class _LinkOfflineEvent:
+    """接收线程投递的链路掉线事件。"""
+
+    reason: str
+
+
+@dataclass(frozen=True)
+class _LinkOnlineEvent:
+    """接收线程投递的链路恢复事件。"""
+
+    generation: int
 
 
 class SortingRuntime:
@@ -59,10 +80,6 @@ class SortingRuntime:
         pick_ack_timeout_s: float = 1.5,
         recognition_ready_timeout_s: float = 18.0,
         side_recognition_timeout_s: float = 4.0,
-        # 识别台连续空载恢复：只有 found=False 连续满足“时间+帧数”双门槛
-        # 才判定本次抓取途中掉落，避免偶发单帧漏检误触发重抓。
-        side_empty_retry_hold_s: float = 0.6,
-        side_empty_retry_min_frames: int = 5,
         retry_pick_ready_timeout_s: float = 4.0,
         sort_ack_timeout_s: float = 1.5,
         sort_done_timeout_s: float = 16.0,
@@ -73,6 +90,9 @@ class SortingRuntime:
         descent_drift_compensator=None,
         branch1_axis_correction_deg: float = 0.0,
         retry_interval_s: float = 0.25,
+        link_reconnect_interval_s: float = 1.0,
+        heartbeat_interval_s: float = 0.5,
+        link_dead_timeout_s: float = 3.0,
         minimum_items_before_empty_finish: int = 12,
         empty_finish_hold_s: float = 1.5,
         max_items: int = 0,
@@ -99,6 +119,9 @@ class SortingRuntime:
             )
 
         self.retry_interval_s = float(retry_interval_s)
+        self.link_reconnect_interval_s = max(0.2, float(link_reconnect_interval_s))
+        self.heartbeat_interval_s = max(0.1, float(heartbeat_interval_s))
+        self.link_dead_timeout_s = max(1.0, float(link_dead_timeout_s))
         self.minimum_items_before_empty_finish = max(0, int(minimum_items_before_empty_finish))
         self.empty_finish_hold_s = float(empty_finish_hold_s)
         self.max_items = max(0, int(max_items))
@@ -117,8 +140,6 @@ class SortingRuntime:
         self.pick_ack_timeout_s = float(pick_ack_timeout_s)
         self.recognition_ready_timeout_s = float(recognition_ready_timeout_s)
         self.side_recognition_timeout_s = float(side_recognition_timeout_s)
-        self.side_empty_retry_hold_s = float(side_empty_retry_hold_s)
-        self.side_empty_retry_min_frames = max(1, int(side_empty_retry_min_frames))
         self.retry_pick_ready_timeout_s = float(retry_pick_ready_timeout_s)
         self.sort_ack_timeout_s = float(sort_ack_timeout_s)
         self.sort_done_timeout_s = float(sort_done_timeout_s)
@@ -136,13 +157,15 @@ class SortingRuntime:
             ("pick_ack_timeout_s", self.pick_ack_timeout_s),
             ("recognition_ready_timeout_s", self.recognition_ready_timeout_s),
             ("side_recognition_timeout_s", self.side_recognition_timeout_s),
-            ("side_empty_retry_hold_s", self.side_empty_retry_hold_s),
             ("retry_pick_ready_timeout_s", self.retry_pick_ready_timeout_s),
             ("sort_ack_timeout_s", self.sort_ack_timeout_s),
             ("sort_done_timeout_s", self.sort_done_timeout_s),
             ("top_no_frame_timeout_s", self.top_no_frame_timeout_s),
             ("side_no_frame_timeout_s", self.side_no_frame_timeout_s),
             ("retry_interval_s", self.retry_interval_s),
+            ("link_reconnect_interval_s", self.link_reconnect_interval_s),
+            ("heartbeat_interval_s", self.heartbeat_interval_s),
+            ("link_dead_timeout_s", self.link_dead_timeout_s),
             ("empty_finish_hold_s", self.empty_finish_hold_s),
         ):
             if value <= 0:
@@ -157,6 +180,15 @@ class SortingRuntime:
         self.running = False
         self.cycle_id = 0
         self.fault_reason: str | None = None
+        self._link_offline = False
+        self._offline_cause: str | None = None
+        self._camera_offline_name: str | None = None
+        self._resume_after_link_recovery = False
+        self._next_reconnect_stop_at = 0.0
+        self._recovery_grace_until = 0.0
+        self._last_heartbeat_sent_at = 0.0
+        self._last_peer_seen_at: float | None = None
+        self._timeout_notice_states: set[RuntimeState] = set()
 
         self.current_pick = None
         # 保存真正经过协议量化后的PICK命令，用于严格核对ACK/READY回显，
@@ -175,8 +207,6 @@ class SortingRuntime:
         # 本场比赛内“夹取后识别台为空”的自动恢复次数，仅用于日志，不计成功件数。
         self.drop_recovery_count = 0
         self._empty_scene_since: float | None = None
-        self._side_empty_since: float | None = None
-        self._side_empty_frames = 0
 
         # 侧面识别超时兜底统计。正常情况下仍由 SideRecognitionConsensus
         # 按 4/5（配置值）立即确认；只有超过 side_recognition_timeout_s
@@ -228,12 +258,30 @@ class SortingRuntime:
         while not self._rx_stop_event.is_set():
             try:
                 frames = self.stm32.poll()
+            except LinkOfflineError as exc:
+                # 串口设备拔出、USB-UART 芯片复位或 MCU 掉电都走同一条
+                # 恢复路径：通知主线程后在后台周期重连，绝不结束 Runtime。
+                self._rx_queue.put(_LinkOfflineEvent(str(exc)))
+                while not self._rx_stop_event.is_set():
+                    if self.stm32.reconnect_once():
+                        self._rx_queue.put(
+                            _LinkOnlineEvent(self.stm32.connection_generation)
+                        )
+                        break
+                    self._rx_stop_event.wait(self.link_reconnect_interval_s)
+                continue
             except Exception as exc:
-                # 串口读取异常等价于控制链路故障。不能从接收线程直接
-                # 修改 Runtime 状态，只设置急停标志并投递异常对象。
-                self._urgent_stop_event.set()
-                self._rx_queue.put(exc)
-                return
+                # 未知的串口读异常也按链路掉线处理；业务线程仍然存活，
+                # 后续重连成功后可以继续比赛。
+                self._rx_queue.put(_LinkOfflineEvent(str(exc)))
+                while not self._rx_stop_event.is_set():
+                    if self.stm32.reconnect_once():
+                        self._rx_queue.put(
+                            _LinkOnlineEvent(self.stm32.connection_generation)
+                        )
+                        break
+                    self._rx_stop_event.wait(self.link_reconnect_interval_s)
+                continue
 
             for frame in frames:
                 if frame.mode in (Mode.MCU_ERROR, Mode.MCU_STOP_WORK):
@@ -264,7 +312,11 @@ class SortingRuntime:
     def _poll_control_events(self):
         # 单元测试/独立 run_once 调用时没有接收线程，保持原来的同步 poll。
         if self._rx_thread is None or not self._rx_thread.is_alive():
-            return self.stm32.poll()
+            try:
+                return self.stm32.poll()
+            except (LinkOfflineError, OSError) as exc:
+                self._mark_link_offline(str(exc))
+                return []
 
         frames = []
         while True:
@@ -273,12 +325,148 @@ class SortingRuntime:
             except queue.Empty:
                 break
 
+            if isinstance(item, _LinkOfflineEvent):
+                self._mark_link_offline(item.reason)
+                continue
+            if isinstance(item, _LinkOnlineEvent):
+                self._mark_link_online(item.generation)
+                continue
             if isinstance(item, Exception):
-                self._fail(f"STM32 receive failed: {item}")
+                self._mark_link_offline(str(item))
                 continue
             frames.append(item)
 
         return frames
+
+    def _mark_link_offline(self, reason: str) -> None:
+        """进入可恢复的离线状态，并清理当前未完成事务。"""
+        if self._link_offline:
+            # 相机已经离线时，串口也可能随后掉线。保留相机故障来源，
+            # 等两类设备都恢复后再进入新的分拣周期。
+            if self._offline_cause == "camera":
+                self._offline_cause = "stm32"
+            return
+
+        was_recovering = self.state in (
+            RuntimeState.LINK_OFFLINE,
+            RuntimeState.LINK_RECOVERY,
+        )
+        self._link_offline = True
+        self._offline_cause = "stm32"
+        self._camera_offline_name = None
+        if not was_recovering:
+            self._resume_after_link_recovery = bool(self.running)
+        self.running = False
+        self.fault_reason = None
+        self._urgent_stop_event.clear()
+        self._clear_cycle_data(cancel_reservation=True)
+        self._safe_reset(self.top_pipeline)
+        self._safe_reset(self.side_pipeline)
+        self._enter_state(RuntimeState.LINK_OFFLINE)
+        print(f"[LINK][OFFLINE] {reason}; keep process alive and retry reconnect")
+
+    def _mark_link_online(self, generation: int) -> None:
+        """串口恢复后先让下位机回到安全 STOP，再恢复新周期。"""
+        if not self._link_offline:
+            return
+
+        camera_name = self._camera_offline_name
+        if camera_name is not None:
+            camera = self.top_camera if camera_name == "top" else self.side_camera
+            if not bool(getattr(camera, "is_online", False)):
+                # 串口恢复了，但相机仍未恢复；继续保持离线等待。
+                self._offline_cause = "camera"
+                return
+
+        self._link_offline = False
+        self._offline_cause = None
+        self._camera_offline_name = None
+        self._last_peer_seen_at = time.monotonic()
+        self._next_reconnect_stop_at = 0.0
+        # 下位机链路恢复后会在机构安全回位时主动发 MCU_START_WORK。
+        # 先留出短暂窗口接收该通知，避免刚重连就发送 STOP 把自动恢复打断。
+        self._recovery_grace_until = time.monotonic() + 2.0
+        self._enter_state(RuntimeState.LINK_RECOVERY)
+        print(
+            f"[LINK][ONLINE] generation={generation}; "
+            "synchronize STOP before resuming sorting"
+        )
+
+    def _service_link_recovery(self) -> None:
+        """非阻塞地重发 STOP，等待 MCU_STOP_ACK。"""
+        if self.state == RuntimeState.LINK_OFFLINE and self._offline_cause == "camera":
+            camera = (
+                self.top_camera
+                if self._camera_offline_name == "top"
+                else self.side_camera
+            )
+            # 相机驱动的 reconnect_once() 内部负责节流重连；离线暂停期间
+            # 仍需调用它，否则驱动没有机会重新打开已经恢复的 USB 设备。
+            try:
+                reconnect = getattr(camera, "reconnect_once", None)
+                if callable(reconnect):
+                    reconnect()
+                else:
+                    # 兼容旧相机驱动：read() 失败时只返回 None，不进入业务。
+                    camera.read()
+            except Exception as exc:
+                print(f"[CAMERA][RECOVERY] read failed: {exc}")
+            if bool(getattr(camera, "is_online", False)):
+                self._link_offline = False
+                self._offline_cause = None
+                self._camera_offline_name = None
+                self._next_reconnect_stop_at = 0.0
+                self._recovery_grace_until = time.monotonic() + 2.0
+                self._enter_state(RuntimeState.LINK_RECOVERY)
+                print("[CAMERA][ONLINE] camera recovered; synchronize MCU STOP")
+            else:
+                return
+
+        if self.state != RuntimeState.LINK_RECOVERY:
+            return
+        if not bool(getattr(self.stm32, "is_online", True)):
+            self._mark_link_offline("serial link lost during recovery")
+            return
+        now = time.monotonic()
+        if now < self._recovery_grace_until:
+            return
+        if now < self._next_reconnect_stop_at:
+            return
+        try:
+            self.stm32.send_frame(SortingFrame(mode=Mode.STOP))
+            print("[LINK][RECOVERY] STOP sent")
+            self._next_reconnect_stop_at = now + self.retry_interval_s
+        except (LinkOfflineError, OSError) as exc:
+            self._mark_link_offline(str(exc))
+
+    def _send_heartbeat_if_due(self) -> None:
+        """周期发送心跳，用于区分“串口仍开着”和“MCU真正在线”。"""
+        if self._link_offline or self.state == RuntimeState.LINK_OFFLINE:
+            return
+        if not bool(getattr(self.stm32, "is_online", True)):
+            self._mark_link_offline("serial link is not open")
+            return
+        now = time.monotonic()
+        if now - self._last_heartbeat_sent_at < self.heartbeat_interval_s:
+            return
+        try:
+            self.stm32.send_frame(make_heartbeat())
+            self._last_heartbeat_sent_at = now
+        except (LinkOfflineError, OSError) as exc:
+            self._mark_link_offline(str(exc))
+
+    def _check_link_watchdog(self) -> None:
+        """检测 MCU 无回包的掉线情况，避免把它误报为动作超时。"""
+        if self._link_offline or self.state == RuntimeState.LINK_OFFLINE:
+            return
+        if self._last_peer_seen_at is None:
+            return
+        elapsed = time.monotonic() - self._last_peer_seen_at
+        if elapsed > self.link_dead_timeout_s:
+            self._mark_link_offline(
+                f"no valid MCU frame for {elapsed:.2f}s "
+                f"> {self.link_dead_timeout_s:.2f}s"
+            )
 
     def _action_still_allowed(self, expected_state: RuntimeState) -> bool:
         return (
@@ -294,6 +482,7 @@ class SortingRuntime:
     def _enter_state(self, state: RuntimeState) -> None:
         self.state = state
         self.state_entered_at = time.monotonic()
+        self._timeout_notice_states.discard(state)
         if state == RuntimeState.WAIT_TOP_OBJECT:
             self._top_last_frame_at = self.state_entered_at
         elif state == RuntimeState.WAIT_SIDE_OBJECT:
@@ -327,7 +516,19 @@ class SortingRuntime:
             return None
         if shape.lower() in ("", "unknown", "none"):
             return None
-        return (color, bool(getattr(result, "qr_present", False)), shape)
+        qr_present = bool(getattr(result, "qr_present", False))
+        key = [color, qr_present, shape]
+
+        # SideSortPipeline 仅在 YAML 开启二维码内容共识时提供 qr_content。
+        # 这样超时多数票不会绕过“内容必须一致”的设置。
+        qr_content = getattr(result, "qr_content", None)
+        if qr_present and qr_content is not None:
+            qr_content = str(qr_content)
+            if not qr_content:
+                return None
+            key.append(qr_content)
+
+        return tuple(key)
 
     def _record_side_vote(self, result) -> None:
         """累计整个 WAIT_SIDE_OBJECT 阶段的完整结果票数。"""
@@ -388,8 +589,6 @@ class SortingRuntime:
         self.current_sort_command = None
         self.current_retry_pick_command = None
         self.current_side_image = None
-        self._side_empty_since = None
-        self._side_empty_frames = 0
         self._reset_side_vote_stats()
         self._last_command_send_at = 0.0
 
@@ -404,6 +603,10 @@ class SortingRuntime:
     def _send_command(self, frame: SortingFrame, *, label: str, retry: bool = False) -> bool:
         try:
             self.stm32.send_frame(frame)
+        except (LinkOfflineError, OSError) as exc:
+            # 发送失败属于链路掉线，保留主循环并转入自动恢复状态。
+            self._mark_link_offline(f"{label} send failed: {exc}")
+            return False
         except Exception as exc:
             self._fail(f"{label} send failed: {exc}")
             return False
@@ -497,8 +700,6 @@ class SortingRuntime:
         self.current_sort_command = None
         self.current_side_image = None
         self._safe_reset(self.side_pipeline)
-        self._side_empty_since = None
-        self._side_empty_frames = 0
 
         self.current_retry_pick_command = SortingFrame(mode=Mode.RETRY_PICK)
         self.drop_recovery_count += 1
@@ -533,6 +734,8 @@ class SortingRuntime:
             return
         try:
             self.stm32.send_frame(SortingFrame(mode=Mode.STOP))
+        except (LinkOfflineError, OSError) as exc:
+            self._mark_link_offline(f"STOP send failed: {exc}")
         except Exception as exc:
             print(f"[Runtime] STOP send failed: {exc}")
 
@@ -722,10 +925,10 @@ class SortingRuntime:
     # =====================================================
 
     def _check_camera_watchdog(self) -> None:
-        """视觉状态下连续无新图像时立即进入控制安全停止。
+        """视觉状态下连续无新图像时暂停，等待相机驱动自行重连。
 
         这与“有画面但识别结果不稳定”是两种不同故障：
-        - 相机无帧：超过 watchdog 后 ERROR + STOP；
+        - 相机无帧：超过 watchdog 后暂停当前周期并等待重连；
         - Side 有帧但未达共识：到 side_recognition_timeout_s 后多数票兜底。
         """
         if not self.running:
@@ -735,19 +938,35 @@ class SortingRuntime:
         if self.state == RuntimeState.WAIT_TOP_OBJECT:
             no_frame_for = now - self._top_last_frame_at
             if no_frame_for > self.top_no_frame_timeout_s:
-                self._fail(
-                    f"top camera no-frame watchdog timeout: {no_frame_for:.2f}s "
-                    f"> {self.top_no_frame_timeout_s:.2f}s"
-                )
+                camera = self.top_camera
+                if not bool(getattr(camera, "is_online", True)):
+                    self._pause_for_camera("top", no_frame_for)
                 return
 
         if self.state == RuntimeState.WAIT_SIDE_OBJECT:
             no_frame_for = now - self._side_last_frame_at
             if no_frame_for > self.side_no_frame_timeout_s:
-                self._fail(
-                    f"side camera no-frame watchdog timeout: {no_frame_for:.2f}s "
-                    f"> {self.side_no_frame_timeout_s:.2f}s"
-                )
+                camera = self.side_camera
+                if not bool(getattr(camera, "is_online", True)):
+                    self._pause_for_camera("side", no_frame_for)
+
+    def _pause_for_camera(self, name: str, no_frame_for: float) -> None:
+        """相机掉线时暂停比赛，恢复后从新的顶部周期继续。"""
+        if not self.running:
+            return
+        self._resume_after_link_recovery = True
+        self._link_offline = True
+        self._offline_cause = "camera"
+        self._camera_offline_name = name
+        self.running = False
+        self._clear_cycle_data(cancel_reservation=True)
+        self._safe_reset(self.top_pipeline)
+        self._safe_reset(self.side_pipeline)
+        self._enter_state(RuntimeState.LINK_OFFLINE)
+        print(
+            f"[CAMERA][OFFLINE] {name} no frame for {no_frame_for:.2f}s; "
+            "pause sorting and wait for camera reconnect"
+        )
 
     def _check_timeout(self) -> None:
         if not self.running:
@@ -756,6 +975,10 @@ class SortingRuntime:
         # 必须先检查相机新鲜度，再做 Side 多数票兜底，避免相机冻结后
         # 拿冻结前的旧票数继续分箱。
         self._check_camera_watchdog()
+        if not self.running:
+            return
+
+        self._check_link_watchdog()
         if not self.running:
             return
 
@@ -782,32 +1005,11 @@ class SortingRuntime:
         }
 
         # 侧面视觉超时采用“多数票兜底”，不再直接把整机置为 ERROR。
-        # 其他 ACK/READY/DONE 控制链超时仍保持原来的 fail-fast 安全策略。
+        # 其他 ACK/READY/DONE 控制链超时同样只记录提示并持续重发；
+        # 真正的通信掉线由心跳和串口状态单独判定。
         if self.state == RuntimeState.WAIT_SIDE_OBJECT:
             elapsed = time.monotonic() - self.state_entered_at
             if elapsed <= self.side_recognition_timeout_s:
-                return
-
-            # 如果最近已经出现“识别台空载”帧，先让原有掉落恢复逻辑完成判断，
-            # 不能拿更早的多数票结果去分拣一个可能已经掉落的空托盘。
-            if self._side_empty_since is not None:
-                empty_for = time.monotonic() - self._side_empty_since
-                enough_empty_frames = (
-                    self._side_empty_frames >= self.side_empty_retry_min_frames
-                )
-                # 相机若在空载后停止出帧，帧数门槛可能永远达不到。
-                # 持续一个完整侧面识别超时后也转入重抓，避免卡死。
-                empty_stalled = empty_for >= self.side_recognition_timeout_s
-                if (
-                    empty_for >= self.side_empty_retry_hold_s
-                    and (enough_empty_frames or empty_stalled)
-                ):
-                    self._request_retry_pick(
-                        reason=(
-                            f"side empty during recognition timeout: "
-                            f"{empty_for:.2f}s/{self._side_empty_frames}frames"
-                        )
-                    )
                 return
 
             key, stats = self._best_side_timeout_result()
@@ -833,9 +1035,10 @@ class SortingRuntime:
                 self.state_entered_at = time.monotonic()
                 return
 
-            # 完全没有取得相机帧属于真正的相机/采集异常，保留原来的 ERROR。
+            # 完全没有取得相机帧属于相机离线/采集异常，也走可恢复的暂停，
+            # 不把一次采集超时永久锁死为 ERROR。
             if self._side_frames_seen == 0:
-                self._fail("side recognition timeout: side camera unavailable/no frames")
+                self._pause_for_camera("side", elapsed)
                 return
 
             # 有帧但始终没有物体：优先走原有掉落重抓恢复链，而不是终止。
@@ -850,7 +1053,13 @@ class SortingRuntime:
 
         timeout_s, reason = item
         if (time.monotonic() - self.state_entered_at) > timeout_s:
-            self._fail(reason)
+            # ACK/READY/DONE 的截止时间只用于提示和加快重发，不能把整场
+            # 比赛锁死为 ERROR。若心跳也消失，链路 watchdog 会负责进入
+            # LINK_OFFLINE；若心跳正常，继续等待下位机完成动作。
+            if self.state not in self._timeout_notice_states:
+                self._timeout_notice_states.add(self.state)
+                print(f"[WAIT][RETRY] {reason}; MCU heartbeat is alive")
+            self.state_entered_at = time.monotonic()
 
     # =====================================================
     # 主循环
@@ -861,6 +1070,13 @@ class SortingRuntime:
         for msg in frames:
             print("[RX]", self.stm32.describe(msg))
             self.process_message(msg)
+
+        self._service_link_recovery()
+        self._send_heartbeat_if_due()
+        self._check_link_watchdog()
+
+        if self.state in (RuntimeState.LINK_OFFLINE, RuntimeState.LINK_RECOVERY):
+            return
 
         if not self.running:
             return
@@ -1143,46 +1359,23 @@ class SortingRuntime:
 
         result = self.side_pipeline.process(image)
 
-        # SideSortPipeline 先做物体存在多帧确认。presence_pending 表示
-        # 当前帧看到了候选物体，但还没有达到存在确认票数：
-        # - 不能把它计为“空托盘”触发 RETRY_PICK；
-        # - 也不能用它清空之前已经积累的空托盘证据；
-        # - 更不能进入颜色/QR/Shape 投票。
+        # 侧面流水线现在先运行形状分类器。只有形状分类器确认不是
+        # no_object，才会继续颜色、二维码等属性识别。
         side_reason = str(getattr(result, "reason", ""))
-        if side_reason.startswith("presence_pending:"):
+        if side_reason.startswith("shape_pending:"):
             return
 
         # -----------------------------------------------------
-        # 夹取途中掉落恢复
+        # 无物体恢复
         # -----------------------------------------------------
-        # SideSortPipeline 的 found=False 表示固定识别托盘相对空背景没有
-        # 提取到物体。单帧漏检不能触发机械恢复，所以同时要求：
-        #   1) 连续空载达到 side_empty_retry_hold_s；
-        #   2) 连续空载达到 side_empty_retry_min_frames 帧。
-        # 任意一帧重新发现物体就立即清零。
+        # no_object 已由形状 YOLO 直接确认。此时不再进入颜色/QR/Shape
+        # 后续流程，也不等待背景差分的时间/帧数门槛，马上请求下位机
+        # Return -> Disable；收到 MCU_RETRY_PICK_READY 后重新开始顶部识别。
         if not bool(getattr(result, "found", True)):
-            now = time.monotonic()
-            if self._side_empty_since is None:
-                self._side_empty_since = now
-                self._side_empty_frames = 1
-            else:
-                self._side_empty_frames += 1
-
-            empty_for = now - self._side_empty_since
-            if (
-                empty_for >= self.side_empty_retry_hold_s
-                and self._side_empty_frames >= self.side_empty_retry_min_frames
-            ):
-                self._request_retry_pick(
-                    reason=(
-                        f"no_object {empty_for:.2f}s/"
-                        f"{self._side_empty_frames}frames, pipeline={getattr(result, 'reason', 'no_object')}"
-                    )
-                )
+            self._request_retry_pick(
+                reason=f"no_object from shape classifier: {side_reason or 'no_object'}"
+            )
             return
-
-        self._side_empty_since = None
-        self._side_empty_frames = 0
 
         # 无论当前是否达到 4/5 共识，只要本帧给出了完整有效结果，就累计到
         # “本次识别阶段”的超时兜底票池。这样超时后选择的是整个时段
@@ -1201,6 +1394,44 @@ class SortingRuntime:
     def process_message(self, msg):
         mode = msg.mode
 
+        # 心跳 ACK 是链路健康证据，不参与具体分拣状态机。
+        if mode == Mode.MCU_HEARTBEAT_ACK:
+            self._last_peer_seen_at = time.monotonic()
+            if self.state in (RuntimeState.LINK_OFFLINE, RuntimeState.LINK_RECOVERY):
+                return
+
+        # 重连阶段只接受安全 STOP ACK；掉线期间 MCU 可能上报一次
+        # MCU_STOP_WORK，这是下位机的安全收敛通知，不应再次把上位机置错。
+        if self.state == RuntimeState.LINK_RECOVERY:
+            if mode == Mode.MCU_STOP_ACK:
+                self._last_peer_seen_at = time.monotonic()
+                self._timeout_notice_states.clear()
+                self._resume_after_link_recovery = False
+                self.running = False
+                self._enter_state(RuntimeState.IDLE)
+                print("[LINK][RECOVERY] MCU safe STOP confirmed; waiting START")
+                return
+            if mode == Mode.MCU_START_WORK:
+                # 下位机已经完成掉线安全回位并主动重新启动。此时它处于
+                # WAIT_PICK_TARGET，不能再发送 STOP，否则会打断自动恢复。
+                if self._resume_after_link_recovery:
+                    self._resume_after_link_recovery = False
+                    self.running = True
+                    self._begin_cycle()
+                    print("[LINK][RECOVERY] MCU START received; sorting resumed")
+                return
+            if mode in (Mode.MCU_STOP_WORK, Mode.MCU_ERROR, Mode.MCU_BUSY):
+                print(f"[LINK][RECOVERY] ignore {mode.name} until safe STOP ACK")
+                return
+            # 丢弃恢复前残留的 ACK/READY/DONE，避免旧周期污染新周期。
+            if mode != Mode.MCU_HEARTBEAT_ACK:
+                return
+
+        if self.state == RuntimeState.LINK_OFFLINE:
+            # 离线期间收到的旧动作帧全部丢弃；重连后必须以新的 STOP
+            # 安全同步边界开始，防止迟到 ACK 驱动错误动作。
+            return
+
         # 全局高优先级事件先处理。
         if mode == Mode.MCU_ERROR:
             self._fail(
@@ -1210,6 +1441,9 @@ class SortingRuntime:
             return
 
         if mode == Mode.MCU_STOP_WORK:
+            if self.state == RuntimeState.LINK_OFFLINE:
+                print("[LINK][OFFLINE] MCU_STOP_WORK received; waiting reconnect")
+                return
             # MCU 已发出停止请求，不再回发一条 STOP 形成无意义回环。
             self.stop(send_stop=False)
             return
@@ -1220,9 +1454,6 @@ class SortingRuntime:
             return
 
         if not self.running:
-            return
-
-        if mode == Mode.MCU_HEARTBEAT_ACK:
             return
 
         if mode == Mode.MCU_BUSY:
@@ -1314,8 +1545,6 @@ class SortingRuntime:
                     return
                 # 机械已经把新物体放到识别台之后，才打开新的侧面采样窗口。
                 self._safe_reset(self.side_pipeline)
-                self._side_empty_since = None
-                self._side_empty_frames = 0
                 self._reset_side_vote_stats()
                 print("[Runtime] RECOGNITION READY")
                 self._enter_state(RuntimeState.WAIT_SIDE_OBJECT)

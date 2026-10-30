@@ -7,7 +7,7 @@
 - R01：PICK_TARGET 后严格执行 `PICK_ACK -> RECOGNITION_READY -> SIDE`，ACK 不再直接启动侧面识别。
 - R02：每个分拣周期显式 reset 顶部/侧面 pipeline；READY 时再次清空侧面锁存，避免上一物体结果泄漏。
 - R03：`ObjectInfo` 改用 `qr_present: bool`，分箱键保留二维码存在性，不再固定 `qr=""`。
-- R04：加入 MCU_ERROR、PICK_ACK / READY / SIDE / SORT_ACK / SORT_DONE 绝对超时和 ERROR 状态；错误箱号 DONE 直接故障停机。
+- R04：保留 MCU_ERROR 和协议一致性错误的故障保护；PICK_ACK / READY / SIDE / SORT_ACK / SORT_DONE 等动作等待超时只触发周期重发，真正的串口掉线由心跳 watchdog 进入可恢复 LINK_OFFLINE；错误箱号 DONE 仍直接故障停机。
 - R05：StorageManager 改为 `reserve -> commit/cancel`；只有匹配当前箱号的 SORT_DONE 才增加库存。
 - R07：TopCamera 增加 close/release 统一接口；main 使用 try/finally，并逐资源独立释放。
 - R08（第一部分）：STM32 接收移到独立线程；视觉推理结束、发送动作前重新检查 urgent STOP/ERROR 标志，避免慢推理后继续下发新动作。
@@ -28,7 +28,7 @@
 7. UART 发送失败不留下库存；
 8. 同批 ACK+READY / ACK+DONE 顺序消费；
 9. 推理期间出现 urgent STOP/ERROR 后不再发送动作；
-10. ACK 绝对超时进入 ERROR。
+10. ACK 等待超时只记录 `[WAIT][RETRY]` 并重发；模拟串口掉线时进入 LINK_OFFLINE，恢复后重新 STOP 同步。
 
 ## 下一步仍需处理
 

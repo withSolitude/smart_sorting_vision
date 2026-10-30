@@ -11,11 +11,11 @@ import numpy as np
 
 class PixelToRobotTransform:
     """
-    顶部相机最终视觉图像坐标 (u, v) -> 机械坐标 (X_mm, Y_mm)。
+    顶部相机像素坐标 (u, v) -> 机械坐标 (X_mm, Y_mm)。
 
     重要：
-        H 只对“生成它时所使用的 TopCamera.read() 输出坐标系”有效。
-        只要后续改变了相机位置、分辨率、去畸变参数、裁剪 ROI，必须重新标定。
+        新标定把 H 保存于完整去畸变图坐标系，ROI 只决定输入像素的原点。
+        相机几何和去畸变不变时，调整 ROI 不需要重标；旧 ROI 标定可显式迁移。
     """
 
     def __init__(
@@ -28,6 +28,8 @@ class PixelToRobotTransform:
         tcp_offset_x_mm: float = 0.0,
         tcp_offset_y_mm: float = 0.0,
         metadata: dict | None = None,
+        coordinate_space: str = "roi",
+        camera_config: dict | None = None,
     ) -> None:
         H = np.asarray(homography, dtype=np.float64)
         if H.shape != (3, 3):
@@ -42,9 +44,33 @@ class PixelToRobotTransform:
         self.tcp_offset_x_mm = float(tcp_offset_x_mm)
         self.tcp_offset_y_mm = float(tcp_offset_y_mm)
         self.metadata = dict(metadata or {})
+        if coordinate_space not in {"roi", "undistorted_full"}:
+            raise ValueError(f"不支持的像素标定坐标系：{coordinate_space}")
+        self.coordinate_space = coordinate_space
+        self._input_origin = np.zeros(2, dtype=np.float64)
+        self._input_size = (self.image_width, self.image_height)
+        if camera_config is not None:
+            self.configure_camera(camera_config)
+
+    def configure_camera(self, camera_config: dict) -> None:
+        """绑定当前 YAML 的裁剪框，不修改保存的完整图 H。"""
+        if self.coordinate_space == "roi":
+            # 老文件不知道旧裁剪原点，保留原行为；迁移后才能解除尺寸绑定。
+            return
+        full_size = (int(camera_config["width"]), int(camera_config["height"]))
+        if full_size != (self.image_width, self.image_height):
+            raise ValueError(
+                f"完整图分辨率{full_size}与标定{(self.image_width, self.image_height)}不同；"
+                "请核对原始采集和去畸变配置。ROI宽高不需要与标定宽高相同。"
+            )
+        x1, y1, x2, y2 = map(int, camera_config["safe_roi"])
+        if not (0 <= x1 < x2 <= full_size[0] and 0 <= y1 < y2 <= full_size[1]):
+            raise ValueError("safe_roi 必须位于完整去畸变图内")
+        self._input_origin = np.array([x1, y1], dtype=np.float64)
+        self._input_size = (x2 - x1, y2 - y1)
 
     @classmethod
-    def load(cls, path: str | Path) -> "PixelToRobotTransform":
+    def load(cls, path: str | Path, *, camera_config: dict | None = None) -> "PixelToRobotTransform":
         path = Path(path)
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
@@ -57,6 +83,8 @@ class PixelToRobotTransform:
             tcp_offset_x_mm=float(data.get("tcp_offset_x_mm", 0.0)),
             tcp_offset_y_mm=float(data.get("tcp_offset_y_mm", 0.0)),
             metadata=data.get("metadata", {}),
+            coordinate_space=data.get("coordinate_space", "roi"),
+            camera_config=camera_config,
         )
 
     def save(self, path: str | Path) -> None:
@@ -64,7 +92,8 @@ class PixelToRobotTransform:
         path.parent.mkdir(parents=True, exist_ok=True)
 
         data = {
-            "version": 1,
+            "version": 2 if self.coordinate_space == "undistorted_full" else 1,
+            "coordinate_space": self.coordinate_space,
             "source": self.source,
             "image_width": self.image_width,
             "image_height": self.image_height,
@@ -82,12 +111,14 @@ class PixelToRobotTransform:
             raise ValueError("frame 无效")
 
         h, w = frame.shape[:2]
-        if w != self.image_width or h != self.image_height:
+        if (w, h) != self._input_size:
             raise RuntimeError(
                 "当前 TopCamera.read() 图像尺寸与标定时不一致：\n"
                 f"current     = {w} x {h}\n"
-                f"calibration = {self.image_width} x {self.image_height}\n"
-                "请停止运行并重新确认相机/去畸变/ROI配置。"
+                f"expected    = {self._input_size[0]} x {self._input_size[1]}\n"
+                + ("旧文件使用ROI局部坐标；可用 migrate_pixel_to_robot_roi 换算到完整图坐标。"
+                   if self.coordinate_space == "roi" else
+                   "当前图像与YAML裁剪框不符；请核对脚本是否读取同一份相机配置。")
             )
 
     def pixel_to_robot(
@@ -101,6 +132,7 @@ class PixelToRobotTransform:
             raise ValueError("像素坐标含 NaN/Inf")
 
         point = np.array([[[float(u), float(v)]]], dtype=np.float64)
+        point += self._input_origin
         result = cv2.perspectiveTransform(point, self.H)[0, 0]
 
         x_mm = float(result[0])
@@ -125,11 +157,59 @@ class PixelToRobotTransform:
         if len(pts) == 0:
             return np.empty((0, 2), dtype=np.float64)
 
-        out = cv2.perspectiveTransform(pts, self.H).reshape(-1, 2)
+        out = cv2.perspectiveTransform(pts + self._input_origin, self.H).reshape(-1, 2)
         if apply_tcp_offset:
             out[:, 0] += self.tcp_offset_x_mm
             out[:, 1] += self.tcp_offset_y_mm
         return out
+
+    def robot_to_pixels(
+        self,
+        points: Iterable[tuple[float, float]],
+        *,
+        apply_tcp_offset: bool = True,
+    ) -> np.ndarray:
+        """机械坐标反投影到当前ROI，供抓取搜索、夹爪包络和禁区绘制共用。"""
+        pts = np.asarray(list(points), dtype=np.float64).reshape(-1, 1, 2)
+        if len(pts) == 0:
+            return np.empty((0, 2), dtype=np.float64)
+        if apply_tcp_offset:
+            pts -= [self.tcp_offset_x_mm, self.tcp_offset_y_mm]
+        full_pixels = cv2.perspectiveTransform(pts, np.linalg.inv(self.H)).reshape(-1, 2)
+        return full_pixels - self._input_origin
+
+    def robot_to_pixel(
+        self,
+        x_mm: float,
+        y_mm: float,
+        *,
+        apply_tcp_offset: bool = True,
+    ) -> tuple[float, float]:
+        """单点机械坐标反投影，使用与正向转换相同的ROI原点。"""
+        out = self.robot_to_pixels([(x_mm, y_mm)], apply_tcp_offset=apply_tcp_offset)[0]
+        return float(out[0]), float(out[1])
+
+    def to_full_image(self, old_roi: Iterable[int], full_size: tuple[int, int]) -> "PixelToRobotTransform":
+        """只做已知裁剪原点的精确换算；不重新拟合，也不更改TCP偏置。"""
+        if self.coordinate_space != "roi":
+            raise ValueError("该文件已经使用完整图坐标，无需重复迁移")
+        x1, y1, x2, y2 = map(int, old_roi)
+        width, height = map(int, full_size)
+        if (x2 - x1, y2 - y1) != (self.image_width, self.image_height):
+            raise ValueError("旧ROI宽高与旧标定记录不匹配，不能据此换算")
+        if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
+            raise ValueError("旧ROI必须位于完整图内")
+        translation = np.array([[1.0, 0.0, -x1], [0.0, 1.0, -y1], [0.0, 0.0, 1.0]])
+        metadata = dict(self.metadata)
+        metadata["calibration_roi"] = [x1, y1, x2, y2]
+        if "points_pixel" in metadata:
+            metadata["points_pixel_roi"] = metadata["points_pixel"]
+            metadata["points_pixel"] = (np.asarray(metadata["points_pixel"], dtype=float) + [x1, y1]).tolist()
+        return type(self)(
+            self.H @ translation, width, height, source="TopCamera.read_undistorted()",
+            tcp_offset_x_mm=self.tcp_offset_x_mm, tcp_offset_y_mm=self.tcp_offset_y_mm,
+            metadata=metadata, coordinate_space="undistorted_full",
+        )
 
     def robot_angle_from_image_angle(
         self,
