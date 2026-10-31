@@ -454,6 +454,7 @@ def main() -> int:
                         result,
                         yaw_calibration,
                         drift_compensator,
+                        edge_yaw_limit=pipeline.edge_yaw_limit,
                     )
                     print(
                         "[REAL PICK] "

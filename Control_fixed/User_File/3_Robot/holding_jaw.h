@@ -740,6 +740,11 @@ private:
     uint32_t Calibration_Yaw_Command_Tick = 0U;
     uint32_t Calibration_Yaw_Settle_ms = 0U;
 
+    // 多个移动阶段共用的边缘中转进度；切换阶段时清零，禁止继承上一段路线。
+    uint8_t Edge_Move_Step = 0U;
+    float Edge_Retreat_Y_mm = 0.0f;
+    uint32_t Edge_Yaw_Command_Tick = 0U;
+
 
     // ========================================================
     // 内部函数
@@ -753,6 +758,7 @@ private:
     bool XY_Move_Finished() const;
     bool XY_At_mm(float X_mm, float Y_mm) const;
     bool Motion_Configuration_Valid() const;
+    bool Move_XY_Yaw_Via_Edge(float X_mm, float Y_mm, float Yaw_Rad);
     void Complete_Outputs();
     void Abort_Grap_Fault(Enum_Grap_Error Reason);
     void Service_Fault_Servo_Stop();

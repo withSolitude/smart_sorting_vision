@@ -62,6 +62,7 @@ def build_pipeline(cfg: dict, *, debug_rejections: bool) -> TopPickPipeline:
         min_safe_area=top_cfg["min_safe_area_px"],
         min_clearance=top_cfg["min_clearance_px"],
         outward_radial_config=top_cfg.get("outward_radial_compensation"),
+        edge_yaw_config=top_cfg.get("edge_yaw_limit"),
         top_intrinsics_path=cfg["calibration"]["top_intrinsics"],
         consensus_window=consensus["window"],
         consensus_required=consensus["required"],

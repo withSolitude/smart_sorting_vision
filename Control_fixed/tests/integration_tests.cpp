@@ -1,4 +1,5 @@
 #include "3_Robot/holding_jaw.h"
+#include "3_Robot/edge_motion_config.h"
 #include "3_Robot/sorting_storage.h"
 #include <cassert>
 #include <cmath>
@@ -8,6 +9,8 @@
 FDCAN_HandleTypeDef hfdcan1{1}, hfdcan2{2}, hfdcan3{3};
 UART_HandleTypeDef huart3, huart4;
 static uint32_t tick=0;
+static constexpr float turn_x=Edge_Motion_Config::Turn_Boundary_X_mm -
+    static_cast<float>(XY_Config::Position_Tolerance_mm) - Edge_Motion_Config::Turn_Extra_Clearance_mm;
 uint32_t HAL_GetTick() { return tick; }
 void HAL_Delay(uint32_t ms) { tick+=ms; }
 
@@ -49,12 +52,32 @@ static void test_jaw_async_motion()
     j.XY_Motion.Move_Status=HAL_OK;
     jaw_step(j,1500);
     assert(j.XY_Motion.Moves.size()==1U);
+    assert(j.XY_Motion.Moves[0].X==turn_x && j.XY_Motion.Moves[0].Y==20.0f);
+    assert(j.Yaw_Servo_Motor.Commands.size()==yaw_before); // 退到边界前不转Yaw
     assert(j.Get_Grap_Move_Status()==Enum_Grap_Move_X_Y_Start);
     assert(j.Claw_Servo_Motor.Commands.size()==claw_before);
+    // 仅“已完成”标志不够：反馈坐标仍在边缘内时不能开始转向。
+    j.XY_Motion.Motion_Finished=true;
+    jaw_step(j,100);
+    assert(j.Yaw_Servo_Motor.Commands.size()==yaw_before);
     j.XY_Motion.Arrive();
     jaw_step(j,100);
+    assert(j.XY_Motion.Moves.size()==2U);
+    assert(j.XY_Motion.Moves[1].X==turn_x && j.XY_Motion.Moves[1].Y==10.0f);
+    assert(j.Yaw_Servo_Motor.Commands.size()==yaw_before+1U);
+    const uint32_t yaw_tick=j.Yaw_Servo_Motor.Commands.back().Tick;
+    j.XY_Motion.Arrive();
+    jaw_step(j,400);
+    assert(j.XY_Motion.Moves.size()==2U); // XY先到，也必须等Yaw完成
+    jaw_step(j,100);
+    assert(j.XY_Motion.Moves.size()==3U);
+    assert(j.XY_Motion.Moves[2].X==-10.0f && j.XY_Motion.Moves[2].Y==10.0f);
+    assert(j.XY_Motion.Moves[2].Tick-yaw_tick>=500U);
+    assert(j.Yaw_Servo_Motor.Commands.size()==yaw_before+1U); // 进边缘时只移X
+    j.XY_Motion.Arrive();
+    jaw_step(j,600);
     assert(j.Get_Grap_Move_Status()==Enum_Grap_Move_Pre_Clip);
-    std::puts("PASS: jaw retries asynchronous XY busy and cannot preclose before measured arrival");
+    std::puts("PASS: edge route waits for measured retreat, turns outside, then enters with settled yaw");
 }
 
 static void test_jaw_true_disable_and_settle()
@@ -75,11 +98,41 @@ static void test_jaw_true_disable_and_settle()
     assert(!j.Get_Disable_Ready());
     jaw_step(j,500);
     assert(j.Claw_Servo_Motor.Commands.size()==claw_before);
-    j.XY_Motion.Arrive();
-    jaw_step(j,2000);
+    jaw_step(j,4000,true);
     assert(j.Get_Disable_Ready());
     assert(std::fabs(j.XY_Motion.X)<0.001f && std::fabs(j.XY_Motion.Y-20)<0.001f);
     std::puts("PASS: Disable label cannot bypass actual standby XY, lift clearance or servo settling");
+}
+
+static void test_jaw_outside_target_and_boundary()
+{
+    for(float target_x: {-40.0f,-20.0f,-20.1f})
+    {
+        auto j=ready_jaw();
+        const size_t yaw_before=j.Yaw_Servo_Motor.Commands.size();
+        assert(j.Start_Grap(target_x,10,60.0f*PI/180.0f,20,true)==HAL_OK);
+        jaw_step(j,200);
+        assert(j.XY_Motion.Moves.size()==1U);
+        assert(j.Yaw_Servo_Motor.Commands.size()==yaw_before);
+        j.XY_Motion.Arrive();
+        jaw_step(j,100);
+        assert(j.XY_Motion.Moves.size()==2U);
+        assert(j.XY_Motion.Moves.back().X==(target_x>turn_x?turn_x:target_x));
+        assert(j.Yaw_Servo_Motor.Commands.size()==yaw_before+1U);
+        j.XY_Motion.Arrive();
+        jaw_step(j,500);
+        if(target_x>turn_x)
+        {
+            // 命令目标x=-20也先在内侧完成Yaw，最后只移X走完容差余量。
+            assert(j.XY_Motion.Moves.size()==3U);
+            j.XY_Motion.Arrive();
+            jaw_step(j,600);
+        }
+        else jaw_step(j,500);
+        assert(j.Get_Grap_Move_Status()==Enum_Grap_Move_Pre_Clip);
+        assert(j.XY_Motion.Moves.size()==(target_x>turn_x?3U:2U));
+    }
+    std::puts("PASS: targets at or near x=-20 prepare yaw inside the measured-position safety margin");
 }
 
 static void test_jaw_fault_stop_retry()
@@ -132,9 +185,111 @@ static void test_jaw_yaw_calibration_override()
     jaw_step(j,30);
     assert(j.Get_Stop_Ready() && !j.Get_Disable_Ready());
     assert(j.Request_Return_To_Disable()==HAL_OK);
-    jaw_step(j,3000,true);
+    jaw_step(j,5000,true);
     assert(j.Get_Disable_Ready());
     std::puts("PASS: yaw calibration and retried stop preserve standby override until explicit return completes");
+}
+
+static void test_jaw_edge_uart_busy()
+{
+    auto j=ready_jaw();
+    const size_t yaw_before=j.Yaw_Servo_Motor.Commands.size();
+    assert(j.Start_Grap(-10,10,60.0f*PI/180.0f,20,true)==HAL_OK);
+    jaw_step(j,200);
+    assert(j.XY_Motion.Moves.size()==1U);
+    j.XY_Motion.Arrive();
+    huart3.gState=HAL_UART_STATE_BUSY_TX;
+    jaw_step(j,1000,true);
+    assert(j.XY_Motion.Moves.size()==2U); // UART忙时停在边界，不能提前移入目标X
+    assert(j.XY_Motion.X==turn_x);
+    assert(j.Yaw_Servo_Motor.Commands.size()==yaw_before);
+    huart3.gState=HAL_UART_STATE_READY;
+    jaw_step(j,100);
+    assert(j.Yaw_Servo_Motor.Commands.size()==yaw_before+1U);
+    const uint32_t yaw_tick=j.Yaw_Servo_Motor.Commands.back().Tick;
+    jaw_step(j,400,true);
+    assert(j.XY_Motion.Moves.size()==2U);
+    jaw_step(j,100,true);
+    assert(j.XY_Motion.Moves.size()==3U);
+    assert(j.XY_Motion.Moves.back().Tick-yaw_tick>=500U);
+    std::puts("PASS: UART BUSY cannot advance edge entry or start yaw settling before submission");
+}
+
+static void test_jaw_busy_position_changes_side()
+{
+    auto j=ready_jaw();
+    const size_t yaw_before=j.Yaw_Servo_Motor.Commands.size();
+    assert(j.Start_Grap(-10,10,60.0f*PI/180.0f,20,true)==HAL_OK);
+    // 模拟上一条XY命令仍在执行：最初反馈在安全侧，准备联动时驱动器返回BUSY。
+    j.XY_Motion.X=-30.0f;
+    j.XY_Motion.Move_Status=HAL_BUSY;
+    jaw_step(j,200);
+    assert(j.XY_Motion.Moves.empty());
+    // BUSY结束时旧命令已经移到边缘内，必须重新退边界，不能照旧步骤直接转Yaw。
+    j.XY_Motion.X=0.0f;
+    j.XY_Motion.Move_Status=HAL_OK;
+    jaw_step(j,200);
+    assert(j.XY_Motion.Moves.size()==1U);
+    assert(j.XY_Motion.Moves.back().X==turn_x && j.XY_Motion.Moves.back().Y==20.0f);
+    assert(j.Yaw_Servo_Motor.Commands.size()==yaw_before);
+    // 实测-19.8仍在危险带：即使错误地把Finished置真也必须禁止转Yaw。
+    j.XY_Motion.Arrive();
+    j.XY_Motion.X=-19.8f;
+    jaw_step(j,100);
+    assert(j.XY_Motion.Moves.size()==1U);
+    assert(j.Yaw_Servo_Motor.Commands.size()==yaw_before);
+    // 指令是-20.31，因此到位误差向外0.2mm后仍在安全侧，正常推进不死等。
+    j.XY_Motion.X=turn_x+0.2f;
+    jaw_step(j,100);
+    assert(j.XY_Motion.Moves.size()==2U);
+    assert(j.Yaw_Servo_Motor.Commands.size()==yaw_before+1U);
+    std::puts("PASS: BUSY retries recheck X; yaw needs measured X<=-20 despite coordinate tolerance");
+}
+
+static void test_jaw_full_cycle_routes_reset()
+{
+    auto j=ready_jaw();
+    j.TOF050F.Distance=3;
+    assert(j.Start_Grap(-10,10,60.0f*PI/180.0f,20,true)==HAL_OK);
+    jaw_step(j,20000,true);
+    assert(j.Get_Grap_Move_Status()==Enum_Grap_Move_Finish);
+    assert(j.XY_Motion.Moves.size()==8U);
+    assert(j.XY_Motion.Moves[3].X==turn_x && j.XY_Motion.Moves[3].Y==10.0f);
+    assert(j.XY_Motion.Moves[4].X==turn_x && j.XY_Motion.Moves[4].Y==4.0f);
+    assert(j.XY_Motion.Moves[5].X==0.0f && j.XY_Motion.Moves[5].Y==4.0f);
+    assert(j.XY_Motion.Moves[6].X==turn_x && j.XY_Motion.Moves[6].Y==4.0f);
+    assert(j.XY_Motion.Moves[7].X==-72.0f && j.XY_Motion.Moves[7].Y==0.0f);
+    // 固定托盘和识别姿态的实际舵机角不受上位机抓取40~80°规则强夹。
+    assert(j.Yaw_Servo_Motor.Commands.size()==4U);
+    assert(std::fabs(j.Yaw_Servo_Motor.Commands[2].Value-90.0f*PI/180.0f)<0.0001f);
+    assert(std::fabs(j.Yaw_Servo_Motor.Commands[3].Value-110.0f*PI/180.0f)<0.0001f);
+    assert(j.Request_Return_To_Disable()==HAL_OK);
+    jaw_step(j,5000,true);
+    assert(j.Get_Disable_Ready());
+    assert(j.XY_Motion.Moves.size()==10U);
+    assert(j.Start_Grap(-40,10,60.0f*PI/180.0f,20,true)==HAL_OK);
+    jaw_step(j,200);
+    assert(j.XY_Motion.Moves.size()==11U);
+    assert(j.XY_Motion.Moves.back().X==turn_x && j.XY_Motion.Moves.back().Y==20.0f);
+    std::puts("PASS: pick, tray, recognition, return and next pick each start their own waypoint sequence");
+}
+
+static void test_jaw_retreat_y_feedback_margin()
+{
+    for(float observed_y: {XY_Config::Y_Min_mm-0.01f,XY_Config::Y_Max_mm+0.01f})
+    {
+        auto j=ready_jaw();
+        assert(j.Start_Grap(-10,10,60.0f*PI/180.0f,20,true)==HAL_OK);
+        j.XY_Motion.Y=observed_y;
+        jaw_step(j,200);
+        assert(j.Get_Grap_Move_Status()==Enum_Grap_Move_X_Y_Start);
+        assert(j.XY_Motion.Moves.size()==1U);
+        const auto move=j.XY_Motion.Moves.back();
+        assert(move.X==turn_x);
+        assert(move.Y>=XY_Config::Y_Min_mm && move.Y<=XY_Config::Y_Max_mm);
+        assert(std::fabs(move.Y-observed_y)<0.011f);
+    }
+    std::puts("PASS: retreat clamps small measured Y boundary error into the legal command workspace");
 }
 
 static void storage_step(Class_Sorting_Storage &s,uint32_t ms,bool fresh=true,bool follow=false,
@@ -295,7 +450,7 @@ static void test_storage_fault_cannot_auto_enable()
 
 int main()
 {
-    test_jaw_async_motion();test_jaw_true_disable_and_settle();test_jaw_fault_stop_retry();test_jaw_busy_deadline();test_jaw_yaw_calibration_override();
+    test_jaw_async_motion();test_jaw_true_disable_and_settle();test_jaw_outside_target_and_boundary();test_jaw_fault_stop_retry();test_jaw_busy_deadline();test_jaw_yaw_calibration_override();test_jaw_edge_uart_busy();test_jaw_busy_position_changes_side();test_jaw_full_cycle_routes_reset();test_jaw_retreat_y_feedback_margin();
     test_storage_delivery_and_done();test_storage_feedback_freshness();test_storage_stop_and_uart_deadline();test_storage_can_type_filter();test_storage_reversed_output_direction();
     test_storage_fault_cannot_auto_enable();
     std::puts("All upper-layer integration regressions passed.");

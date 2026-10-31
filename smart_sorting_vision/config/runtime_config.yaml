@@ -116,6 +116,15 @@ vision:
     min_safe_area_px: 50  # 安全区域最小面积（像素）。
     min_clearance_px: 3.0  # 抓取点最小安全间隙（像素）。
 
+    # 仅限制靠近电机/相机一侧的抓取姿态；角度为下位机Yaw舵机命令角，不是PICK_TARGET轴向角。
+    edge_yaw_limit:
+      enabled: true  # 是否启用边缘抓取姿态约束；下位机中转路线另由edge_motion_config.h配置。
+      x_threshold_mm: -20.0  # 最终下发X大于该值时限角；应与下位机中转边界保持一致。
+      servo_min_deg: 40.0  # 边缘区允许的最小实际Yaw舵机角（度）。
+      servo_max_deg: 80.0  # 边缘区允许的最大实际Yaw舵机角（度）。
+      preferred_servo_deg: 60.0  # 接触条件相近时优先的平行姿态（度）。
+      sample_step_deg: 5.0  # 在允许舵机角范围内重新搜索的步长（度），之后仍检查协议量化值。
+
     # p_new = p + gain * (p - center)，仅向外补偿最终抓点；不改变原抓长边/方向算法。
     outward_radial_compensation:
       enabled: true  # 是否启用向外径向补偿；false恢复原抓取点。

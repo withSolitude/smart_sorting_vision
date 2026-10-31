@@ -1162,6 +1162,23 @@ class SortingRuntime:
             self._fail(f"PICK_TARGET pack failed: {exc}")
             return
 
+        # 下降预补偿和协议量化之后再核对一次，避免最终指令跨入X边缘限制区。
+        # 不可用姿态只跳过本次候选，继续找物体；不进入永久ERROR。
+        edge_limit = getattr(self.top_pipeline, "edge_yaw_limit", None)
+        if edge_limit is not None and not edge_limit.allows(
+            self.current_pick_command.x_mm, self.current_pick_command.yaw_deg,
+            self.yaw_servo_calibration,
+        ):
+            print(
+                "[Runtime] 跳过边缘Yaw受限候选："
+                f"X={self.current_pick_command.x_mm:.1f}mm, "
+                f"servo={servo_yaw_deg:.2f}deg"
+            )
+            self.current_pick = None
+            self.current_pick_command = None
+            self._safe_reset(self.top_pipeline)
+            return
+
         print(
             "[Runtime] single-yaw selected "
             f"axis={self.current_pick_command.yaw_deg:+.1f}deg "

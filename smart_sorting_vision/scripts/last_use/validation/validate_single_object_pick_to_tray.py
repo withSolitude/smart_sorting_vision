@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from communication.sorting_protocol import Mode, SortingFrame, make_pick_target, make_stop
+from communication.sorting_protocol import Mode, SortingFrame, SortingProtocol, make_pick_target, make_stop
 from communication.stm32_link import STM32Link
 from communication.claw_preopen_transaction import latch_preopen
 from runtime.app_config import load_runtime_config
@@ -109,6 +109,7 @@ def build_pipeline(cfg: dict) -> TopPickPipeline:
         min_safe_area=top_vision_cfg["min_safe_area_px"],
         min_clearance=top_vision_cfg["min_clearance_px"],
         outward_radial_config=top_vision_cfg.get("outward_radial_compensation"),
+        edge_yaw_config=top_vision_cfg.get("edge_yaw_limit"),
         top_intrinsics_path=cfg["calibration"]["top_intrinsics"],
         consensus_window=consensus["window"],
         consensus_required=consensus["required"],
@@ -204,10 +205,16 @@ def execute_pick_first_stage(
     *,
     ack_timeout_s: float,
     ready_timeout_s: float,
+    edge_yaw_limit=None,
+    yaw_calibration: YawServoCalibration | None = None,
 ) -> dict:
     x = float(target["x_mm"])
     y = float(target["y_mm"])
     yaw = normalize_axial_deg(float(target["yaw_deg"]))
+    # 所有动作（包括预开口）之前复核最终线上指令；旧调用不传限制时保持兼容。
+    frame = SortingProtocol.unpack(SortingProtocol.pack(make_pick_target(x, y, yaw)))
+    if edge_yaw_limit is not None and not edge_yaw_limit.allows(frame.x_mm, frame.yaw_deg, yaw_calibration):
+        raise ValueError("最终抓取目标不满足边缘Yaw限制，请重新选择物体或抓取方向")
 
     result = {
         "ack": False,
@@ -221,7 +228,6 @@ def execute_pick_first_stage(
         raise ValueError("No measured preopen command; real pick blocked")
     result["preopen_mm"] = latch_preopen(link, target["preopen_mm"], ack_timeout_s)
     result["preopen_ack"] = True
-    frame = make_pick_target(x, y, yaw)
     raw = link.send_frame(frame)
     print(
         f"[TX] PICK_TARGET X={x:.2f} Y={y:.2f} Yaw={yaw:+.2f} | "
@@ -520,12 +526,21 @@ def main() -> int:
 
                 frozen["sent_at"] = datetime.now().isoformat(timespec="seconds")
                 report["target"] = dict(frozen)
-                pick_result = execute_pick_first_stage(
-                    link,
-                    frozen,
-                    ack_timeout_s=args.ack_timeout,
-                    ready_timeout_s=args.ready_timeout,
-                )
+                try:
+                    pick_result = execute_pick_first_stage(
+                        link,
+                        frozen,
+                        ack_timeout_s=args.ack_timeout,
+                        ready_timeout_s=args.ready_timeout,
+                        edge_yaw_limit=pipeline.edge_yaw_limit,
+                        yaw_calibration=pipeline.yaw_servo_calibration,
+                    )
+                except ValueError as exc:
+                    print(f"[BLOCK] {exc}；继续重新识别。")
+                    pipeline.reset()
+                    frozen = None
+                    frozen_frame = None
+                    continue
                 pick_result["finished_at"] = datetime.now().isoformat(timespec="seconds")
                 report["result"] = pick_result
                 report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

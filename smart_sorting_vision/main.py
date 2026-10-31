@@ -291,6 +291,7 @@ class SmartSortingApp:
             min_safe_area=top_vision_cfg["min_safe_area_px"],
             min_clearance=top_vision_cfg["min_clearance_px"],
             outward_radial_config=top_vision_cfg.get("outward_radial_compensation"),
+            edge_yaw_config=top_vision_cfg.get("edge_yaw_limit"),
             top_intrinsics_path=self.config["calibration"]["top_intrinsics"],
             consensus_window=top_consensus["window"],
             consensus_required=top_consensus["required"],

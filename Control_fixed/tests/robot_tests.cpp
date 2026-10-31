@@ -66,7 +66,7 @@ static void test_calibration_start_returns_home()
     assert(r.Request_Sorting_Start());step(r,1100);
     assert(!r.Get_Sorting_Running());
     assert(sent_count(Sorting_Vision_Mode_MCU_START_WORK)==0U);
-    r.Holding_Jaw.XY_Motion.Arrive();step(r,3000);
+    step(r,5000,true); // 自动依次确认退边界、准备姿态和最终入边缘三段实测到位
     assert(r.Holding_Jaw.Get_Disable_Ready()&&r.Get_Sorting_Running());
     assert(sent_count(Sorting_Vision_Mode_MCU_START_WORK)==1U);
     std::puts("PASS: robot calibration reaches by feedback and subsequent START waits for actual standby return");
