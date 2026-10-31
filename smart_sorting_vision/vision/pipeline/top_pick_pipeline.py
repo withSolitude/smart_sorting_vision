@@ -638,6 +638,7 @@ class TopPickPipeline:
                 target_polygon=target_polygon,
                 other_polygons=other_polygons,
                 image_shape=frame.shape,
+                shape_name=str(obj.get("class_name", "")),
             )
             if not grasp_result.valid or grasp_result.grasp_point is None:
                 continue
@@ -650,6 +651,11 @@ class TopPickPipeline:
             parallel_edge_options = []
             if self.orientation_enabled:
                 try:
+                    orientation_safe_mask = (
+                        grasp_result.preferred_mask
+                        if getattr(grasp_result, "preferred_mask", None) is not None
+                        else grasp_result.safe_mask
+                    )
                     orientation = plan_grasp_axis(
                         polygon=target_polygon,
                         grasp_pixel=(base_grasp_x, base_grasp_y),
@@ -658,7 +664,7 @@ class TopPickPipeline:
                         min_aspect_ratio=self.min_orientation_aspect_ratio,
                         default_grasp_axis_robot_deg=self.default_grasp_axis_robot_deg,
                         yaw_alignment_offset_deg=self.yaw_alignment_offset_deg,
-                        safe_mask=grasp_result.safe_mask,
+                        safe_mask=orientation_safe_mask,
                         width_slack_ratio=self.grasp_width_slack_ratio,
                         support_tolerance_px=self.grasp_support_tolerance_px,
                         min_contact_span_px=self.grasp_min_contact_span_px,
@@ -693,7 +699,7 @@ class TopPickPipeline:
                         transform=self.transform,
                         default_grasp_axis_robot_deg=self.default_grasp_axis_robot_deg,
                         yaw_alignment_offset_deg=self.yaw_alignment_offset_deg,
-                        safe_mask=grasp_result.safe_mask,
+                        safe_mask=orientation_safe_mask,
                         width_slack_ratio=self.grasp_width_slack_ratio,
                         support_tolerance_px=self.grasp_support_tolerance_px,
                         min_contact_span_px=self.grasp_min_contact_span_px,

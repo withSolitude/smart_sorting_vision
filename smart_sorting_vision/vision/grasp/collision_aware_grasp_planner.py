@@ -25,6 +25,8 @@ class CollisionAwareGraspResult:
     reason: str
 
     safe_mask: np.ndarray | None = None
+    # 用于选取抓取点的首选区域；safe_mask 仍保留完整碰撞安全区域。
+    preferred_mask: np.ndarray | None = None
 
 
 class CollisionAwareGraspPlanner:
@@ -391,6 +393,7 @@ class CollisionAwareGraspPlanner:
         target_polygon: np.ndarray,
         other_polygons: list[np.ndarray],
         image_shape,
+        shape_name: str | None = None,
     ) -> CollisionAwareGraspResult:
 
         # ====================================================
@@ -539,13 +542,35 @@ class CollisionAwareGraspPlanner:
         # 深安全区域，再在这些点中选择最接近目标几何质心的点。
         # 这样孤立规则物体会优先抓中心；若质心附近被障碍物/ROI边缘切掉，
         # 仍然会退到最近的深安全点，而不是强行抓不安全的质心。
+        # 透视较大时，YOLO mask 的质心会被物体侧面向外的投影拉偏。
+        # 用形状相关的“顶部核心区域”作为首选中心；完整 mask 仍用于
+        # 接触宽度、碰撞和夹爪包络检查，避免把侧面误当成可抓区域。
+        core_mask = self.build_top_core_mask(
+            target_mask,
+            shape_name=shape_name,
+        )
+        core_safe = cv2.bitwise_and(core_mask, safe_mask)
+
+        preferred_mask = core_safe
+        if int(np.count_nonzero(preferred_mask)) < max(12, self.min_safe_area // 5):
+            # 遮挡严重或物体太小时，保留原安全区域作为退化方案，
+            # 后续仍会经过夹爪完整包络检查。
+            preferred_mask = safe_mask
+
+        preferred_points = np.column_stack(np.nonzero(preferred_mask > 0))
+        if len(preferred_points) > 0:
+            center_y = float(np.mean(preferred_points[:, 0]))
+            center_x = float(np.mean(preferred_points[:, 1]))
+        else:
+            center_x = center_y = 0.0
+
         moments = cv2.moments(
             np.asarray(target_polygon, dtype=np.float32)
         )
-        if abs(moments["m00"]) > 1e-9:
+        if len(preferred_points) == 0 and abs(moments["m00"]) > 1e-9:
             center_x = float(moments["m10"] / moments["m00"])
             center_y = float(moments["m01"] / moments["m00"])
-        else:
+        elif len(preferred_points) == 0:
             pts = np.asarray(target_polygon, dtype=np.float32).reshape(-1, 2)
             center_x = float(np.mean(pts[:, 0]))
             center_y = float(np.mean(pts[:, 1]))
@@ -634,6 +659,7 @@ class CollisionAwareGraspPlanner:
                 safe_area=safe_area,
                 reason="clearance_too_small",
                 safe_mask=safe_mask,
+                preferred_mask=preferred_mask,
             )
 
         return CollisionAwareGraspResult(
@@ -651,4 +677,83 @@ class CollisionAwareGraspPlanner:
             safe_area=safe_area,
             reason="ok",
             safe_mask=safe_mask,
+            preferred_mask=preferred_mask,
         )
+
+    @staticmethod
+    def build_top_core_mask(
+        target_mask: np.ndarray,
+        *,
+        shape_name: str | None = None,
+    ) -> np.ndarray:
+        """从完整实例 mask 提取更接近顶部可抓区域的核心。
+
+        侧面投影通常位于目标轮廓外圈，距离变换后会被优先剔除。
+        不同形状使用不同保守比例：平面多边形收缩更强，圆柱/圆锥/球
+        保留更大的核心以避免把旋转对称物体缩得过小。
+        """
+        mask = (np.asarray(target_mask) > 0).astype(np.uint8) * 255
+        if not np.any(mask):
+            return mask
+
+        name = str(shape_name or "").strip().lower()
+        # 顶部模型常常只有一个 object 类别；此时用 mask 的几何特征
+        # 选择策略，避免依赖尚未训练好的形状标签。
+        if not name or name in {"object", "unknown", "item"}:
+            contour_list, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contour = max(contour_list, key=cv2.contourArea) if contour_list else None
+            if contour is not None:
+                area = abs(float(cv2.contourArea(contour)))
+                perimeter = float(cv2.arcLength(contour, True))
+                circularity = (
+                    4.0 * np.pi * area / (perimeter * perimeter)
+                    if perimeter > 1.0e-6 else 0.0
+                )
+                hull = cv2.convexHull(contour).reshape(-1, 2)
+                hull_perimeter = float(cv2.arcLength(hull.reshape(-1, 1, 2), True))
+                approx = cv2.approxPolyDP(
+                    hull.reshape(-1, 1, 2),
+                    max(1.0, 0.025 * hull_perimeter),
+                    True,
+                )
+                # 正方形的圆度约为0.785，不能把方块误判成圆形；
+                # 只有明显接近圆/椭圆的轮廓才使用圆柱/球策略。
+                if circularity >= 0.88:
+                    name = "cylinder_or_sphere"
+                elif len(approx) == 3:
+                    # 三角轮廓更像圆锥/棱锥的顶部投影，避免套用长方体策略。
+                    name = "pyramid_or_cone"
+                elif len(approx) == 4:
+                    name = "rectangular_prism"
+                else:
+                    name = "polygon_prism"
+
+        if any(token in name for token in ("sphere", "ball", "球")):
+            ratio = 0.38
+        elif any(token in name for token in ("cylinder", "cone", "圆柱", "圆锥", "圆台")):
+            ratio = 0.45
+        elif any(token in name for token in ("pyramid", "棱锥", "prism", "棱柱")):
+            ratio = 0.52
+        else:
+            # cube/rectangular prism/未知形状：保守地去掉外圈侧面投影。
+            ratio = 0.58
+
+        distance = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+        maximum = float(np.max(distance))
+        if maximum <= 1.0:
+            return mask
+
+        threshold = max(1.5, maximum * ratio)
+        core = ((distance >= threshold) & (mask > 0)).astype(np.uint8) * 255
+        if not np.any(core):
+            return mask
+
+        # 只保留包含最大距离点的连通核心，避免遮挡/分割毛刺产生多个小核心。
+        _, labels, stats, _ = cv2.connectedComponentsWithStats(core, 8)
+        if labels.max() <= 1:
+            return core
+        max_location = np.unravel_index(int(np.argmax(distance)), distance.shape)
+        label = int(labels[max_location[0], max_location[1]])
+        if label <= 0:
+            label = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        return ((labels == label).astype(np.uint8) * 255)
