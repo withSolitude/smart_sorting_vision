@@ -65,6 +65,8 @@ private:
     bool Stable = false;
     bool Track_Enabled = false;
     bool Motion_Completed = false;
+    // 只有真实完成双轴STOP应答和停稳反馈后才置位；防止重复STOP重启停车流程。
+    bool Stop_Sequence_Confirmed = false;
     bool Homing_Active = false;
     bool Homing_Failed = false;
     uint32_t Homing_Tick = 0, Homing_Status_Tick = 0;

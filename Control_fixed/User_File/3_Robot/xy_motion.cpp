@@ -71,6 +71,7 @@ void Class_XY_Motion::Init()
     Stable = false;
     Track_Enabled = false;
     Motion_Completed = false;
+    Stop_Sequence_Confirmed = false;
 }
 
 void Class_XY_Motion::CAN_RxCpltCallback(const FDCAN_RxHeaderTypeDef &header, const uint8_t *data)
@@ -124,6 +125,7 @@ HAL_StatusTypeDef Class_XY_Motion::Start_Collision_Homing()
     Origin_Valid = false;
     Motion_Completed = false;
     Homing_Active = true;
+    Stop_Sequence_Confirmed = false;
     Homing_Failed = false;
     Homing_Stop_Requested = false;
     Homing_Tick = HAL_GetTick();
@@ -212,6 +214,7 @@ HAL_StatusTypeDef Class_XY_Motion::Move_To_mm(float x, float y, float vx, float 
     Speed_B = static_cast<uint16_t>(std::max(1.0, std::min<double>(XY_Config::Max_RPM,std::round(rb*60.0/duration))));
     Move_Tick = HAL_GetTick();
     Motion_Completed = false;
+    Stop_Sequence_Confirmed = false;
     Set_Phase(State::Enable_A);
     return HAL_OK; // 仅表示目标已接受；到位必须等两轴真实反馈稳定
 }
@@ -219,6 +222,7 @@ HAL_StatusTypeDef Class_XY_Motion::Move_To_mm(float x, float y, float vx, float 
 void Class_XY_Motion::Begin_Stop()
 {
     Motion_Completed = false; // 取消完成不等于原目标到位
+    Stop_Sequence_Confirmed = false;
     Capture_Feedback_Baselines();
     Set_Phase(State::Stop_A);
 }
@@ -229,6 +233,13 @@ void Class_XY_Motion::Stop()
     if (Homing_Active)
     {
         Stop_Collision_Homing();
+        return;
+    }
+    // 上电首次仍必须发送双轴STOP，不能仅凭转速零跳过。
+    // 已完成STOP且反馈仍新鲜、转速仍为零时，重发命令只保留原安全确认。
+    if (Phase == State::Idle && Stop_Sequence_Confirmed && Get_Stop_Confirmed())
+    {
+        Motion_Completed = false; // 重复STOP也取消上一目标的完成状态，但不重启停车。
         return;
     }
     if (Phase < State::Stop_A) Begin_Stop();
@@ -436,7 +447,10 @@ void Class_XY_Motion::TIM_1ms_PeriodElapsedCallback()
             }
             else if ((uint32_t)(now-Stable_Tick) >= XY_Config::Settle_ms &&
                      a.Position_Count != Stable_Position_A_Count && b.Position_Count != Stable_Position_B_Count)
+            {
+                Stop_Sequence_Confirmed = true;
                 Set_Phase(State::Idle);
+            }
             break;
         }
         case State::Home_Enable_A:

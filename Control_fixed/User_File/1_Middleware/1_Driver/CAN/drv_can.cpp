@@ -86,8 +86,8 @@ void can_filter_mask_config(FDCAN_HandleTypeDef *hfdcan)
     can_filter_init_structure.FilterID2 = 0x00000000;
     HAL_FDCAN_ConfigFilter(hfdcan, &can_filter_init_structure);
 
-    // CAN1 carries standard DM frames and extended Emm V5 frames together.
-    // Extended and standard filter indices belong to separate filter lists.
+    // CAN1使用DM标准帧，CAN2使用Emm扩展帧；各总线按初始化分配的过滤器接收。
+    // 扩展帧和标准帧的过滤器索引属于各自独立的列表。
     if (hfdcan->Init.ExtFiltersNbr > 0U)
     {
         can_filter_init_structure.IdType = FDCAN_EXTENDED_ID;

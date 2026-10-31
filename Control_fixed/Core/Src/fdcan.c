@@ -46,7 +46,7 @@ void MX_FDCAN1_Init(void)
   hfdcan1.Init.TransmitPause = DISABLE;
   hfdcan1.Init.ProtocolException = DISABLE;
   // FDCAN1 时钟 25 MHz：25 MHz / (1 * (1 + 21 + 3)) = 1 Mbit/s。
-  // DM4310、两台 Emm 和 TTL-CAN 适配器必须使用同一波特率。
+  // CAN1用于DM4310，CAN2用于两台Emm，均使用1M。
   hfdcan1.Init.NominalPrescaler = 1;
   hfdcan1.Init.NominalSyncJumpWidth = 3;
   hfdcan1.Init.NominalTimeSeg1 = 21;
@@ -55,7 +55,7 @@ void MX_FDCAN1_Init(void)
   hfdcan1.Init.DataSyncJumpWidth = 3;
   hfdcan1.Init.DataTimeSeg1 = 21;
   hfdcan1.Init.DataTimeSeg2 = 3;
-  /* Shared SRAMCAN, in 32-bit words: CAN1 [0,99), CAN2 [128,225),
+  /* Shared SRAMCAN, in 32-bit words: CAN1 [0,99), CAN2 [128,227),
      CAN3 [256,353). Keep these allocations disjoint. */
   hfdcan1.Init.MessageRAMOffset = 0;
   hfdcan1.Init.StdFiltersNbr = 1;
@@ -94,20 +94,21 @@ void MX_FDCAN2_Init(void)
   hfdcan2.Instance = FDCAN2;
   hfdcan2.Init.FrameFormat = FDCAN_FRAME_CLASSIC;
   hfdcan2.Init.Mode = FDCAN_MODE_NORMAL;
-  hfdcan2.Init.AutoRetransmission = DISABLE;
+  hfdcan2.Init.AutoRetransmission = ENABLE;
   hfdcan2.Init.TransmitPause = DISABLE;
   hfdcan2.Init.ProtocolException = DISABLE;
-  hfdcan2.Init.NominalPrescaler = 3;
-  hfdcan2.Init.NominalSyncJumpWidth = 10;
-  hfdcan2.Init.NominalTimeSeg1 = 29;
-  hfdcan2.Init.NominalTimeSeg2 = 10;
-  hfdcan2.Init.DataPrescaler = 3;
-  hfdcan2.Init.DataSyncJumpWidth = 10;
-  hfdcan2.Init.DataTimeSeg1 = 29;
-  hfdcan2.Init.DataTimeSeg2 = 10;
+  // FDCAN时钟25MHz：25MHz / (1 * (1 + 21 + 3)) = 1Mbit/s。
+  hfdcan2.Init.NominalPrescaler = 1;
+  hfdcan2.Init.NominalSyncJumpWidth = 3;
+  hfdcan2.Init.NominalTimeSeg1 = 21;
+  hfdcan2.Init.NominalTimeSeg2 = 3;
+  hfdcan2.Init.DataPrescaler = 1;
+  hfdcan2.Init.DataSyncJumpWidth = 3;
+  hfdcan2.Init.DataTimeSeg1 = 21;
+  hfdcan2.Init.DataTimeSeg2 = 3;
   hfdcan2.Init.MessageRAMOffset = 128;
   hfdcan2.Init.StdFiltersNbr = 1;
-  hfdcan2.Init.ExtFiltersNbr = 0;
+  hfdcan2.Init.ExtFiltersNbr = 1; // Emm V5使用扩展CAN ID，必须分配接收过滤器。
   hfdcan2.Init.RxFifo0ElmtsNbr = 16;
   hfdcan2.Init.RxFifo0ElmtSize = FDCAN_DATA_BYTES_8;
   hfdcan2.Init.RxFifo1ElmtsNbr = 0;

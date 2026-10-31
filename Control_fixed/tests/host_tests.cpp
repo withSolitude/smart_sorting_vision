@@ -11,14 +11,14 @@
 FDCAN_HandleTypeDef hfdcan1{1}, hfdcan2{2}, hfdcan3{3};
 static uint32_t tick = 0;
 static uint32_t tx_free = 8;
-struct Frame { uint32_t id; std::vector<uint8_t> data; };
+struct Frame { FDCAN_HandleTypeDef *bus; uint32_t id; std::vector<uint8_t> data; };
 static std::vector<Frame> frames;
 uint32_t HAL_GetTick() { return tick; }
 uint32_t HAL_FDCAN_GetTxFifoFreeLevel(FDCAN_HandleTypeDef *) { return tx_free; }
-HAL_StatusTypeDef CAN_Transmit_Extended_Data(FDCAN_HandleTypeDef *, uint32_t id,
+HAL_StatusTypeDef CAN_Transmit_Extended_Data(FDCAN_HandleTypeDef *bus, uint32_t id,
                                            const uint8_t *data, uint8_t length) {
     if (tx_free == 0) return HAL_BUSY;
-    frames.push_back({id, std::vector<uint8_t>(data, data + length)});
+    frames.push_back({bus, id, std::vector<uint8_t>(data, data + length)});
     return HAL_OK;
 }
 
@@ -149,8 +149,9 @@ static void test_matrix() {
     }
     double a, b;
     Class_XY_Motion::XY_To_Motor_mm(-20, 10, a, b);
-    assert(std::fabs(a - std::sqrt(2.0)*10) < 1e-9);
-    assert(std::fabs(b + std::sqrt(2.0)*20) < 1e-9);
+    assert(XY_Config::Frame_Rotation_Deg == 0.0);
+    assert(std::fabs(a + 10.0) < 1e-9);
+    assert(std::fabs(b + 30.0) < 1e-9);
     std::puts("PASS: XY transform inverse across workspace and signs");
 }
 
@@ -170,6 +171,7 @@ struct Rig {
     uint32_t sync_tick = 0;
     Rig() {
         tick = 1000; tx_free = 8; frames.clear();
+        assert(XY_Config::CAN_Bus() == &hfdcan2);
         xy.Init(); feedback(xy);
         assert(!xy.Get_Stop_Confirmed());
         assert(xy.Confirm_Origin_mm(0, 0) ==
@@ -185,6 +187,8 @@ struct Rig {
     void process() {
         while (processed < frames.size()) {
             const Frame f = frames[processed++];
+            // XY控制与轮询都必须走现场接线CAN2，不能只有配置声明改了总线。
+            assert(f.bus == XY_Config::CAN_Bus());
             const uint8_t addr = static_cast<uint8_t>(f.id >> 8);
             const size_t axis = addr == XY_Config::Address_A ? 0 : 1;
             const uint8_t fn = f.data[0];
@@ -281,12 +285,12 @@ static void test_ack_timeout() {
 
 static void test_multi_turn_offset_origin() {
     Rig r; r.origin();
-    assert(r.xy.Move_To_mm(-70, 50, 45, 45) == HAL_OK);
+    assert(r.xy.Move_To_mm(-70, 20, 45, 45) == HAL_OK);
     r.step(2400);
     assert(r.xy.Get_Motion_Finished() && !r.xy.Get_Fault());
     assert(std::abs(r.current[0]) > 65536 && std::abs(r.current[1]) > 65536);
     assert(std::fabs(r.xy.Get_X_mm() + 70) < 0.02);
-    assert(std::fabs(r.xy.Get_Y_mm() - 50) < 0.02);
+    assert(std::fabs(r.xy.Get_Y_mm() - 20) < 0.02);
     const int64_t base_a = r.current[0], base_b = r.current[1];
     // Confirm a known carriage coordinate while both motor encoders already
     // have multiple revolutions; neither absolute driver position is cleared.
@@ -314,11 +318,17 @@ static void test_feedback_loss_and_stop_retry() {
     assert(r.xy.Get_Stop_Confirmed());
     assert(r.xy.Confirm_Origin_mm(0, 0) == HAL_OK);
     assert(!r.xy.Get_Fault());
+    // 已完成的STOP可幂等复用；先开始新运动，再测TX BUSY时必须保持停机请求。
+    assert(r.xy.Move_To_mm(-10, 10, 20, 20) == HAL_OK);
+    r.step(20);
+    const unsigned before_stop = r.stop_count;
     // A full CAN TX FIFO must defer stop and preserve its pending state.
     tx_free = 0; r.xy.Stop(); r.step(20);
     assert(!r.xy.Get_Stop_Confirmed());
+    assert(r.stop_count == before_stop);
     tx_free = 8; r.step(220);
     assert(r.xy.Get_Stop_Confirmed());
+    assert(r.stop_count == before_stop + 2);
     assert(!r.xy.Get_Motion_Finished()); // cancelling a target is not arrival
     std::puts("PASS: feedback-loss latch, operator origin recovery and stop HAL_BUSY retry");
 }
@@ -356,13 +366,67 @@ static void test_sync_and_command_errors() {
 }
 
 static void test_disabled_stop_ack() {
-    Rig r; r.stop_result = 0xE2;
+    Rig r;
+    // 从已失能的安全状态确认原点，单独检验E2停机规则，不混入运行后失能故障。
+    r.enabled[0] = r.enabled[1] = false;
+    r.step(20); r.origin(); r.hold_motion = true;
+    assert(r.xy.Move_To_mm(-10, 10, 20, 20) == HAL_OK);
+    // 两轴使能控制已实际下发，但还没有进入Moving；这次STOP必须重新发FE。
+    r.step(4);
+    assert(r.enabled[0] && r.enabled[1]);
+    const unsigned before_stop = r.stop_count;
+    r.stop_result = 0xE2;
     r.xy.Stop(); r.step(220);
+    assert(r.stop_count == before_stop + 2);
     assert(!r.xy.Get_Stop_Confirmed());
     r.enabled[0] = r.enabled[1] = false;
     r.step(220);
     assert(r.xy.Get_Stop_Confirmed());
     std::puts("PASS: FE/E2 accepted only with new disabled and stationary feedback");
+}
+
+static void test_repeated_stop_preserves_completed_confirmation() {
+    Rig r;
+    const unsigned startup_stops = r.stop_count;
+    assert(startup_stops == 2); // 上电仍须向两台电机实际发送STOP。
+    r.origin();
+    assert(r.xy.Get_Motion_Finished());
+    for (unsigned n = 0; n < 6; ++n) {
+        r.xy.Stop();
+        assert(r.xy.Get_Stop_Confirmed());
+        assert(!r.xy.Get_Motion_Finished()); // 重发STOP仍取消旧到位事件，但不重置停稳确认。
+        r.step(250); // 与Jetson启动同步的重复周期一致。
+        assert(r.xy.Get_Stop_Confirmed());
+        assert(r.stop_count == startup_stops);
+    }
+
+    // 新运动撤销旧STOP确认，必须重新发送双轴停机并等待真实反馈稳定。
+    r.origin(); r.hold_motion = true;
+    assert(r.xy.Move_To_mm(-10, 10, 20, 20) == HAL_OK);
+    r.step(20);
+    r.xy.Stop();
+    assert(!r.xy.Get_Stop_Confirmed());
+    r.step(220);
+    assert(r.xy.Get_Stop_Confirmed());
+    assert(r.stop_count == startup_stops + 2);
+    assert(!r.xy.Get_Motion_Finished());
+    std::puts("PASS: repeated startup STOP retains safe confirmation; new movement requires a new stop");
+}
+
+static void test_stale_feedback_does_not_reuse_completed_stop() {
+    Rig r;
+    const unsigned before_stop = r.stop_count;
+    r.reply_feedback = false;
+    r.step(XY_Config::Feedback_Timeout_ms + 20);
+    assert(!r.xy.Get_Stop_Confirmed());
+    r.xy.Stop();
+    r.step(20);
+    assert(r.stop_count == before_stop + 2);
+    assert(!r.xy.Get_Stop_Confirmed()); // 新STOP ACK也不能代替新鲜位置/速度/状态。
+    r.reply_feedback = true;
+    r.step(220);
+    assert(r.xy.Get_Stop_Confirmed());
+    std::puts("PASS: stale feedback invalidates repeated-stop reuse until fresh feedback settles");
 }
 
 int main() {
@@ -380,5 +444,7 @@ int main() {
     test_multi_turn_offset_origin();
     test_feedback_loss_and_stop_retry(); test_reset_jump_and_stall();
     test_sync_and_command_errors(); test_disabled_stop_ack();
+    test_repeated_stop_preserves_completed_confirmation();
+    test_stale_feedback_does_not_reuse_completed_stop();
     std::puts("All host regressions passed.");
 }

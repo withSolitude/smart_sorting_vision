@@ -7,18 +7,18 @@
 // 所有待实机标定参数集中在这里。未确认标定前只读反馈，禁止运动。
 namespace XY_Config
 {
-inline FDCAN_HandleTypeDef *CAN_Bus() { return &hfdcan1; }
+inline FDCAN_HandleTypeDef *CAN_Bus() { return &hfdcan2; }
 constexpr uint8_t Address_A = 1U;
 constexpr uint8_t Address_B = 2U;
-constexpr uint32_t CAN_Baud = 1000000U; // 与 CAN1 的 DM4310、Emm 和 TTL-CAN 适配器共用
+constexpr uint32_t CAN_Baud = 1000000U; // 两台Emm接CAN2，驱动器和调试适配器均设为1M。
 #if defined(EMM_V5_HOST_TEST) && defined(XY_TEST_CALIBRATED)
 constexpr bool Mechanical_Calibration_Confirmed = true; // 仅主机回归测试
 #else
 constexpr bool Mechanical_Calibration_Confirmed = false; // 实机标定后改 true
 #endif
 
-// +45° 表示机构 U 轴相对视觉 +X 逆时针旋转；顺时针请改 -45°。
-constexpr double Frame_Rotation_Deg = 45.0;
+// 使用已确认的现场坐标方向：0°；CoreXY混合仍由XY_Motion统一处理。
+constexpr double Frame_Rotation_Deg = 0.0;
 constexpr double Pi = 3.14159265358979323846;
 
 // CoreXY: A=U+V, B=U-V。正的电机坐标对应协议 CW(方向0)。
@@ -48,7 +48,7 @@ constexpr uint32_t Poll_Interval_ms = 2U; // 每16ms读取一次每台电机的3
 constexpr uint16_t Encoder_Unwrap_Max_Gap_ms = 80U; // 300RPM 时半圈=100ms
 
 // 自动回零默认关闭。只有确认 CoreXY 机械硬挡位置、方向和驱动器碰撞参数后才改为 true。
-// 当前 +45° 关系为 A≈√2·Y、B≈√2·X，回零必须先单独回 B(X)，再单独回 A(Y)。
+// 当前0°关系为A=X+Y、B=X-Y；单电机碰撞回零不等于单独移动X/Y，保持关闭。
 constexpr bool Driver_Collision_Homing_Enabled = false;
 constexpr uint8_t Driver_Homing_Mode = 2U; // 2=多圈无开关碰撞回零
 constexpr uint16_t Homing_RPM = 30U; // 首次调试低速，实际以驱动器 O_Vel 为准
