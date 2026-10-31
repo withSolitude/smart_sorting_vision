@@ -166,6 +166,17 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"calibration.yaw_servo 无效: {exc}") from exc
 
+    core_cfg = cfg["vision"]["top"].get("shape_core")
+    if core_cfg is not None:
+        try:
+            if not isinstance(core_cfg["enabled"], bool):
+                raise ValueError("enabled 必须为 true/false")
+            for name in ("quadrilateral", "polygon", "triangle", "round"):
+                if not 0.0 < float(core_cfg["ratios"][name]) < 1.0:
+                    raise ValueError(f"ratios.{name} 必须在0与1之间")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ConfigError(f"vision.top.shape_core 无效: {exc}") from exc
+
     top_tcp_comp = cfg["vision"]["top"].get("yaw_tcp_compensation", {})
     if bool(top_tcp_comp.get("enabled", False)):
         try:

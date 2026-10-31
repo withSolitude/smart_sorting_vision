@@ -12,7 +12,7 @@
 按键：
     [ / ]  切换可显示的候选物体
     Space    在下位机已收到物理 START 且画面 READY 时实抓一次
-    R      清空多帧稳定计数
+    R      清空多帧稳定计数并恢复自动选择
     P      暂停/继续画面
     S      保存当前标注图
     I      在终端打印当前抓取规划
@@ -48,6 +48,8 @@ def _build_pipeline(cfg: dict) -> TopPickPipeline:
 
 
 def _draw_polygon(image: np.ndarray, polygon, color, thickness: int = 2) -> None:
+    if polygon is None:
+        return
     points = np.asarray(polygon, dtype=np.float32).reshape(-1, 1, 2)
     if len(points) >= 2:
         cv2.polylines(
@@ -171,6 +173,8 @@ def _print_candidate(candidate, yaw: YawServoCalibration) -> None:
     servo = yaw.command_deg(float(candidate.yaw_deg))
     print("[GRASP PLAN]")
     print(f"  object_index = {candidate.object_index}")
+    print(f"  strategy     = {getattr(candidate, 'grasp_strategy', 'full_mask')}")
+    print(f"  full_center  = ({candidate.center_pixel[0]:.2f}, {candidate.center_pixel[1]:.2f})")
     print(f"  pixel        = ({candidate.grasp_pixel[0]}, {candidate.grasp_pixel[1]})")
     print(f"  robot_xy_mm  = ({candidate.x_mm:.3f}, {candidate.y_mm:.3f})")
     print(f"  yaw_axis_deg = {candidate.yaw_deg:+.3f}")
@@ -216,6 +220,11 @@ def main() -> int:
     )
     camera = TopCamera()
     pipeline = _build_pipeline(cfg)
+    # 启动时显示实际代码和配置路径，便于排查运行了旧目录或旧分支。
+    print(f"[SOURCE] preview={Path(__file__).resolve()}")
+    print(f"[SOURCE] pipeline={Path(sys.modules[TopPickPipeline.__module__].__file__).resolve()}")
+    print(f"[CONFIG] {config_path.resolve()}")
+    print(f"[SHAPE CORE] {getattr(pipeline.planner, 'shape_core_config', {})}")
     window = "SINGLE OBJECT GRASP PLAN"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window, 1500, 900)
@@ -238,9 +247,10 @@ def main() -> int:
     fps = 0.0
 
     print("[INFO] 启动时只打开顶部相机；按 Space 才会打开 STM32 并执行一次实抓。")
-    print("[INFO] 绿色=目标轮廓/抓取点，紫色=夹爪闭合轴，青色=夹爪纵向轴。")
+    print("[INFO] 绿色=完整轮廓/最终抓取点，橙色=规划核心，蓝色十字=完整轮廓中心。")
+    print("[INFO] 紫色=夹爪闭合轴，黄色=夹爪纵向轴；中心连线显示抓取点的修正量。")
     print("[INFO] 实抓前必须先按下机械物理 START，并等待 READY。")
-    print("[INFO] [ / ] 切换物体，Space 实抓，R 重置，P 暂停，S 保存，I 打印，Q/ESC 退出。")
+    print("[INFO] [ / ] 切换预览物体，Space 实抓READY目标，R 重置并恢复自动选择，P 暂停，S 保存，I 打印。")
 
     def load_pick_helpers():
         """延迟加载已验证的单次抓取事务，避免预览启动时打开串口。"""
@@ -335,6 +345,11 @@ def main() -> int:
 
             if candidate is not None:
                 _draw_polygon(view, candidate.polygon, (0, 255, 0), 2)
+                # 完整mask质心与规划核心同时显示，避免只看最终十字误以为没有启用新策略。
+                _draw_polygon(view, getattr(candidate, "grasp_core_polygon", None), (0, 165, 255), 2)
+                center = tuple(int(round(v)) for v in candidate.center_pixel)
+                cv2.line(view, center, tuple(int(v) for v in candidate.grasp_pixel), (255, 180, 0), 2)
+                _draw_cross(view, center, (255, 80, 0), 8)
                 for footprint in candidate.gripper_footprint_polygons_px:
                     overlay = view.copy()
                     _draw_polygon(overlay, footprint, (0, 255, 0), 2)
@@ -369,8 +384,13 @@ def main() -> int:
             if candidate is not None:
                 physical_yaw = yaw_calibration.physical_axis_deg(float(candidate.yaw_deg))
                 servo_yaw = yaw_calibration.command_deg(float(candidate.yaw_deg))
+                center_shift = math.hypot(
+                    candidate.grasp_pixel[0] - candidate.center_pixel[0],
+                    candidate.grasp_pixel[1] - candidate.center_pixel[1],
+                )
                 panel.extend(
                     [
+                        f"strategy={getattr(candidate, 'grasp_strategy', 'full_mask')}  center shift={center_shift:.1f}px",
                         f"pixel=({candidate.grasp_pixel[0]},{candidate.grasp_pixel[1]})",
                         f"XY=({candidate.x_mm:.1f},{candidate.y_mm:.1f}) mm",
                         f"yaw axis={candidate.yaw_deg:+.1f}  physical={physical_yaw:+.1f}  servo={servo_yaw:+.1f}",
@@ -390,11 +410,20 @@ def main() -> int:
                 paused = not paused
             elif key in (ord("r"), ord("R")):
                 pipeline.reset()
-                print("[INFO] consensus reset")
+                selected_index = None
+                print("[INFO] consensus reset; restored automatic object selection")
             elif key == 32:
                 # 只有多帧 READY 且下位机收到机械 START 才允许实抓。
                 if result is None or not result.ready:
                     print("[BLOCK] 当前抓取规划还没有 READY，继续等待稳定结果。")
+                    continue
+                # 手动切换只选择预览；实抓沿用正式流水线的多帧共识目标。
+                # 若两者不是同一物体，明确提示，避免画面显示A却实际抓B。
+                ready_candidate = _select_candidate(result, None)
+                if candidate is None or ready_candidate is None or (
+                    int(candidate.object_index) != int(ready_candidate.object_index)
+                ):
+                    print("[BLOCK] 当前手动预览物体不是READY共识目标；按R恢复自动选择后再实抓。")
                     continue
                 try:
                     open_pick_link()

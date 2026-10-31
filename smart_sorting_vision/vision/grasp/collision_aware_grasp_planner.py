@@ -27,6 +27,9 @@ class CollisionAwareGraspResult:
     safe_mask: np.ndarray | None = None
     # 用于选取抓取点的首选区域；safe_mask 仍保留完整碰撞安全区域。
     preferred_mask: np.ndarray | None = None
+    # 方向规划使用未被障碍物切割的核心轮廓；碰撞/估宽仍使用完整物体。
+    planning_polygon: np.ndarray | None = None
+    strategy_name: str = "full_mask"
 
 
 class CollisionAwareGraspPlanner:
@@ -60,6 +63,7 @@ class CollisionAwareGraspPlanner:
         border_margin: int = 12,
         min_safe_area: int = 50,
         min_clearance: float = 3.0,
+        shape_core_config: dict | None = None,
     ):
         if obstacle_margin < 0:
             raise ValueError(
@@ -96,6 +100,7 @@ class CollisionAwareGraspPlanner:
         self.min_clearance = float(
             min_clearance
         )
+        self.shape_core_config = dict(shape_core_config or {})
 
     # ========================================================
     # Polygon -> 二值Mask
@@ -534,43 +539,47 @@ class CollisionAwareGraspPlanner:
             safe_distance
         )
 
-        # 对长方形等目标，Distance Transform 的最大值经常不是唯一点，
-        # 而是在中轴附近形成一段“等高平台”。直接使用 minMaxLoc 返回的
-        # 第一个最大值会把抓取点随机偏到平台一端。
-        #
-        # 这里保留“安全优先”的原则：先取 clearance >= 90% 最大值的
-        # 深安全区域，再在这些点中选择最接近目标几何质心的点。
-        # 这样孤立规则物体会优先抓中心；若质心附近被障碍物/ROI边缘切掉，
-        # 仍然会退到最近的深安全点，而不是强行抓不安全的质心。
-        # 透视较大时，YOLO mask 的质心会被物体侧面向外的投影拉偏。
-        # 用形状相关的“顶部核心区域”作为首选中心；完整 mask 仍用于
-        # 接触宽度、碰撞和夹爪包络检查，避免把侧面误当成可抓区域。
+        # 距离核心只是几何启发式，不是识别出的真实顶面，也不能恢复物体高度。
+        # 旧实现虽然计算核心中心，最终却仍投影到完整mask的90%最深平台，
+        # 会抵消这一步的偏移。现在直接在“核心∩安全区域”中选点。
+        core_enabled = bool(self.shape_core_config.get("enabled", True))
+        strategy_name = self.classify_core_shape(target_mask, shape_name=shape_name)
         core_mask = self.build_top_core_mask(
             target_mask,
             shape_name=shape_name,
-        )
+            config=self.shape_core_config,
+        ) if core_enabled else target_mask
         core_safe = cv2.bitwise_and(core_mask, safe_mask)
-
-        preferred_mask = core_safe
+        core_safe[safe_distance < self.min_clearance] = 0
+        preferred_mask = core_safe if core_enabled else safe_mask
+        planning_polygon = np.asarray(target_polygon, dtype=np.float32)
         if int(np.count_nonzero(preferred_mask)) < max(12, self.min_safe_area // 5):
-            # 遮挡严重或物体太小时，保留原安全区域作为退化方案，
-            # 后续仍会经过夹爪完整包络检查。
+            # 核心被遮挡/安全边界切尽时，明确标记回退，不伪装成核心策略。
             preferred_mask = safe_mask
+            strategy_name = "safe_fallback"
+            core_enabled = False
+        elif core_enabled:
+            # 不用core_safe求方向，防止相邻物体把核心裁成斜角而带偏Yaw。
+            contours, _ = cv2.findContours(core_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contour = max(contours, key=cv2.contourArea)
+            planning_polygon = cv2.approxPolyDP(
+                contour, max(0.75, 0.008 * cv2.arcLength(contour, True)), True,
+            ).reshape(-1, 2).astype(np.float32)
+            if len(planning_polygon) < 3:
+                planning_polygon = np.asarray(target_polygon, dtype=np.float32)
+        else:
+            strategy_name = "disabled"
 
         preferred_points = np.column_stack(np.nonzero(preferred_mask > 0))
-        if len(preferred_points) > 0:
+        moments = cv2.moments(np.asarray(target_polygon, dtype=np.float32))
+        if core_enabled and len(preferred_points) > 0:
             center_y = float(np.mean(preferred_points[:, 0]))
             center_x = float(np.mean(preferred_points[:, 1]))
-        else:
-            center_x = center_y = 0.0
-
-        moments = cv2.moments(
-            np.asarray(target_polygon, dtype=np.float32)
-        )
-        if len(preferred_points) == 0 and abs(moments["m00"]) > 1e-9:
+        elif abs(moments["m00"]) > 1e-9:
+            # 关闭/回退时沿用完整轮廓质心，便于和原规划做对比。
             center_x = float(moments["m10"] / moments["m00"])
             center_y = float(moments["m01"] / moments["m00"])
-        elif len(preferred_points) == 0:
+        else:
             pts = np.asarray(target_polygon, dtype=np.float32).reshape(-1, 2)
             center_x = float(np.mean(pts[:, 0]))
             center_y = float(np.mean(pts[:, 1]))
@@ -579,11 +588,11 @@ class CollisionAwareGraspPlanner:
             float(self.min_clearance),
             float(maximum_distance) * 0.90,
         )
-        ys, xs = np.nonzero(
-            (safe_distance >= plateau_threshold)
-            &
-            (safe_mask > 0)
-        )
+        if core_enabled:
+            ys, xs = np.nonzero(preferred_mask > 0)
+        else:
+            # 关闭核心策略或回退时保留原始最深平台选点方式。
+            ys, xs = np.nonzero((safe_distance >= plateau_threshold) & (safe_mask > 0))
 
         if len(xs) == 0:
             # 理论上只要 maximum_distance 有效就不会进入这里；保留兜底。
@@ -660,6 +669,8 @@ class CollisionAwareGraspPlanner:
                 reason="clearance_too_small",
                 safe_mask=safe_mask,
                 preferred_mask=preferred_mask,
+                planning_polygon=planning_polygon,
+                strategy_name=strategy_name,
             )
 
         return CollisionAwareGraspResult(
@@ -678,28 +689,30 @@ class CollisionAwareGraspPlanner:
             reason="ok",
             safe_mask=safe_mask,
             preferred_mask=preferred_mask,
+            planning_polygon=planning_polygon,
+            strategy_name=strategy_name,
         )
 
     @staticmethod
-    def build_top_core_mask(
+    def classify_core_shape(
         target_mask: np.ndarray,
         *,
         shape_name: str | None = None,
-    ) -> np.ndarray:
-        """从完整实例 mask 提取更接近顶部可抓区域的核心。
-
-        侧面投影通常位于目标轮廓外圈，距离变换后会被优先剔除。
-        不同形状使用不同保守比例：平面多边形收缩更强，圆柱/圆锥/球
-        保留更大的核心以避免把旋转对称物体缩得过小。
-        """
-        mask = (np.asarray(target_mask) > 0).astype(np.uint8) * 255
-        if not np.any(mask):
-            return mask
-
+    ) -> str:
+        """选择几何策略；单个object类别无法区分真实球/圆柱/锥体。"""
         name = str(shape_name or "").strip().lower()
+        if any(token in name for token in ("sphere", "ball", "球")):
+            return "round"
+        if any(token in name for token in ("cube", "rectangular", "cuboid", "正方体", "长方体")):
+            return "quadrilateral"
+        if any(token in name for token in ("cylinder", "cone", "圆柱", "圆锥", "圆台")):
+            return "round"
+        if any(token in name for token in ("pyramid", "棱锥", "prism", "棱柱")):
+            return "polygon"
+        mask = (np.asarray(target_mask) > 0).astype(np.uint8) * 255
         # 顶部模型常常只有一个 object 类别；此时用 mask 的几何特征
         # 选择策略，避免依赖尚未训练好的形状标签。
-        if not name or name in {"object", "unknown", "item"}:
+        if np.any(mask):
             contour_list, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             contour = max(contour_list, key=cv2.contourArea) if contour_list else None
             if contour is not None:
@@ -719,24 +732,33 @@ class CollisionAwareGraspPlanner:
                 # 正方形的圆度约为0.785，不能把方块误判成圆形；
                 # 只有明显接近圆/椭圆的轮廓才使用圆柱/球策略。
                 if circularity >= 0.88:
-                    name = "cylinder_or_sphere"
+                    return "round"
                 elif len(approx) == 3:
                     # 三角轮廓更像圆锥/棱锥的顶部投影，避免套用长方体策略。
-                    name = "pyramid_or_cone"
+                    return "triangle"
                 elif len(approx) == 4:
-                    name = "rectangular_prism"
+                    return "quadrilateral"
                 else:
-                    name = "polygon_prism"
+                    return "polygon"
+        return "polygon"
 
-        if any(token in name for token in ("sphere", "ball", "球")):
-            ratio = 0.38
-        elif any(token in name for token in ("cylinder", "cone", "圆柱", "圆锥", "圆台")):
-            ratio = 0.45
-        elif any(token in name for token in ("pyramid", "棱锥", "prism", "棱柱")):
-            ratio = 0.52
-        else:
-            # cube/rectangular prism/未知形状：保守地去掉外圈侧面投影。
-            ratio = 0.58
+    @staticmethod
+    def build_top_core_mask(
+        target_mask: np.ndarray,
+        *,
+        shape_name: str | None = None,
+        config: dict | None = None,
+    ) -> np.ndarray:
+        """保留历史接口名：提取距离核心，不承诺该区域等于物体顶面。"""
+        mask = (np.asarray(target_mask) > 0).astype(np.uint8) * 255
+        if not np.any(mask):
+            return mask
+        cfg = config or {}
+        strategy = CollisionAwareGraspPlanner.classify_core_shape(mask, shape_name=shape_name)
+        defaults = {"quadrilateral": 0.58, "polygon": 0.52, "triangle": 0.45, "round": 0.38}
+        ratio = float(cfg.get("ratios", {}).get(strategy, defaults[strategy]))
+        if not 0.0 < ratio < 1.0:
+            raise ValueError("shape_core.ratios 必须在0与1之间")
 
         distance = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
         maximum = float(np.max(distance))

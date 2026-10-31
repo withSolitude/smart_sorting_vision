@@ -453,6 +453,7 @@ def plan_parallel_edge_grasp_options(
     default_grasp_axis_robot_deg: float = 0.0,
     yaw_alignment_offset_deg: float = 0.0,
     safe_mask: np.ndarray | None = None,
+    preserve_grasp_point: bool = False,
     width_slack_ratio: float = 0.15,
     support_tolerance_px: float = 3.0,
     min_contact_span_px: float = 6.0,
@@ -536,7 +537,7 @@ def plan_parallel_edge_grasp_options(
         seen_robot_axes.append(float(cand.axis_robot_deg))
 
         grasp_override = _closest_safe_point(
-            cand.ideal_point,
+            preferred if preserve_grasp_point else cand.ideal_point,
             preferred,
             safe_mask=safe_mask,
             n=cand.n,
@@ -590,6 +591,7 @@ def plan_grasp_axis(
     default_grasp_axis_robot_deg: float = 0.0,
     yaw_alignment_offset_deg: float = 0.0,
     safe_mask: np.ndarray | None = None,
+    preserve_grasp_point: bool = False,
     width_slack_ratio: float = 0.15,
     support_tolerance_px: float = 3.0,
     min_contact_span_px: float = 6.0,
@@ -726,7 +728,8 @@ def plan_grasp_axis(
         ),
     )
     grasp_override = _closest_safe_point(
-        best.ideal_point,
+        # 核心策略已选好中心，方向规划只负责Yaw，不再把点拉回支撑中面。
+        preferred if preserve_grasp_point else best.ideal_point,
         preferred,
         safe_mask=safe_mask,
         n=best.n,

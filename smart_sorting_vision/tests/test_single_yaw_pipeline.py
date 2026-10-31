@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
+import cv2
 
 from communication.sorting_protocol import Mode, SortingFrame, SortingProtocol
 from vision.calibration.yaw_servo import YawServoCalibration
@@ -105,6 +106,44 @@ class SingleYawPipelineTests(unittest.TestCase):
             self.assertEqual(engagement.call_count, 2)
             for call in engagement.call_args_list:
                 self.assertAlmostEqual(call.args[2], -120.0)
+
+    def test_final_candidate_keeps_core_point_but_measures_full_object(self):
+        # 完整走_build_candidates，避免只测试核心函数而漏掉后续覆盖抓点的问题。
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            (directory / "model.pt").touch()
+            transform = PixelToRobotTransform(np.diag([0.25, 0.25, 1.0]), 220, 160)
+            transform.save(directory / "mapping.json")
+            with patch("vision.pipeline.top_pick_pipeline.TopSegmenter"):
+                pipeline = TopPickPipeline(
+                    model_path=directory / "model.pt", calibration_path=directory / "mapping.json",
+                    yaw_servo_calibration=calibration(), grasp_search_enabled=False,
+                    preopen_configured=True, preopen_command_min_mm=13.0, preopen_command_max_mm=77.0,
+                    preopen_margin_mm=8.0, preopen_closed_servo_deg=0.710004610,
+                    preopen_standby_servo_deg=-89.283079760, gripper_collision_enabled=False,
+                    obstacle_margin=0, border_margin=0, min_safe_area=1, min_clearance=0.0,
+                )
+            polygon = np.array([
+                [70, 55], [150, 55], [150, 70], [184, 70],
+                [184, 100], [150, 100], [150, 115], [70, 115],
+            ], dtype=np.float32)
+            initial = pipeline.planner.plan(polygon, [], (160, 220, 3), shape_name="object")
+            with patch("vision.pipeline.top_pick_pipeline.evaluate_target_engagement",
+                       wraps=evaluate_target_engagement) as engagement:
+                candidates = pipeline._build_candidates(
+                    np.zeros((160, 220, 3), dtype=np.uint8),
+                    [{"polygon": polygon, "confidence": 0.9, "class_name": "object"}],
+                )
+            self.assertEqual(len(candidates), 1)
+            candidate = candidates[0]
+            self.assertEqual(candidate.grasp_pixel, initial.grasp_point)
+            self.assertLess(candidate.grasp_pixel[0], 115)
+            self.assertNotEqual(candidate.grasp_strategy, "full_mask")
+            self.assertLess(cv2.contourArea(candidate.grasp_core_polygon), cv2.contourArea(polygon))
+            full_robot = transform.pixels_to_robot(polygon, apply_tcp_offset=False)
+            self.assertGreater(engagement.call_count, 0)
+            for call in engagement.call_args_list:
+                np.testing.assert_allclose(call.args[0], full_robot)
 
     def consensus_pipeline(self):
         pipeline = self.pipeline()

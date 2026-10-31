@@ -96,6 +96,9 @@ class TopPickCandidate:
     search_safe_count: int
 
     score: float
+    # 调试直接显示流水线实际使用的几何核心，不另行重算一套。
+    grasp_core_polygon: np.ndarray | None = None
+    grasp_strategy: str = "full_mask"
 
 
 @dataclass
@@ -176,6 +179,7 @@ class TopPickPipeline:
         border_margin: int = 12,
         min_safe_area: int = 50,
         min_clearance: float = 3.0,
+        shape_core_config: dict | None = None,
         consensus_window: int = 2,
         consensus_required: int = 2,
         max_track_center_shift_px: float = 55.0,
@@ -279,6 +283,7 @@ class TopPickPipeline:
                     min_safe_area,
                 min_clearance=
                     min_clearance,
+                shape_core_config=shape_core_config,
             )
         )
 
@@ -645,6 +650,11 @@ class TopPickPipeline:
 
             base_grasp_x, base_grasp_y = grasp_result.grasp_point
             center_pixel = self._polygon_center(target_polygon)
+            planning_polygon = (
+                grasp_result.planning_polygon
+                if grasp_result.planning_polygon is not None else target_polygon
+            )
+            use_core = grasp_result.strategy_name not in {"disabled", "safe_fallback", "full_mask"}
 
             # ---------- 先求一个几何上合理的基础姿态 ----------
             orientation = None
@@ -657,7 +667,7 @@ class TopPickPipeline:
                         else grasp_result.safe_mask
                     )
                     orientation = plan_grasp_axis(
-                        polygon=target_polygon,
+                        polygon=planning_polygon,
                         grasp_pixel=(base_grasp_x, base_grasp_y),
                         transform=self.transform,
                         grip_long_sides=self.grip_long_sides,
@@ -665,6 +675,7 @@ class TopPickPipeline:
                         default_grasp_axis_robot_deg=self.default_grasp_axis_robot_deg,
                         yaw_alignment_offset_deg=self.yaw_alignment_offset_deg,
                         safe_mask=orientation_safe_mask,
+                        preserve_grasp_point=use_core,
                         width_slack_ratio=self.grasp_width_slack_ratio,
                         support_tolerance_px=self.grasp_support_tolerance_px,
                         min_contact_span_px=self.grasp_min_contact_span_px,
@@ -694,12 +705,13 @@ class TopPickPipeline:
                     # 例如长方形会同时得到两组互相约90°的闭合轴：夹长边、夹短边。
                     # 这两组在几何上都是真正的平行夹爪抓取，不再因为开口更大而被提前丢弃。
                     parallel_edge_options = plan_parallel_edge_grasp_options(
-                        polygon=target_polygon,
+                        polygon=planning_polygon,
                         grasp_pixel=(base_grasp_x, base_grasp_y),
                         transform=self.transform,
                         default_grasp_axis_robot_deg=self.default_grasp_axis_robot_deg,
                         yaw_alignment_offset_deg=self.yaw_alignment_offset_deg,
                         safe_mask=orientation_safe_mask,
+                        preserve_grasp_point=use_core,
                         width_slack_ratio=self.grasp_width_slack_ratio,
                         support_tolerance_px=self.grasp_support_tolerance_px,
                         min_contact_span_px=self.grasp_min_contact_span_px,
@@ -949,6 +961,13 @@ class TopPickPipeline:
                     reject("candidate_robot_to_pixel_failed", yaw=yaw_deg)
                     continue
                 candidate_px = (float(candidate_px_f[0]), float(candidate_px_f[1]))
+                if use_core:
+                    # 多姿态搜索也不能悄悄把抓点移出已选择的核心安全区域。
+                    px, py = int(round(candidate_px[0])), int(round(candidate_px[1]))
+                    mask = grasp_result.preferred_mask
+                    if not (0 <= py < mask.shape[0] and 0 <= px < mask.shape[1] and mask[py, px]):
+                        reject("grasp_center_outside_core", px=candidate_px, yaw=yaw_deg)
+                        continue
 
                 # 中心仍必须落在目标本体内，不能为了避障把夹爪中心移到物体外面。
                 inside = cv2.pointPolygonTest(
@@ -1216,6 +1235,8 @@ class TopPickPipeline:
                     search_trial_count=0,  # 结束搜索后统一写入
                     search_safe_count=0,
                     score=float(score),
+                    grasp_core_polygon=planning_polygon.copy() if use_core else None,
+                    grasp_strategy=grasp_result.strategy_name,
                 )
 
                 trial_record = {
