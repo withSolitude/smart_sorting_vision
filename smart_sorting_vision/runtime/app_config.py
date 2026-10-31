@@ -6,6 +6,7 @@ from typing import Any
 
 import yaml
 from vision.calibration.yaw_servo import YawServoCalibration
+from vision.grasp.outward_radial_compensation import OutwardRadialCompensator
 
 
 class ConfigError(ValueError):
@@ -165,6 +166,11 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
         YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"calibration.yaw_servo 无效: {exc}") from exc
+
+    try:
+        OutwardRadialCompensator.validate_config(cfg["vision"]["top"].get("outward_radial_compensation"))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"vision.top.outward_radial_compensation 无效：{exc}") from exc
 
     top_tcp_comp = cfg["vision"]["top"].get("yaw_tcp_compensation", {})
     if bool(top_tcp_comp.get("enabled", False)):

@@ -116,6 +116,14 @@ vision:
     min_safe_area_px: 50  # 安全区域最小面积（像素）。
     min_clearance_px: 3.0  # 抓取点最小安全间隙（像素）。
 
+    # p_new = p + gain * (p - center)，仅向外补偿最终抓点；不改变原抓长边/方向算法。
+    outward_radial_compensation:
+      enabled: true  # 是否启用向外径向补偿；false恢复原抓取点。
+      gain: 0.02  # 非负系数：离中心400像素时向外补8像素；0不补偿，禁止负值。
+      max_shift_px: 20.0  # 单次向外位移上限（像素）；0表示位移为0。
+      center_full_px: null  # null读取去畸变内参new_camera_matrix主点；也可填实测垂足[x,y]。
+      # 手填坐标属于完整去畸变图，程序自动减当前safe_roi原点；不能填ROI中心。
+
     # 动态抓取Yaw。这里的角度是“夹爪闭合轴在机械XY坐标系中的方向”，
     # 上位机不直接假设舵机安装零位。下位机再把该方向换算成真实舵机角度。
     grasp_orientation:

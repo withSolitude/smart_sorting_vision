@@ -25,6 +25,7 @@ from vision.grasp.orientation_planner import (
     plan_parallel_edge_grasp_options,
 )
 from vision.grasp.gripper_footprint import GripperFootprintModel
+from vision.grasp.outward_radial_compensation import OutwardRadialCompensator
 from vision.grasp.claw_preopen_profile import ClawPreopenProfile
 from vision.grasp.grasp_pose_search import (
     axis_vectors,
@@ -96,6 +97,9 @@ class TopPickCandidate:
     search_safe_count: int
 
     score: float
+    # 补偿前的最终候选点，供预览对比；正式XY和grasp_pixel都使用补偿后的点。
+    uncompensated_grasp_pixel: tuple[float, float] | None = None
+    radial_shift_px: float = 0.0
 
 
 @dataclass
@@ -169,6 +173,8 @@ class TopPickPipeline:
         model_path: str | Path,
         calibration_path: str | Path,
         camera_config: dict | None = None,
+        top_intrinsics_path: str | Path | None = None,
+        outward_radial_config: dict | None = None,
         conf: float = 0.35,
         imgsz: int = 832,
         device=0,
@@ -287,6 +293,11 @@ class TopPickPipeline:
                 self.calibration_path,
                 camera_config=camera_config,
             )
+        )
+
+        self.radial_compensator = OutwardRadialCompensator.from_config(
+            outward_radial_config, camera_config=camera_config,
+            intrinsics_path=top_intrinsics_path,
         )
 
         self.consensus = TopPickConsensus(
@@ -943,6 +954,10 @@ class TopPickPipeline:
                     reject("candidate_robot_to_pixel_failed", yaw=yaw_deg)
                     continue
                 candidate_px = (float(candidate_px_f[0]), float(candidate_px_f[1]))
+                # 姿态与局部位移求完后只补偿一次，后续方向规划不再覆盖该点。
+                uncompensated_px = candidate_px
+                candidate_px = self.radial_compensator.apply(candidate_px)
+                radial_shift_px = math.dist(uncompensated_px, candidate_px)
 
                 # 中心仍必须落在目标本体内，不能为了避障把夹爪中心移到物体外面。
                 inside = cv2.pointPolygonTest(
@@ -956,6 +971,8 @@ class TopPickPipeline:
                         px=candidate_px,
                         yaw=yaw_deg,
                         meta={
+                            "uncompensated_pixel": uncompensated_px,
+                            "radial_shift_px": float(radial_shift_px),
                             "yaw_offset_deg": float(yaw_offset_deg),
                             "longitudinal_offset_mm": float(longitudinal_offset_mm),
                             "closing_offset_mm": float(closing_offset_mm),
@@ -963,7 +980,24 @@ class TopPickPipeline:
                     )
                     continue
 
-                # 先按该 yaw 重新计算真实物体宽度；旋转夹爪后开口必须跟着变化。
+                if radial_shift_px > 0.0:
+                    px, py = int(round(candidate_px[0])), int(round(candidate_px[1]))
+                    if not (0 <= py < frame.shape[0] and 0 <= px < frame.shape[1]
+                            and grasp_result.safe_mask[py, px]):
+                        reject("radial_compensation_outside_safe_region", px=candidate_px, yaw=yaw_deg)
+                        continue
+                    try:
+                        candidate_center_robot = np.asarray(self.transform.pixel_to_robot(
+                            *candidate_px, apply_tcp_offset=False,
+                        ), dtype=np.float64)
+                    except (ValueError, RuntimeError):
+                        reject("compensated_pixel_transform_failed", px=candidate_px, yaw=yaw_deg)
+                        continue
+                    if not np.all(np.isfinite(candidate_center_robot)):
+                        reject("compensated_xy_not_finite", px=candidate_px, yaw=yaw_deg)
+                        continue
+
+                # 先按补偿后的点和该yaw重新估宽、算开口，再做完整夹指检查。
                 # 初次用零开口只读取 width，然后再算动态 preopen 并做完整接触检查。
                 width_probe = evaluate_target_engagement(
                     target_robot,
@@ -1210,6 +1244,8 @@ class TopPickPipeline:
                     search_trial_count=0,  # 结束搜索后统一写入
                     search_safe_count=0,
                     score=float(score),
+                    uncompensated_grasp_pixel=uncompensated_px if self.radial_compensator.enabled else None,
+                    radial_shift_px=float(radial_shift_px),
                 )
 
                 trial_record = {

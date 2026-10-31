@@ -106,6 +106,88 @@ class SingleYawPipelineTests(unittest.TestCase):
             for call in engagement.call_args_list:
                 self.assertAlmostEqual(call.args[2], -120.0)
 
+    def radial_pipeline(self, config):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        directory = Path(folder.name)
+        (directory / "model.pt").touch()
+        PixelToRobotTransform(np.diag([0.25, 0.25, 1.0]), 200, 200).save(directory / "mapping.json")
+        with patch("vision.pipeline.top_pick_pipeline.TopSegmenter"):
+            pipeline = TopPickPipeline(
+                model_path=directory / "model.pt", calibration_path=directory / "mapping.json",
+                camera_config={"width": 200, "height": 200, "safe_roi": [0, 0, 200, 200]},
+                outward_radial_config=config, yaw_servo_calibration=calibration(),
+                default_grasp_axis_robot_deg=0.0, grasp_search_enabled=False,
+                preopen_configured=True, preopen_command_min_mm=13.0, preopen_command_max_mm=77.0,
+                preopen_margin_mm=8.0, preopen_closed_servo_deg=0.710004610,
+                preopen_standby_servo_deg=-89.283079760, gripper_collision_enabled=False,
+                obstacle_margin=0, border_margin=0, min_safe_area=1, min_clearance=0.0,
+            )
+        polygon = np.array([[80, 80], [120, 80], [120, 120], [80, 120]], np.float32)
+        pipeline.segmenter.get_objects.return_value = [{"polygon": polygon, "confidence": 0.9, "class_name": "object"}]
+        return pipeline
+
+    def test_outward_compensation_survives_direction_planning_and_reaches_wire_once(self):
+        pipeline = self.radial_pipeline({
+            "enabled": True, "gain": 0.1, "max_shift_px": 10.0, "center_full_px": [0, 100],
+        })
+        frame = np.zeros((200, 200, 3), np.uint8)
+        with patch("vision.pipeline.top_pick_pipeline.evaluate_target_engagement",
+                   wraps=evaluate_target_engagement) as engagement, \
+             patch.object(pipeline.gripper_footprint, "check", wraps=pipeline.gripper_footprint.check) as footprint:
+            self.assertFalse(pipeline.process(frame).ready)
+            result = pipeline.process(frame)
+        self.assertTrue(result.ready)
+        candidate = result.candidates[0]
+        # 原方向规划的中面是(100,100)，补偿必须在它之后生效并保持到共识/协议。
+        self.assertEqual(candidate.uncompensated_grasp_pixel, (100.0, 100.0))
+        self.assertEqual(candidate.grasp_pixel, (110, 100))
+        self.assertAlmostEqual(candidate.radial_shift_px, 10.0)
+        self.assertAlmostEqual(result.x_mm, 27.5)
+        self.assertAlmostEqual(result.y_mm, 25.0)
+        for call in engagement.call_args_list:
+            np.testing.assert_allclose(call.args[1], [27.5, 25.0])
+        self.assertEqual(footprint.call_args.kwargs["grasp_pixel"], (110.0, 100.0))
+        wire = SortingProtocol.unpack(SortingProtocol.pack(SortingFrame(
+            mode=Mode.PICK_TARGET, x_mm=result.x_mm, y_mm=result.y_mm, yaw_deg=result.yaw_deg,
+        )))
+        self.assertEqual((wire.x_mm, wire.y_mm), (27.5, 25.0))
+
+    def test_outward_point_outside_target_is_rejected_without_inward_fallback(self):
+        pipeline = self.radial_pipeline({
+            "enabled": True, "gain": 1.0, "max_shift_px": 1000.0, "center_full_px": [0, 100],
+        })
+        result = pipeline.process(np.zeros((200, 200, 3), np.uint8))
+        self.assertEqual(result.candidate_count, 0)
+        self.assertFalse(result.ready)
+        self.assertTrue(any(r["reason"] == "grasp_center_outside_target"
+                            for r in pipeline.last_gripper_rejections))
+
+    def test_disabled_outward_compensation_preserves_original_candidate(self):
+        pipeline = self.radial_pipeline({"enabled": False})
+        frame = np.zeros((200, 200, 3), np.uint8)
+        candidate = pipeline.process(frame).candidates[0]
+        self.assertEqual(candidate.grasp_pixel, (100, 100))
+        self.assertEqual((candidate.x_mm, candidate.y_mm), (25.0, 25.0))
+        self.assertIsNone(candidate.uncompensated_grasp_pixel)
+        self.assertEqual(candidate.radial_shift_px, 0.0)
+
+    def test_outward_point_must_stay_in_original_safe_region(self):
+        pipeline = self.radial_pipeline({
+            "enabled": True, "gain": 0.1, "max_shift_px": 10.0, "center_full_px": [0, 100],
+        })
+        frame = np.zeros((200, 200, 3), np.uint8)
+        polygon = pipeline.segmenter.get_objects.return_value[0]["polygon"]
+        planned = pipeline.planner.plan(polygon, [], frame.shape)
+        # 模拟邻物/边界把补偿落点排除；原始中心(100,100)仍然合法。
+        planned.safe_mask[100, 110] = 0
+        with patch.object(pipeline.planner, "plan", return_value=planned):
+            result = pipeline.process(frame)
+        self.assertFalse(result.ready)
+        self.assertEqual(result.candidate_count, 0)
+        self.assertTrue(any(r["reason"] == "radial_compensation_outside_safe_region"
+                            for r in pipeline.last_gripper_rejections))
+
     def consensus_pipeline(self):
         pipeline = self.pipeline()
         pipeline.transform = SimpleNamespace(check_frame=lambda _: None)
