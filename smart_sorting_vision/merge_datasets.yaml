@@ -1,8 +1,0 @@
-# 同一数据集任务下，通常只需要修改 dataset_a 和 dataset_b 两个名字。
-dataset_root: data/datasets/top_seg  # 名称相对这个目录；相对路径从本脚本所在工程根目录解析。
-dataset_a: v2_exports  # 第一个已标注数据集，可以包含 dataset/data.yaml 子目录。
-dataset_b: v3_exports  # 第二个已标注数据集；也可以填写完整绝对路径。
-
-# 例：dataset_b: E:/gongxun/27/sam3/outputs_interactive_v3
-# 自动输出到 dataset_root/merged/两个名字_时间戳，不覆盖原数据或旧合并结果。
-# 输入必须是YOLO检测/分割导出数据；仅有照片的采集目录不能直接合并训练。
