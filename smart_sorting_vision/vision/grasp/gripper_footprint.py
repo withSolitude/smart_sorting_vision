@@ -517,7 +517,6 @@ class GripperFootprintModel:
         other_polygons: list[np.ndarray],
         image_shape,
         context: GripperCollisionContext | None = None,
-        target_mask: np.ndarray | None = None,
     ) -> GripperFootprintCheck:
         if not self.enabled:
             return GripperFootprintCheck(
@@ -557,6 +556,8 @@ class GripperFootprintModel:
             include_opening_uncertainty=False,
         )
         nominal_px = self._robot_polygons_to_pixels(nominal_robot)
+        nominal_mask = self._polygons_to_mask(nominal_px, image_shape)
+
         # 对其他货物的安全包络：真实厚度 + 物体安全余量 + 开口标定误差。
         object_safe_robot = self._make_footprint_robot(
             center_robot_mm=center_robot,
@@ -566,6 +567,7 @@ class GripperFootprintModel:
             include_opening_uncertainty=True,
         )
         object_safe_px = self._robot_polygons_to_pixels(object_safe_robot)
+        object_safe_mask = self._polygons_to_mask(object_safe_px, image_shape)
 
         # 对固定挡板/图像边界仍使用 wall margin 扩张包络。
         wall_safe_robot = self._make_footprint_robot(
@@ -576,35 +578,7 @@ class GripperFootprintModel:
             include_opening_uncertainty=True,
         )
         wall_safe_px = self._robot_polygons_to_pixels(wall_safe_robot)
-        if not nominal_px or not object_safe_px or not wall_safe_px:
-            return GripperFootprintCheck(False, "footprint_pixel_transform_failed", nominal_px, 0.0, 0.0)
-        # 多点×方向时只光栅化包络附近的小窗口；全图障碍距离场仍由context共享。
-        # 整数平移不改变像素覆盖，返回给预览的多边形仍为完整图坐标。
-        points = np.concatenate([*nominal_px, *object_safe_px, *wall_safe_px])
-        h, w = image_shape[:2]
-        x0, y0 = np.maximum(0, np.floor(points.min(axis=0)).astype(int) - 2)
-        x1, y1 = np.minimum([w, h], np.ceil(points.max(axis=0)).astype(int) + 3)
-        if x1 <= x0 or y1 <= y0:
-            return GripperFootprintCheck(False, "footprint_outside_image", nominal_px, 0.0, 0.0)
-        origin = np.array([x0, y0], dtype=np.float32)
-        local_shape = (int(y1 - y0), int(x1 - x0))
-
-        def raster(polygons):
-            return self._polygons_to_mask([p - origin for p in polygons], local_shape)
-
-        nominal_mask = raster(nominal_px)
-        object_safe_mask = raster(object_safe_px)
-        wall_safe_mask = raster(wall_safe_px)
-        if target_mask is not None:
-            # 只检查两片指爪；可选主体位于目标上方，不参与目标自身侵入检查。
-            finger_mask = raster(nominal_px[:2]) if self.body_enabled else nominal_mask
-            overlap = int(np.count_nonzero(cv2.bitwise_and(finger_mask, target_mask[y0:y1, x0:x1])))
-            if overlap > self.object_overlap_tolerance_px:
-                return GripperFootprintCheck(
-                    safe=False, reason="target_finger_collision",
-                    footprint_polygons_px=nominal_px, clearance_px=0.0, clearance_mm=0.0,
-                    object_collision_pixels=overlap,
-                )
+        wall_safe_mask = self._polygons_to_mask(wall_safe_px, image_shape)
 
         # 托盘四点标定是“允许区域”，不能再当 forbidden zone 填满。
         # 这里用仅包含开口误差的实际指爪几何，再要求距离四边形边界 >= wall_margin_mm。
@@ -652,7 +626,7 @@ class GripperFootprintModel:
                 image_shape=image_shape,
             )
 
-        other_mask = context.other_mask[y0:y1, x0:x1]
+        other_mask = context.other_mask
         object_overlap = cv2.bitwise_and(object_safe_mask, other_mask)
         object_collision_pixels = int(np.count_nonzero(object_overlap))
         if object_collision_pixels > self.object_overlap_tolerance_px:
@@ -665,7 +639,7 @@ class GripperFootprintModel:
                 object_collision_pixels=object_collision_pixels,
             )
 
-        wall_mask = context.wall_mask[y0:y1, x0:x1]
+        wall_mask = context.wall_mask
         wall_overlap = cv2.bitwise_and(wall_safe_mask, wall_mask)
         wall_collision_pixels = int(np.count_nonzero(wall_overlap))
         if wall_collision_pixels > 0:
@@ -678,12 +652,7 @@ class GripperFootprintModel:
                 wall_collision_pixels=wall_collision_pixels,
             )
 
-        if context.distance_to_obstacle is None:
-            clearance_px = float(np.hypot(w, h))
-        elif np.any(nominal_mask):
-            clearance_px = float(np.min(context.distance_to_obstacle[y0:y1, x0:x1][nominal_mask > 0]))
-        else:
-            clearance_px = 0.0
+        clearance_px = self._clearance_from_context(nominal_mask, context)
         mm_per_px = self._mm_per_px_at(grasp_pixel)
         clearance_mm = float(clearance_px * mm_per_px)
 

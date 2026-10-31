@@ -194,7 +194,6 @@ def build_pipeline(cfg: dict, comp: YawTcpCompensator) -> TopPickPipeline:
         border_margin=top_vision_cfg["border_margin_px"],
         min_safe_area=top_vision_cfg["min_safe_area_px"],
         min_clearance=top_vision_cfg["min_clearance_px"],
-        geometric_grasp_config=top_vision_cfg.get("geometric_grasp"),
         consensus_window=consensus["window"],
         consensus_required=consensus["required"],
         max_track_center_shift_px=consensus["max_track_center_shift_px"],

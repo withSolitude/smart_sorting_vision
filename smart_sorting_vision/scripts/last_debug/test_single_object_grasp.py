@@ -12,7 +12,7 @@
 按键：
     [ / ]  切换可显示的候选物体
     Space    在下位机已收到物理 START 且画面 READY 时实抓一次
-    R      清空多帧稳定计数并恢复自动选择
+    R      清空多帧稳定计数
     P      暂停/继续画面
     S      保存当前标注图
     I      在终端打印当前抓取规划
@@ -48,8 +48,6 @@ def _build_pipeline(cfg: dict) -> TopPickPipeline:
 
 
 def _draw_polygon(image: np.ndarray, polygon, color, thickness: int = 2) -> None:
-    if polygon is None:
-        return
     points = np.asarray(polygon, dtype=np.float32).reshape(-1, 1, 2)
     if len(points) >= 2:
         cv2.polylines(
@@ -168,15 +166,11 @@ def _select_candidate(result, selected_index: int | None):
     return max(candidates, key=lambda c: float(c.score))
 
 
-def _print_candidate(candidate, yaw: YawServoCalibration, point_seeds: list[dict]) -> None:
+def _print_candidate(candidate, yaw: YawServoCalibration) -> None:
     physical = yaw.physical_axis_deg(float(candidate.yaw_deg))
     servo = yaw.command_deg(float(candidate.yaw_deg))
     print("[GRASP PLAN]")
     print(f"  object_index = {candidate.object_index}")
-    print(f"  strategy     = {getattr(candidate, 'grasp_strategy', 'full_mask')}")
-    print(f"  point_source = {getattr(candidate, 'grasp_point_source', 'legacy')}")
-    print(f"  point_seeds  = {len(point_seeds)}")
-    print(f"  full_center  = ({candidate.center_pixel[0]:.2f}, {candidate.center_pixel[1]:.2f})")
     print(f"  pixel        = ({candidate.grasp_pixel[0]}, {candidate.grasp_pixel[1]})")
     print(f"  robot_xy_mm  = ({candidate.x_mm:.3f}, {candidate.y_mm:.3f})")
     print(f"  yaw_axis_deg = {candidate.yaw_deg:+.3f}")
@@ -185,10 +179,7 @@ def _print_candidate(candidate, yaw: YawServoCalibration, point_seeds: list[dict
     print(f"  preopen_mm   = {candidate.preopen_mm}")
     print(f"  width_mm     = {candidate.grasp_width_mm}")
     print(f"  clearance_mm = {candidate.gripper_clearance_mm:.3f}")
-    print(f"  balance_mm   = {getattr(candidate, 'contact_balance_mm', 0.0):.3f}")
     print(f"  score        = {candidate.score:.4f}")
-    for seed in point_seeds:
-        print(f"  seed         = {seed['pixel']} source={seed['source']} clearance={seed['clearance_px']:.1f}px")
 
 
 def parse_args() -> argparse.Namespace:
@@ -225,12 +216,6 @@ def main() -> int:
     )
     camera = TopCamera()
     pipeline = _build_pipeline(cfg)
-    # 启动时显示实际代码和配置路径，便于排查运行了旧目录或旧分支。
-    print(f"[SOURCE] preview={Path(__file__).resolve()}")
-    print(f"[SOURCE] pipeline={Path(sys.modules[TopPickPipeline.__module__].__file__).resolve()}")
-    print(f"[CONFIG] {config_path.resolve()}")
-    print(f"[GEOMETRIC GRASP] {getattr(pipeline, 'geometric_grasp_config', {})}")
-    print(f"[FINGER COLLISION] enabled={pipeline.gripper_footprint.enabled}")
     window = "SINGLE OBJECT GRASP PLAN"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window, 1500, 900)
@@ -253,10 +238,9 @@ def main() -> int:
     fps = 0.0
 
     print("[INFO] 启动时只打开顶部相机；按 Space 才会打开 STM32 并执行一次实抓。")
-    print("[INFO] 绿色=完整轮廓/最终抓取点，橙点=几何候选点，蓝色十字=完整轮廓中心。")
-    print("[INFO] 紫色=夹爪闭合轴，黄色=夹爪纵向轴；中心连线显示抓取点的修正量。")
+    print("[INFO] 绿色=目标轮廓/抓取点，紫色=夹爪闭合轴，青色=夹爪纵向轴。")
     print("[INFO] 实抓前必须先按下机械物理 START，并等待 READY。")
-    print("[INFO] [ / ] 切换预览物体，Space 实抓READY目标，R 重置并恢复自动选择，P 暂停，S 保存，I 打印。")
+    print("[INFO] [ / ] 切换物体，Space 实抓，R 重置，P 暂停，S 保存，I 打印，Q/ESC 退出。")
 
     def load_pick_helpers():
         """延迟加载已验证的单次抓取事务，避免预览启动时打开串口。"""
@@ -342,12 +326,6 @@ def main() -> int:
             view = last_frame.copy()
             result = last_result
             candidate = _select_candidate(result, selected_index)
-            # 画出同一流水线实际检查过的点，不能在预览里另算一套抓点。
-            visible_object = candidate.object_index if candidate is not None else selected_index
-            point_seeds = [
-                seed for seed in getattr(pipeline, "last_grasp_point_seeds", [])
-                if visible_object is None or int(seed["object_index"]) == int(visible_object)
-            ]
 
             # 其它候选只画细轮廓，当前选中的目标突出显示。
             for other in getattr(result, "candidates", []) or []:
@@ -357,9 +335,6 @@ def main() -> int:
 
             if candidate is not None:
                 _draw_polygon(view, candidate.polygon, (0, 255, 0), 2)
-                center = tuple(int(round(v)) for v in candidate.center_pixel)
-                cv2.line(view, center, tuple(int(v) for v in candidate.grasp_pixel), (255, 180, 0), 2)
-                _draw_cross(view, center, (255, 80, 0), 8)
                 for footprint in candidate.gripper_footprint_polygons_px:
                     overlay = view.copy()
                     _draw_polygon(overlay, footprint, (0, 255, 0), 2)
@@ -381,27 +356,12 @@ def main() -> int:
                     cv2.LINE_AA,
                 )
 
-            # 不再画内缩轮廓：显示最大内接圆/主轴/几何中心等真实候选来源。
-            # 无可抓候选时仍显示这些橙点，便于区分“没生成点”和“空间检查未通过”。
-            for index, seed in enumerate(point_seeds):
-                point = tuple(int(round(v)) for v in seed["pixel"])
-                cv2.circle(view, point, 4, (0, 165, 255), -1, cv2.LINE_AA)
-                cv2.putText(
-                    view, f"{index + 1}:{seed['source']}",
-                    (point[0] + 6, point[1] + 14),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 165, 255), 1, cv2.LINE_AA,
-                )
-            if candidate is not None:
-                # 最终点覆盖在候选点上层，避免橙色实心圆遮住绿十字中心。
-                _draw_cross(view, candidate.grasp_pixel, (0, 255, 0), 12)
-
             ready = bool(getattr(result, "ready", False)) if result is not None else False
             panel = [
                 f"FPS={fps:.1f}  paused={paused}",
                 f"objects={0 if result is None else result.object_count}  candidates={0 if result is None else result.candidate_count}",
                 f"READY={ready}  consensus={0 if result is None else result.votes}/{0 if result is None else result.required_hits}",
                 f"selected={selected_index if selected_index is not None else 'best-score'}",
-                f"geometric point seeds={len(point_seeds)}",
                 f"MCU={'STARTED' if link_state['started'] else 'STOPPED/OFFLINE'}",
             ]
             if link_state["last_error"]:
@@ -409,14 +369,8 @@ def main() -> int:
             if candidate is not None:
                 physical_yaw = yaw_calibration.physical_axis_deg(float(candidate.yaw_deg))
                 servo_yaw = yaw_calibration.command_deg(float(candidate.yaw_deg))
-                center_shift = math.hypot(
-                    candidate.grasp_pixel[0] - candidate.center_pixel[0],
-                    candidate.grasp_pixel[1] - candidate.center_pixel[1],
-                )
                 panel.extend(
                     [
-                        f"strategy={getattr(candidate, 'grasp_strategy', 'full_mask')}  center shift={center_shift:.1f}px",
-                        f"source={getattr(candidate, 'grasp_point_source', 'legacy')}  balance={getattr(candidate, 'contact_balance_mm', 0.0):.2f} mm",
                         f"pixel=({candidate.grasp_pixel[0]},{candidate.grasp_pixel[1]})",
                         f"XY=({candidate.x_mm:.1f},{candidate.y_mm:.1f}) mm",
                         f"yaw axis={candidate.yaw_deg:+.1f}  physical={physical_yaw:+.1f}  servo={servo_yaw:+.1f}",
@@ -436,20 +390,11 @@ def main() -> int:
                 paused = not paused
             elif key in (ord("r"), ord("R")):
                 pipeline.reset()
-                selected_index = None
-                print("[INFO] consensus reset; restored automatic object selection")
+                print("[INFO] consensus reset")
             elif key == 32:
                 # 只有多帧 READY 且下位机收到机械 START 才允许实抓。
                 if result is None or not result.ready:
                     print("[BLOCK] 当前抓取规划还没有 READY，继续等待稳定结果。")
-                    continue
-                # 手动切换只选择预览；实抓沿用正式流水线的多帧共识目标。
-                # 若两者不是同一物体，明确提示，避免画面显示A却实际抓B。
-                ready_candidate = _select_candidate(result, None)
-                if candidate is None or ready_candidate is None or (
-                    int(candidate.object_index) != int(ready_candidate.object_index)
-                ):
-                    print("[BLOCK] 当前手动预览物体不是READY共识目标；按R恢复自动选择后再实抓。")
                     continue
                 try:
                     open_pick_link()
@@ -519,7 +464,7 @@ def main() -> int:
                 if candidate is None:
                     print("[GRASP PLAN] no safe candidate")
                 else:
-                    _print_candidate(candidate, yaw_calibration, point_seeds)
+                    _print_candidate(candidate, yaw_calibration)
     finally:
         if link is not None:
             try:

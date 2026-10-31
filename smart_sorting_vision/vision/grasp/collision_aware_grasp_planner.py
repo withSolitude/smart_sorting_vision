@@ -25,7 +25,6 @@ class CollisionAwareGraspResult:
     reason: str
 
     safe_mask: np.ndarray | None = None
-    safe_distance_map: np.ndarray | None = None
 
 
 class CollisionAwareGraspPlanner:
@@ -532,22 +531,45 @@ class CollisionAwareGraspPlanner:
             safe_distance
         )
 
-        # 基础入口保留深安全平台的中心；多点和方向联合选择由上层完成。
-        moments = cv2.moments(np.asarray(target_polygon, dtype=np.float32))
+        # 对长方形等目标，Distance Transform 的最大值经常不是唯一点，
+        # 而是在中轴附近形成一段“等高平台”。直接使用 minMaxLoc 返回的
+        # 第一个最大值会把抓取点随机偏到平台一端。
+        #
+        # 这里保留“安全优先”的原则：先取 clearance >= 90% 最大值的
+        # 深安全区域，再在这些点中选择最接近目标几何质心的点。
+        # 这样孤立规则物体会优先抓中心；若质心附近被障碍物/ROI边缘切掉，
+        # 仍然会退到最近的深安全点，而不是强行抓不安全的质心。
+        moments = cv2.moments(
+            np.asarray(target_polygon, dtype=np.float32)
+        )
         if abs(moments["m00"]) > 1e-9:
             center_x = float(moments["m10"] / moments["m00"])
             center_y = float(moments["m01"] / moments["m00"])
         else:
-            center_x, center_y = np.mean(np.asarray(target_polygon), axis=0)
-        ys, xs = np.nonzero(
-            (safe_mask > 0) & (safe_distance >= max(self.min_clearance, maximum_distance * 0.90))
+            pts = np.asarray(target_polygon, dtype=np.float32).reshape(-1, 2)
+            center_x = float(np.mean(pts[:, 0]))
+            center_y = float(np.mean(pts[:, 1]))
+
+        plateau_threshold = max(
+            float(self.min_clearance),
+            float(maximum_distance) * 0.90,
         )
-        if len(xs):
-            best_i = int(np.argmin((xs - center_x) ** 2 + (ys - center_y) ** 2))
-            grasp_x, grasp_y = int(xs[best_i]), int(ys[best_i])
+        ys, xs = np.nonzero(
+            (safe_distance >= plateau_threshold)
+            &
+            (safe_mask > 0)
+        )
+
+        if len(xs) == 0:
+            # 理论上只要 maximum_distance 有效就不会进入这里；保留兜底。
+            _, _, _, maximum_location = cv2.minMaxLoc(safe_distance)
+            grasp_x = int(maximum_location[0])
+            grasp_y = int(maximum_location[1])
         else:
-            _, _, _, point = cv2.minMaxLoc(safe_distance)
-            grasp_x, grasp_y = point
+            d2 = (xs.astype(np.float64) - center_x) ** 2 + (ys.astype(np.float64) - center_y) ** 2
+            best_i = int(np.argmin(d2))
+            grasp_x = int(xs[best_i])
+            grasp_y = int(ys[best_i])
 
         clearance = float(
             safe_distance[grasp_y, grasp_x]
@@ -629,5 +651,4 @@ class CollisionAwareGraspPlanner:
             safe_area=safe_area,
             reason="ok",
             safe_mask=safe_mask,
-            safe_distance_map=safe_distance,
         )

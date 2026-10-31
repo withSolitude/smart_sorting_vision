@@ -166,26 +166,6 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"calibration.yaw_servo 无效: {exc}") from exc
 
-    geometry_cfg = cfg["vision"]["top"].get("geometric_grasp")
-    if geometry_cfg is not None:
-        try:
-            if not isinstance(geometry_cfg["enabled"], bool) or not isinstance(geometry_cfg["local_contact"], bool):
-                raise ValueError("enabled/local_contact 必须为 true/false")
-            for key in ("max_points", "max_directions", "max_pose_trials"):
-                if int(geometry_cfg[key]) != geometry_cfg[key] or not 1 <= int(geometry_cfg[key]) <= 200:
-                    raise ValueError(f"{key} 必须为1..200的整数")
-            for key in ("min_spacing_px", "min_clearance_px", "width_penalty_per_mm", "balance_penalty_per_mm"):
-                if not 0 <= float(geometry_cfg[key]) < 1000:
-                    raise ValueError(f"{key} 必须为非负有限数值")
-            if not 0 < float(geometry_cfg["min_radius_ratio"]) < 1:
-                raise ValueError("min_radius_ratio 必须在0与1之间")
-            for key, limit in (("axis_sample_fractions", 0.5), ("round_yaw_offsets_deg", 180)):
-                values = geometry_cfg[key]
-                if not isinstance(values, list) or not values or any(not -limit <= float(v) <= limit for v in values):
-                    raise ValueError(f"{key} 必须为范围±{limit}内的非空数组")
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ConfigError(f"vision.top.geometric_grasp 无效: {exc}") from exc
-
     top_tcp_comp = cfg["vision"]["top"].get("yaw_tcp_compensation", {})
     if bool(top_tcp_comp.get("enabled", False)):
         try:
