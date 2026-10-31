@@ -217,7 +217,7 @@ def build_top_pipeline(cfg: dict) -> TopPickPipeline:
         border_margin=top_vision_cfg["border_margin_px"],
         min_safe_area=top_vision_cfg["min_safe_area_px"],
         min_clearance=top_vision_cfg["min_clearance_px"],
-        shape_core_config=top_vision_cfg.get("shape_core"),
+        geometric_grasp_config=top_vision_cfg.get("geometric_grasp"),
 
         consensus_window=top_consensus["window"],
         consensus_required=top_consensus["required"],

@@ -116,15 +116,20 @@ vision:
     min_safe_area_px: 50  # 安全区域最小面积（像素）。
     min_clearance_px: 3.0  # 抓取点最小安全间隙（像素）。
 
-    # 完整实例mask的几何核心启发式；不等于顶面识别，也不补偿物体高度。
-    # true时：核心选点和方向规划一起启用；false可对比原完整轮廓规划。
-    shape_core:
-      enabled: true  # 是否启用几何核心抓取；相机/ROI/标定无需重做。
-      ratios:  # 距离变换阈值/最大距离，越大收缩越强；范围(0,1)。
-        quadrilateral: 0.58  # 方块/长方体或近似四边形轮廓。
-        polygon: 0.52  # 其它多边形/已知棱柱棱锥。
-        triangle: 0.45  # 单object模型呈现的三角轮廓，不断言真实三维形状。
-        round: 0.38  # 球/圆柱/圆台等或近圆轮廓；保持对称中心。
+    # 完整轮廓上生成多个抓点，与对侧边方向联合选择；不做整体内缩或高度补偿。
+    geometric_grasp:
+      enabled: true  # 启用多点/多方向联合规划；false恢复原单点入口。
+      max_points: 6  # 每个物体最多保留的候选点数。
+      max_directions: 6  # 每个点最多尝试的真实支撑/圆形闭合方向数。
+      max_pose_trials: 36  # 每个物体最多检查的点×方向组合数。
+      min_spacing_px: 12.0  # 候选点最小间距，避免重复检查同一位置。
+      min_radius_ratio: 0.45  # 候选截面的内接半径至少达到最大半径的此比例，避开尖端。
+      min_clearance_px: 3.0  # 候选点到安全区域边缘的最小距离。
+      axis_sample_fractions: [-0.3, 0.0, 0.3]  # 沿主轴的截面采样，相对中心按全长比例偏移。
+      round_yaw_offsets_deg: [0, 90, 30, 120, 60, 150]  # 近圆轮廓相对参考方向尝试的闭合轴。
+      local_contact: true  # 按真实夹指纵向覆盖带估计局部截面宽度，适用于锥形/不规则轮廓。
+      width_penalty_per_mm: 0.15  # 安全和接触相近时优先较小开口，即矩形优先夹长边。
+      balance_penalty_per_mm: 1.0  # 两侧接触不均衡的惩罚系数。
 
     # 动态抓取Yaw。这里的角度是“夹爪闭合轴在机械XY坐标系中的方向”，
     # 上位机不直接假设舵机安装零位。下位机再把该方向换算成真实舵机角度。
@@ -219,7 +224,7 @@ vision:
       use_visual_to_command_matrix: true  # 是否用标定矩阵把视觉偏移转换为机械命令。
 
     gripper_collision:
-      enabled: false  # 是否启用夹爪碰撞和禁入区域检查。
+      enabled: true  # 多点规划按真实夹指检查两侧插入空间及禁入区。
 
       allowed_polygon_mm: null  # 允许抓取的机械区域多边形（mm）。
       object_overlap_tolerance_px: 4  # 夹爪与目标允许的重叠容差（像素）。

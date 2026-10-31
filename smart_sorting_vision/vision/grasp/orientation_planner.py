@@ -453,20 +453,21 @@ def plan_parallel_edge_grasp_options(
     default_grasp_axis_robot_deg: float = 0.0,
     yaw_alignment_offset_deg: float = 0.0,
     safe_mask: np.ndarray | None = None,
-    preserve_grasp_point: bool = False,
+    include_vertex_contacts: bool = False,
     width_slack_ratio: float = 0.15,
     support_tolerance_px: float = 3.0,
     min_contact_span_px: float = 6.0,
     circle_circularity_threshold: float = 0.985,
     circle_min_vertices: int = 8,
 ) -> list[ObjectOrientation]:
-    """Return every strong edge-edge antipodal grasp family.
+    """Return antipodal grasp families, normally restricted to edge-edge pairs.
 
     This intentionally does not discard a wider valid jaw axis merely because
     another axis needs a smaller opening. For a rectangle (and other shapes
     with multiple pairs of opposite parallel edges), gripping either pair is a
     legitimate parallel-jaw grasp. Higher-level collision search chooses the
-    safest family in the current scene.
+    safest family in the current scene. With include_vertex_contacts enabled,
+    retain edge-vertex/vertex-vertex hypotheses with their actual metadata.
     """
     pts = _validate_polygon(polygon)
     image_long_deg, aspect_ratio = polygon_long_axis_image_deg(pts)
@@ -503,7 +504,7 @@ def plan_parallel_edge_grasp_options(
         keep_all_widths=True,
     )
 
-    strong = [
+    strong = all_axes if include_vertex_contacts else [
         c for c in all_axes
         if (
             c.min_feature.kind == "edge"
@@ -537,7 +538,7 @@ def plan_parallel_edge_grasp_options(
         seen_robot_axes.append(float(cand.axis_robot_deg))
 
         grasp_override = _closest_safe_point(
-            preferred if preserve_grasp_point else cand.ideal_point,
+            cand.ideal_point,
             preferred,
             safe_mask=safe_mask,
             n=cand.n,
@@ -549,14 +550,22 @@ def plan_parallel_edge_grasp_options(
             cand.max_feature,
             cand.axis_robot_deg,
         )
+        # 多点规划允许三角形等目标参与，不能把顶点接触误标成平行长边。
+        if cand.min_feature.kind == "edge" and cand.max_feature.kind == "edge":
+            contact_type = "edge_edge"
+        elif cand.min_feature.kind == "edge" or cand.max_feature.kind == "edge":
+            contact_type = "edge_vertex"
+        else:
+            contact_type = "vertex_vertex"
+        reliable = contact_type != "vertex_vertex" or cand.contact_quality >= 0.45
         out.append(
             ObjectOrientation(
                 long_axis_image_deg=float(image_long_deg),
                 long_axis_robot_deg=float(robot_long_deg),
                 grasp_axis_robot_deg=float(cand.axis_robot_deg),
                 aspect_ratio=float(aspect_ratio),
-                reliable=True,
-                mode="antipodal_edge_edge",
+                reliable=bool(reliable),
+                mode=f"antipodal_{contact_type}",
                 rectangularity=float(rectangularity),
                 circularity=float(circularity),
                 hull_vertex_count=int(hull_vertices),
@@ -564,7 +573,7 @@ def plan_parallel_edge_grasp_options(
                 grasp_pixel_override=grasp_override,
                 grasp_width_px=float(cand.width_px),
                 grasp_width_mm=None if width_mm is None else float(width_mm),
-                contact_type="edge_edge",
+                contact_type=contact_type,
                 contact_quality=float(cand.contact_quality),
                 support_overlap_px=float(cand.overlap_px),
                 support_min_point_px=(
@@ -591,7 +600,6 @@ def plan_grasp_axis(
     default_grasp_axis_robot_deg: float = 0.0,
     yaw_alignment_offset_deg: float = 0.0,
     safe_mask: np.ndarray | None = None,
-    preserve_grasp_point: bool = False,
     width_slack_ratio: float = 0.15,
     support_tolerance_px: float = 3.0,
     min_contact_span_px: float = 6.0,
@@ -728,8 +736,7 @@ def plan_grasp_axis(
         ),
     )
     grasp_override = _closest_safe_point(
-        # 核心策略已选好中心，方向规划只负责Yaw，不再把点拉回支撑中面。
-        preferred if preserve_grasp_point else best.ideal_point,
+        best.ideal_point,
         preferred,
         safe_mask=safe_mask,
         n=best.n,

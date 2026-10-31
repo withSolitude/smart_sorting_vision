@@ -3,7 +3,6 @@ from typing import Union
 import time
 
 import numpy as np
-from ultralytics import YOLO
 
 class TopSegmenter:
     """
@@ -33,6 +32,9 @@ class TopSegmenter:
             f"{self.model_path}"
         )
         
+        # 只有实际加载模型才导入推理库，离线几何测试无需安装Ultralytics。
+        from ultralytics import YOLO
+
         # 加载yolo模型
         self.model = YOLO(str(self.model_path))
         

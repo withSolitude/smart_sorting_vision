@@ -168,12 +168,14 @@ def _select_candidate(result, selected_index: int | None):
     return max(candidates, key=lambda c: float(c.score))
 
 
-def _print_candidate(candidate, yaw: YawServoCalibration) -> None:
+def _print_candidate(candidate, yaw: YawServoCalibration, point_seeds: list[dict]) -> None:
     physical = yaw.physical_axis_deg(float(candidate.yaw_deg))
     servo = yaw.command_deg(float(candidate.yaw_deg))
     print("[GRASP PLAN]")
     print(f"  object_index = {candidate.object_index}")
     print(f"  strategy     = {getattr(candidate, 'grasp_strategy', 'full_mask')}")
+    print(f"  point_source = {getattr(candidate, 'grasp_point_source', 'legacy')}")
+    print(f"  point_seeds  = {len(point_seeds)}")
     print(f"  full_center  = ({candidate.center_pixel[0]:.2f}, {candidate.center_pixel[1]:.2f})")
     print(f"  pixel        = ({candidate.grasp_pixel[0]}, {candidate.grasp_pixel[1]})")
     print(f"  robot_xy_mm  = ({candidate.x_mm:.3f}, {candidate.y_mm:.3f})")
@@ -183,7 +185,10 @@ def _print_candidate(candidate, yaw: YawServoCalibration) -> None:
     print(f"  preopen_mm   = {candidate.preopen_mm}")
     print(f"  width_mm     = {candidate.grasp_width_mm}")
     print(f"  clearance_mm = {candidate.gripper_clearance_mm:.3f}")
+    print(f"  balance_mm   = {getattr(candidate, 'contact_balance_mm', 0.0):.3f}")
     print(f"  score        = {candidate.score:.4f}")
+    for seed in point_seeds:
+        print(f"  seed         = {seed['pixel']} source={seed['source']} clearance={seed['clearance_px']:.1f}px")
 
 
 def parse_args() -> argparse.Namespace:
@@ -224,7 +229,8 @@ def main() -> int:
     print(f"[SOURCE] preview={Path(__file__).resolve()}")
     print(f"[SOURCE] pipeline={Path(sys.modules[TopPickPipeline.__module__].__file__).resolve()}")
     print(f"[CONFIG] {config_path.resolve()}")
-    print(f"[SHAPE CORE] {getattr(pipeline.planner, 'shape_core_config', {})}")
+    print(f"[GEOMETRIC GRASP] {getattr(pipeline, 'geometric_grasp_config', {})}")
+    print(f"[FINGER COLLISION] enabled={pipeline.gripper_footprint.enabled}")
     window = "SINGLE OBJECT GRASP PLAN"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window, 1500, 900)
@@ -247,7 +253,7 @@ def main() -> int:
     fps = 0.0
 
     print("[INFO] 启动时只打开顶部相机；按 Space 才会打开 STM32 并执行一次实抓。")
-    print("[INFO] 绿色=完整轮廓/最终抓取点，橙色=规划核心，蓝色十字=完整轮廓中心。")
+    print("[INFO] 绿色=完整轮廓/最终抓取点，橙点=几何候选点，蓝色十字=完整轮廓中心。")
     print("[INFO] 紫色=夹爪闭合轴，黄色=夹爪纵向轴；中心连线显示抓取点的修正量。")
     print("[INFO] 实抓前必须先按下机械物理 START，并等待 READY。")
     print("[INFO] [ / ] 切换预览物体，Space 实抓READY目标，R 重置并恢复自动选择，P 暂停，S 保存，I 打印。")
@@ -336,6 +342,12 @@ def main() -> int:
             view = last_frame.copy()
             result = last_result
             candidate = _select_candidate(result, selected_index)
+            # 画出同一流水线实际检查过的点，不能在预览里另算一套抓点。
+            visible_object = candidate.object_index if candidate is not None else selected_index
+            point_seeds = [
+                seed for seed in getattr(pipeline, "last_grasp_point_seeds", [])
+                if visible_object is None or int(seed["object_index"]) == int(visible_object)
+            ]
 
             # 其它候选只画细轮廓，当前选中的目标突出显示。
             for other in getattr(result, "candidates", []) or []:
@@ -345,8 +357,6 @@ def main() -> int:
 
             if candidate is not None:
                 _draw_polygon(view, candidate.polygon, (0, 255, 0), 2)
-                # 完整mask质心与规划核心同时显示，避免只看最终十字误以为没有启用新策略。
-                _draw_polygon(view, getattr(candidate, "grasp_core_polygon", None), (0, 165, 255), 2)
                 center = tuple(int(round(v)) for v in candidate.center_pixel)
                 cv2.line(view, center, tuple(int(v) for v in candidate.grasp_pixel), (255, 180, 0), 2)
                 _draw_cross(view, center, (255, 80, 0), 8)
@@ -371,12 +381,27 @@ def main() -> int:
                     cv2.LINE_AA,
                 )
 
+            # 不再画内缩轮廓：显示最大内接圆/主轴/几何中心等真实候选来源。
+            # 无可抓候选时仍显示这些橙点，便于区分“没生成点”和“空间检查未通过”。
+            for index, seed in enumerate(point_seeds):
+                point = tuple(int(round(v)) for v in seed["pixel"])
+                cv2.circle(view, point, 4, (0, 165, 255), -1, cv2.LINE_AA)
+                cv2.putText(
+                    view, f"{index + 1}:{seed['source']}",
+                    (point[0] + 6, point[1] + 14),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 165, 255), 1, cv2.LINE_AA,
+                )
+            if candidate is not None:
+                # 最终点覆盖在候选点上层，避免橙色实心圆遮住绿十字中心。
+                _draw_cross(view, candidate.grasp_pixel, (0, 255, 0), 12)
+
             ready = bool(getattr(result, "ready", False)) if result is not None else False
             panel = [
                 f"FPS={fps:.1f}  paused={paused}",
                 f"objects={0 if result is None else result.object_count}  candidates={0 if result is None else result.candidate_count}",
                 f"READY={ready}  consensus={0 if result is None else result.votes}/{0 if result is None else result.required_hits}",
                 f"selected={selected_index if selected_index is not None else 'best-score'}",
+                f"geometric point seeds={len(point_seeds)}",
                 f"MCU={'STARTED' if link_state['started'] else 'STOPPED/OFFLINE'}",
             ]
             if link_state["last_error"]:
@@ -391,6 +416,7 @@ def main() -> int:
                 panel.extend(
                     [
                         f"strategy={getattr(candidate, 'grasp_strategy', 'full_mask')}  center shift={center_shift:.1f}px",
+                        f"source={getattr(candidate, 'grasp_point_source', 'legacy')}  balance={getattr(candidate, 'contact_balance_mm', 0.0):.2f} mm",
                         f"pixel=({candidate.grasp_pixel[0]},{candidate.grasp_pixel[1]})",
                         f"XY=({candidate.x_mm:.1f},{candidate.y_mm:.1f}) mm",
                         f"yaw axis={candidate.yaw_deg:+.1f}  physical={physical_yaw:+.1f}  servo={servo_yaw:+.1f}",
@@ -493,7 +519,7 @@ def main() -> int:
                 if candidate is None:
                     print("[GRASP PLAN] no safe candidate")
                 else:
-                    _print_candidate(candidate, yaw_calibration)
+                    _print_candidate(candidate, yaw_calibration, point_seeds)
     finally:
         if link is not None:
             try:

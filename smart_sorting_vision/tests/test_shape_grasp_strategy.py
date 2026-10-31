@@ -1,231 +1,132 @@
-"""顶部完整 mask 的形状核心抓取点策略回归测试。"""
+"""完整实例轮廓的多抓取点回归；不加载YOLO，也不连接相机或下位机。"""
+import math
 import unittest
 
 import cv2
 import numpy as np
 
-from vision.grasp.collision_aware_grasp_planner import CollisionAwareGraspPlanner
-from vision.grasp.orientation_planner import (
-    axial_difference_deg,
-    plan_grasp_axis,
-    plan_parallel_edge_grasp_options,
+from vision.grasp.geometric_grasp_candidates import (
+    build_grasp_point_seeds,
+    describe_geometry,
 )
 
 
-class _IdentityTransform:
-    """离线测试只关心像素几何，不依赖相机或机械标定文件。"""
-
-    @staticmethod
-    def pixel_to_robot(x, y, **kwargs):
-        return float(x), float(y)
-
-    @staticmethod
-    def robot_angle_from_image_angle(x, y, angle_deg):
-        return float(angle_deg)
-
-
-class ShapeCoreMaskTests(unittest.TestCase):
+class GeometricGraspPointTests(unittest.TestCase):
     @staticmethod
     def _polygon(mask):
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         return max(contours, key=cv2.contourArea).reshape(-1, 2).astype(np.float32)
 
     @staticmethod
-    def _planner(config=None):
-        return CollisionAwareGraspPlanner(
-            obstacle_margin=0,
-            border_margin=0,
-            min_clearance=1.0,
-            shape_core_config=config,
+    def _seeds(mask, *, safe_mask=None, **overrides):
+        config = {
+            "max_points": 6,
+            "min_spacing_px": 12.0,
+            "min_radius_ratio": 0.45,
+            "min_clearance_px": 3.0,
+            "axis_sample_fractions": [-0.3, 0.0, 0.3],
+        }
+        config.update(overrides)
+        return build_grasp_point_seeds(
+            GeometricGraspPointTests._polygon(mask),
+            mask if safe_mask is None else safe_mask,
+            config=config,
         )
 
-    @staticmethod
-    def _mask_with_side_projection() -> np.ndarray:
-        # 中央方形近似真实顶部，右侧窄条模拟透视下被带入 mask 的侧面。
-        mask = np.zeros((160, 220), dtype=np.uint8)
+    def test_long_rectangle_plateau_uses_middle_instead_of_first_maximum(self):
+        mask = np.zeros((160, 300), np.uint8)
+        cv2.rectangle(mask, (30, 30), (250, 100), 255, -1)
+        seeds = self._seeds(mask)
+        self.assertTrue(seeds)
+        self.assertEqual(seeds[0].source, "inscribed_peak")
+        # 最大内接圆平台横跨长方形中部，不能固定取左端的第一个最大值。
+        self.assertAlmostEqual(seeds[0].pixel[0], 140.0, delta=1.0)
+        self.assertAlmostEqual(seeds[0].pixel[1], 65.0, delta=1.0)
+        self.assertGreaterEqual(len(seeds), 3)
+        self.assertTrue(any(s.pixel[0] < 100 for s in seeds))
+        self.assertTrue(any(s.pixel[0] > 180 for s in seeds))
+
+    def test_thin_side_extension_does_not_pull_inscribed_candidate_to_full_centroid(self):
+        mask = np.zeros((160, 220), np.uint8)
         cv2.rectangle(mask, (70, 55), (150, 115), 255, -1)
         cv2.rectangle(mask, (150, 70), (184, 100), 255, -1)
-        return mask
-
-    def test_core_center_is_less_affected_by_side_projection(self):
-        mask = self._mask_with_side_projection()
-        ys, xs = np.nonzero(mask > 0)
-        full_center = np.array([float(xs.mean()), float(ys.mean())])
-
-        core = CollisionAwareGraspPlanner.build_top_core_mask(
-            mask,
-            shape_name="rectangular_prism",
-        )
-        core_ys, core_xs = np.nonzero(core > 0)
-        core_center = np.array([float(core_xs.mean()), float(core_ys.mean())])
-        true_top_center = np.array([110.0, 85.0])
-
+        before = mask.copy()
+        seeds = self._seeds(mask)
+        full_y, full_x = np.nonzero(mask)
+        true_center = np.asarray([110.0, 85.0])
+        peak = next(s for s in seeds if s.source == "inscribed_peak")
         self.assertLess(
-            float(np.linalg.norm(core_center - true_top_center)),
-            float(np.linalg.norm(full_center - true_top_center)),
+            np.linalg.norm(np.asarray(peak.pixel) - true_center),
+            np.linalg.norm(np.asarray([full_x.mean(), full_y.mean()]) - true_center),
         )
-        self.assertGreater(int(np.count_nonzero(core)), 0)
+        # 输入完整mask保留，用于后面的实际夹指接触和碰撞检查。
+        np.testing.assert_array_equal(mask, before)
 
-    def test_shape_strategy_keeps_symmetric_objects_grabbable(self):
-        mask = np.zeros((180, 180), dtype=np.uint8)
+    def test_tapered_object_generates_thick_sections_and_avoids_tip(self):
+        mask = np.zeros((320, 320), np.uint8)
+        triangle = np.asarray([[150, 30], [250, 280], [50, 280]], np.int32)
+        cv2.fillPoly(mask, [triangle], 255)
+        seeds = self._seeds(mask)
+        self.assertEqual(describe_geometry(self._polygon(mask)), "tapered")
+        self.assertGreaterEqual(len(seeds), 2)
+        self.assertTrue(any(s.source == "axis_section" for s in seeds))
+        # 尖端附近既薄又不利于夹持，不应成为候选落点。
+        self.assertTrue(all(s.pixel[1] > 110 for s in seeds))
+        self.assertTrue(all(s.clearance_px >= 3.0 for s in seeds))
+
+    def test_circle_keeps_center_and_does_not_invent_three_dimensional_class(self):
+        mask = np.zeros((180, 180), np.uint8)
         cv2.circle(mask, (90, 90), 45, 255, -1)
+        seeds = self._seeds(mask)
+        self.assertEqual(describe_geometry(self._polygon(mask)), "round")
+        self.assertEqual(seeds[0].pixel, (90, 90))
+        self.assertEqual(len(seeds), 1)
 
-        core = CollisionAwareGraspPlanner.build_top_core_mask(mask, shape_name="sphere")
-        ys, xs = np.nonzero(core > 0)
-        self.assertGreater(len(xs), 0)
-        self.assertAlmostEqual(float(xs.mean()), 90.0, delta=1.0)
-        self.assertAlmostEqual(float(ys.mean()), 90.0, delta=1.0)
+    def test_separate_thick_lobes_keep_multiple_local_maxima(self):
+        mask = np.zeros((140, 240), np.uint8)
+        cv2.circle(mask, (60, 70), 30, 255, -1)
+        cv2.circle(mask, (175, 70), 25, 255, -1)
+        cv2.rectangle(mask, (60, 63), (175, 77), 255, -1)
+        seeds = self._seeds(mask)
+        peaks = [s for s in seeds if s.source == "inscribed_peak"]
+        self.assertGreaterEqual(len(peaks), 2)
+        self.assertTrue(any(s.pixel[0] < 90 for s in peaks))
+        self.assertTrue(any(s.pixel[0] > 150 for s in peaks))
 
-    def test_shape_strategy_is_more_conservative_for_flat_prisms(self):
-        mask = np.zeros((180, 220), dtype=np.uint8)
-        cv2.rectangle(mask, (40, 50), (180, 130), 255, -1)
+    def test_empty_safe_region_returns_no_points(self):
+        mask = np.zeros((120, 180), np.uint8)
+        cv2.rectangle(mask, (20, 20), (160, 100), 255, -1)
+        seeds = self._seeds(mask, safe_mask=np.zeros_like(mask))
+        self.assertEqual(seeds, [])
 
-        prism = CollisionAwareGraspPlanner.build_top_core_mask(
-            mask, shape_name="rectangular_prism"
-        )
-        cylinder = CollisionAwareGraspPlanner.build_top_core_mask(
-            mask, shape_name="cylinder"
-        )
-        sphere = CollisionAwareGraspPlanner.build_top_core_mask(
-            mask, shape_name="sphere"
-        )
-        self.assertLessEqual(np.count_nonzero(prism), np.count_nonzero(cylinder))
-        self.assertLessEqual(np.count_nonzero(cylinder), np.count_nonzero(sphere))
+    def test_all_points_respect_safe_mask_and_minimum_clearance(self):
+        mask = np.zeros((160, 300), np.uint8)
+        cv2.rectangle(mask, (30, 30), (250, 130), 255, -1)
+        safe = mask.copy()
+        safe[:, :150] = 0
+        before = safe.copy()
+        seeds = self._seeds(mask, safe_mask=safe, min_clearance_px=8.0)
+        self.assertTrue(seeds)
+        for seed in seeds:
+            x, y = seed.pixel
+            self.assertGreater(safe[y, x], 0)
+            self.assertGreaterEqual(seed.clearance_px, 8.0)
+            self.assertTrue(math.isfinite(seed.quality))
+        np.testing.assert_array_equal(safe, before)
 
-    def test_triangle_geometry_uses_pyramid_cone_core_rule(self):
-        mask = np.zeros((180, 220), dtype=np.uint8)
-        triangle = np.asarray([[55, 135], [110, 40], [165, 135]], dtype=np.int32)
-        cv2.fillPoly(mask, [triangle.reshape(-1, 1, 2)], 255)
-        auto_core = CollisionAwareGraspPlanner.build_top_core_mask(mask)
-        rectangular_core = CollisionAwareGraspPlanner.build_top_core_mask(
-            mask, shape_name="rectangular_prism"
-        )
-        self.assertGreater(np.count_nonzero(auto_core), 0)
-        self.assertGreater(np.count_nonzero(auto_core), np.count_nonzero(rectangular_core))
+    def test_count_spacing_and_order_are_bounded_and_repeatable(self):
+        mask = np.zeros((160, 300), np.uint8)
+        cv2.rectangle(mask, (30, 30), (250, 130), 255, -1)
+        seeds = self._seeds(mask, max_points=2, min_spacing_px=18.0)
+        self.assertLessEqual(len(seeds), 2)
+        self.assertEqual(seeds, self._seeds(mask, max_points=2, min_spacing_px=18.0))
+        for index, seed in enumerate(seeds):
+            for other in seeds[index + 1:]:
+                self.assertGreaterEqual(math.dist(seed.pixel, other.pixel), 18.0)
 
-    def test_single_object_square_is_not_misclassified_as_circle(self):
-        mask = np.zeros((180, 180), dtype=np.uint8)
-        cv2.rectangle(mask, (45, 45), (135, 135), 255, -1)
-
-        auto = CollisionAwareGraspPlanner.build_top_core_mask(
-            mask, shape_name="object"
-        )
-        rectangular = CollisionAwareGraspPlanner.build_top_core_mask(
-            mask, shape_name="rectangular_prism"
-        )
-        circular = CollisionAwareGraspPlanner.build_top_core_mask(
-            mask, shape_name="sphere"
-        )
-        # 方块圆度接近0.785，自动策略应使用矩形的更保守核心。
-        self.assertEqual(int(np.count_nonzero(auto)), int(np.count_nonzero(rectangular)))
-        self.assertLess(int(np.count_nonzero(auto)), int(np.count_nonzero(circular)))
-
-    def test_orientation_keeps_the_core_point_instead_of_restoring_full_centroid(self):
-        # 旧实现核心抓点在x≈112，但方向规划又覆盖成完整轮廓中点x≈120。
-        mask = self._mask_with_side_projection()
-        polygon = self._polygon(mask)
-        result = self._planner().plan(polygon, [], mask.shape, shape_name="object")
-        self.assertTrue(result.valid)
-        self.assertLess(result.grasp_point[0], 116)
-
-        legacy_orientation = plan_grasp_axis(
-            polygon=polygon,
-            grasp_pixel=result.grasp_point,
-            transform=_IdentityTransform(),
-            safe_mask=result.preferred_mask,
-        )
-        self.assertGreater(legacy_orientation.grasp_pixel_override[0], 117)
-
-        orientation = plan_grasp_axis(
-            polygon=result.planning_polygon,
-            grasp_pixel=result.grasp_point,
-            transform=_IdentityTransform(),
-            safe_mask=result.preferred_mask,
-            preserve_grasp_point=True,
-        )
-        self.assertEqual(orientation.grasp_pixel_override, result.grasp_point)
-        # 方向族搜索也必须保留同一个核心点，不能在另一条调用路径中改回去。
-        options = plan_parallel_edge_grasp_options(
-            polygon=result.planning_polygon,
-            grasp_pixel=result.grasp_point,
-            transform=_IdentityTransform(),
-            safe_mask=result.preferred_mask,
-            preserve_grasp_point=True,
-        )
-        self.assertTrue(options)
-        self.assertTrue(all(o.grasp_pixel_override == result.grasp_point for o in options))
-
-    def test_direction_is_computed_from_core_instead_of_side_extension(self):
-        # 上方的细长延伸会把完整凸包主夹取轴带成竖直；核心保留左侧粗主体。
-        polygon = np.asarray(
-            [[30, 30], [170, 30], [170, 60], [90, 60], [90, 150], [30, 150]],
-            dtype=np.float32,
-        )
-        result = self._planner().plan(polygon, [], (200, 220), shape_name="object")
-        self.assertTrue(result.valid)
-        common = dict(
-            grasp_pixel=result.grasp_point,
-            transform=_IdentityTransform(),
-            safe_mask=result.preferred_mask,
-            preserve_grasp_point=True,
-        )
-        full = plan_grasp_axis(polygon=polygon, **common)
-        core = plan_grasp_axis(polygon=result.planning_polygon, **common)
-        self.assertLess(abs(axial_difference_deg(core.grasp_axis_robot_deg, 0.0)), 5.0)
-        self.assertGreater(
-            abs(axial_difference_deg(core.grasp_axis_robot_deg, full.grasp_axis_robot_deg)),
-            80.0,
-        )
-        self.assertEqual(core.grasp_pixel_override, result.grasp_point)
-
-    def test_symmetric_objects_keep_their_center_and_legal_direction(self):
-        for shape_name in ("cube", "sphere"):
-            with self.subTest(shape_name=shape_name):
-                mask = np.zeros((180, 180), dtype=np.uint8)
-                if shape_name == "cube":
-                    cv2.rectangle(mask, (45, 45), (135, 135), 255, -1)
-                else:
-                    cv2.circle(mask, (90, 90), 45, 255, -1)
-                result = self._planner().plan(
-                    self._polygon(mask), [], mask.shape, shape_name=shape_name,
-                )
-                self.assertTrue(result.valid)
-                self.assertEqual(result.grasp_point, (90, 90))
-                orientation = plan_grasp_axis(
-                    polygon=result.planning_polygon,
-                    grasp_pixel=result.grasp_point,
-                    transform=_IdentityTransform(),
-                    safe_mask=result.preferred_mask,
-                    preserve_grasp_point=True,
-                )
-                self.assertEqual(orientation.grasp_pixel_override, (90, 90))
-                self.assertTrue(np.isfinite(orientation.grasp_axis_robot_deg))
-                self.assertGreaterEqual(orientation.grasp_axis_robot_deg, -90.0)
-                self.assertLess(orientation.grasp_axis_robot_deg, 90.0)
-
-    def test_disabled_strategy_uses_full_geometry(self):
-        mask = self._mask_with_side_projection()
-        polygon = self._polygon(mask)
-        result = self._planner({"enabled": False}).plan(
-            polygon, [], mask.shape, shape_name="object",
-        )
-        self.assertTrue(result.valid)
-        self.assertEqual(result.strategy_name, "disabled")
-        np.testing.assert_array_equal(result.planning_polygon, polygon)
-        np.testing.assert_array_equal(result.preferred_mask, result.safe_mask)
-        self.assertGreater(result.grasp_point[0], 117)
-
-    def test_tiny_core_explicitly_falls_back_to_safe_geometry(self):
-        polygon = np.asarray([[45, 45], [135, 45], [135, 135], [45, 135]], np.float32)
-        # 极强收缩只剩中心一个像素，目标本身仍有足够安全空间。
-        result = self._planner({"ratios": {"quadrilateral": 0.99}}).plan(
-            polygon, [], (180, 180), shape_name="cube",
-        )
-        self.assertTrue(result.valid)
-        self.assertEqual(result.strategy_name, "safe_fallback")
-        self.assertEqual(result.grasp_point, (90, 90))
-        np.testing.assert_array_equal(result.planning_polygon, polygon)
-        np.testing.assert_array_equal(result.preferred_mask, result.safe_mask)
+    def test_geometry_describes_parallel_edges_without_claiming_cube(self):
+        rectangle = np.asarray([[20, 20], [140, 20], [140, 80], [20, 80]], np.float32)
+        self.assertEqual(describe_geometry(rectangle), "parallel")
 
 
 if __name__ == "__main__":

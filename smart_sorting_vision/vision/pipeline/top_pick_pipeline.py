@@ -24,6 +24,9 @@ from vision.grasp.orientation_planner import (
     plan_grasp_axis,
     plan_parallel_edge_grasp_options,
 )
+from vision.grasp.geometric_grasp_candidates import (
+    GraspPointSeed, build_grasp_point_seeds, describe_geometry,
+)
 from vision.grasp.gripper_footprint import GripperFootprintModel
 from vision.grasp.claw_preopen_profile import ClawPreopenProfile
 from vision.grasp.grasp_pose_search import (
@@ -96,9 +99,9 @@ class TopPickCandidate:
     search_safe_count: int
 
     score: float
-    # 调试直接显示流水线实际使用的几何核心，不另行重算一套。
-    grasp_core_polygon: np.ndarray | None = None
-    grasp_strategy: str = "full_mask"
+    grasp_strategy: str = "single_point"
+    grasp_point_source: str = "safe_center"
+    contact_balance_mm: float = 0.0
 
 
 @dataclass
@@ -179,7 +182,7 @@ class TopPickPipeline:
         border_margin: int = 12,
         min_safe_area: int = 50,
         min_clearance: float = 3.0,
-        shape_core_config: dict | None = None,
+        geometric_grasp_config: dict | None = None,
         consensus_window: int = 2,
         consensus_required: int = 2,
         max_track_center_shift_px: float = 55.0,
@@ -283,9 +286,12 @@ class TopPickPipeline:
                     min_safe_area,
                 min_clearance=
                     min_clearance,
-                shape_core_config=shape_core_config,
             )
         )
+
+        self.geometric_grasp_config = dict(geometric_grasp_config or {})
+        self.geometric_grasp_enabled = bool(self.geometric_grasp_config.get("enabled", False))
+        self.last_grasp_point_seeds: list[dict] = []
 
         self.transform = (
             PixelToRobotTransform.load(
@@ -622,6 +628,7 @@ class TopPickPipeline:
     ) -> list[TopPickCandidate]:
         self.last_gripper_rejections = []
         self.last_gripper_search_alternatives = []
+        self.last_grasp_point_seeds = []
 
         valid_objects: list[tuple[int, dict, np.ndarray]] = []
         for list_index, obj in enumerate(objects):
@@ -643,29 +650,29 @@ class TopPickPipeline:
                 target_polygon=target_polygon,
                 other_polygons=other_polygons,
                 image_shape=frame.shape,
-                shape_name=str(obj.get("class_name", "")),
             )
             if not grasp_result.valid or grasp_result.grasp_point is None:
                 continue
 
             base_grasp_x, base_grasp_y = grasp_result.grasp_point
             center_pixel = self._polygon_center(target_polygon)
-            planning_polygon = (
-                grasp_result.planning_polygon
-                if grasp_result.planning_polygon is not None else target_polygon
-            )
-            use_core = grasp_result.strategy_name not in {"disabled", "safe_fallback", "full_mask"}
+            geometry_kind = describe_geometry(target_polygon) if self.geometric_grasp_enabled else "single_point"
+            # 新策略直接分析完整轮廓，不把整体内缩当作顶面。
+            planning_polygon = target_polygon
+            point_seeds = []
+            if self.geometric_grasp_enabled:
+                point_seeds = build_grasp_point_seeds(
+                    target_polygon, grasp_result.safe_mask, config=self.geometric_grasp_config,
+                )
+                if not point_seeds:
+                    continue
 
             # ---------- 先求一个几何上合理的基础姿态 ----------
             orientation = None
             parallel_edge_options = []
             if self.orientation_enabled:
                 try:
-                    orientation_safe_mask = (
-                        grasp_result.preferred_mask
-                        if getattr(grasp_result, "preferred_mask", None) is not None
-                        else grasp_result.safe_mask
-                    )
+                    orientation_safe_mask = grasp_result.safe_mask
                     orientation = plan_grasp_axis(
                         polygon=planning_polygon,
                         grasp_pixel=(base_grasp_x, base_grasp_y),
@@ -675,7 +682,6 @@ class TopPickPipeline:
                         default_grasp_axis_robot_deg=self.default_grasp_axis_robot_deg,
                         yaw_alignment_offset_deg=self.yaw_alignment_offset_deg,
                         safe_mask=orientation_safe_mask,
-                        preserve_grasp_point=use_core,
                         width_slack_ratio=self.grasp_width_slack_ratio,
                         support_tolerance_px=self.grasp_support_tolerance_px,
                         min_contact_span_px=self.grasp_min_contact_span_px,
@@ -706,19 +712,21 @@ class TopPickPipeline:
                     # 这两组在几何上都是真正的平行夹爪抓取，不再因为开口更大而被提前丢弃。
                     parallel_edge_options = plan_parallel_edge_grasp_options(
                         polygon=planning_polygon,
+                        include_vertex_contacts=self.geometric_grasp_enabled,
                         grasp_pixel=(base_grasp_x, base_grasp_y),
                         transform=self.transform,
                         default_grasp_axis_robot_deg=self.default_grasp_axis_robot_deg,
                         yaw_alignment_offset_deg=self.yaw_alignment_offset_deg,
                         safe_mask=orientation_safe_mask,
-                        preserve_grasp_point=use_core,
                         width_slack_ratio=self.grasp_width_slack_ratio,
                         support_tolerance_px=self.grasp_support_tolerance_px,
                         min_contact_span_px=self.grasp_min_contact_span_px,
                         circle_circularity_threshold=self.grasp_circle_circularity_threshold,
                         circle_min_vertices=self.grasp_circle_min_vertices,
                     )
-                except Exception:
+                except (ValueError, TypeError, cv2.error) as exc:
+                    if self.gripper_debug_log_rejections:
+                        print(f"[GRASP ORIENTATION] geometry fallback: {exc}")
                     base_yaw_deg = float(self.default_grasp_axis_robot_deg)
                     long_axis_deg = float(self.default_grasp_axis_robot_deg)
                     aspect_ratio = 1.0
@@ -771,6 +779,43 @@ class TopPickPipeline:
                 orientation_family_yaws = [float(o.grasp_axis_robot_deg) for o in orientation_family]
                 orientation_family_contact = [float(o.contact_quality) for o in orientation_family]
 
+            if self.geometric_grasp_enabled:
+                if self.orientation_enabled and geometry_kind == "round":
+                    orientation_family = []
+                    orientation_family_yaws = [normalize_axial_deg(
+                        base_yaw_deg + float(offset)
+                    ) for offset in self.geometric_grasp_config["round_yaw_offsets_deg"]]
+                    orientation_family_contact = [1.0] * len(orientation_family_yaws)
+                # 对侧边接触区中点也作为点候选，不能仅在方向列表里保留它的Yaw。
+                edge_seeds = []
+                for option in parallel_edge_options:
+                    pixel = option.grasp_pixel_override
+                    if pixel is not None:
+                        source = "opposing_edges" if option.contact_type == "edge_edge" else "support_midpoint"
+                        edge_seeds.append(GraspPointSeed(pixel, source, 0.0, option.contact_quality))
+                ordered = [point_seeds[0], *edge_seeds, *point_seeds[1:]]
+                point_seeds = []
+                for seed in ordered:
+                    x, y = seed.pixel
+                    if not (0 <= y < frame.shape[0] and 0 <= x < frame.shape[1]
+                            and grasp_result.safe_distance_map[y, x] >= max(
+                                self.planner.min_clearance, self.geometric_grasp_config["min_clearance_px"]
+                            )):
+                        continue
+                    if any(math.dist(seed.pixel, old.pixel) < self.geometric_grasp_config["min_spacing_px"]
+                           for old in point_seeds):
+                        continue
+                    point_seeds.append(seed)
+                    if len(point_seeds) >= min(self.geometric_grasp_config["max_points"], self.geometric_grasp_config["max_pose_trials"]):
+                        break
+                if not point_seeds:
+                    continue
+                self.last_grasp_point_seeds.extend({
+                    "object_index": int(obj.get("index", list_index)),
+                    "pixel": seed.pixel, "source": seed.source,
+                    "clearance_px": seed.clearance_px,
+                } for seed in point_seeds)
+
             try:
                 target_robot = self.transform.pixels_to_robot(
                     target_polygon,
@@ -803,6 +848,7 @@ class TopPickPipeline:
                 image_shape=frame.shape,
             )
 
+            target_mask = self.planner.polygon_to_mask(target_polygon, frame.shape)
             confidence = float(obj.get("confidence", 0.0))
             clearance = float(grasp_result.clearance)
             center_gap_base_px = max(
@@ -811,101 +857,28 @@ class TopPickPipeline:
                 - max(0.0, float(base_grasp_width_px) * 0.5),
             )
 
-            if self.grasp_search_enabled:
-                trial_specs = []
-                seen_trial_keys = set()
-
-                if fast_only:
-                    # ====================================================
-                    # 快速路径：
-                    #
-                    # 只检查每个真实基础抓取族的“原始姿态”：
-                    #   yaw 偏移 = 0
-                    #   longitudinal 偏移 = 0
-                    #   closing 偏移 = 0
-                    #
-                    # 对一个普通物体通常只需检查 1~2 个姿态。
-                    # 只要整帧中存在任意安全候选，process() 就直接使用
-                    # 这些快速候选，不再执行几十/上百个完整搜索姿态。
-                    #
-                    # 若整帧一个安全候选都没有，再自动退回原来的完整搜索。
-                    # ====================================================
-                    for family_yaw_deg in orientation_family_yaws:
-                        family_delta = axial_difference_deg(
-                            family_yaw_deg,
-                            base_yaw_deg,
-                        )
-                        final_yaw = normalize_axial_deg(
-                            base_yaw_deg + family_delta
-                        )
-                        key = (
-                            round(float(final_yaw), 4),
-                            0.0,
-                            0.0,
-                        )
-                        if key in seen_trial_keys:
-                            continue
-                        seen_trial_keys.add(key)
-                        trial_specs.append(
-                            (
-                                float(family_delta),
-                                0.0,
-                                0.0,
-                            )
-                        )
-                else:
-                    # ====================================================
-                    # 完整搜索：
-                    #
-                    # 保持原来的搜索行为完全不变。
-                    # 只有快速路径在整帧中找不到任何安全候选时才进入这里。
-                    # ====================================================
-                    # 把每个真实平行边抓取族都作为一个“零代价基准方向”，并在每个基准
-                    # 周围应用原有的小角度/小位移搜索。按 local-spec 外层、family 内层交错，
-                    # 可避免 max_trials 时第一组方向把第二组方向全部挤掉。
-                    for (
-                        local_yaw_offset_deg,
-                        longitudinal_offset_mm,
-                        closing_offset_mm,
-                    ) in self.grasp_search_offsets:
-                        for family_yaw_deg in orientation_family_yaws:
-                            family_delta = axial_difference_deg(
-                                family_yaw_deg,
-                                base_yaw_deg,
-                            )
-                            combined_yaw_offset = float(
-                                family_delta + local_yaw_offset_deg
-                            )
-                            final_yaw = normalize_axial_deg(
-                                base_yaw_deg + combined_yaw_offset
-                            )
-                            key = (
-                                round(float(final_yaw), 4),
-                                round(float(longitudinal_offset_mm), 4),
-                                round(float(closing_offset_mm), 4),
-                            )
-                            if key in seen_trial_keys:
-                                continue
-                            seen_trial_keys.add(key)
-                            trial_specs.append(
-                                (
-                                    combined_yaw_offset,
-                                    float(longitudinal_offset_mm),
-                                    float(closing_offset_mm),
-                                )
-                            )
-                            if (
-                                len(trial_specs)
-                                >= self.grasp_search_max_trials_per_object
-                            ):
-                                break
-                        if (
-                            len(trial_specs)
-                            >= self.grasp_search_max_trials_per_object
-                        ):
-                            break
+            # 多点×真实支撑方向是基础策略，与旧的角度/位移微调开关独立。
+            # 有限候选全部检查后择优，不再遇到第一个可用中心就提前结束。
+            if self.geometric_grasp_enabled:
+                direction_limit = min(
+                    int(self.geometric_grasp_config["max_directions"]),
+                    max(1, int(self.geometric_grasp_config["max_pose_trials"]) // len(point_seeds)),
+                )
+                orientation_family_yaws = orientation_family_yaws[:direction_limit]
+                orientation_family_contact = orientation_family_contact[:direction_limit]
+                orientation_family = orientation_family[:direction_limit]
+                pose_specs = [
+                    (seed.pixel, seed.source, axial_difference_deg(axis, base_yaw_deg), 0.0, 0.0)
+                    for seed in point_seeds for axis in orientation_family_yaws
+                ][:int(self.geometric_grasp_config["max_pose_trials"])]
             else:
-                trial_specs = [(0.0, 0.0, 0.0)]
+                offsets = self.grasp_search_offsets if self.grasp_search_enabled and not fast_only else [(0.0, 0.0, 0.0)]
+                axes = orientation_family_yaws if self.grasp_search_enabled else [base_yaw_deg]
+                pose_specs = [
+                    ((base_grasp_x, base_grasp_y), "safe_center",
+                     axial_difference_deg(axis, base_yaw_deg) + dyaw, dlong, dclose)
+                    for dyaw, dlong, dclose in offsets for axis in axes
+                ][:self.grasp_search_max_trials_per_object]
             best_candidate: TopPickCandidate | None = None
             best_trial_record: dict | None = None
             safe_trial_records: list[dict] = []
@@ -939,7 +912,7 @@ class TopPickPipeline:
                 self.last_gripper_rejections.append(record)
                 stored_rejects += 1
 
-            for yaw_offset_deg, longitudinal_offset_mm, closing_offset_mm in trial_specs:
+            for seed_pixel, seed_source, yaw_offset_deg, longitudinal_offset_mm, closing_offset_mm in pose_specs:
                 trial_count += 1
                 yaw_deg = self._wire_yaw(base_yaw_deg + yaw_offset_deg)
                 try:
@@ -950,8 +923,11 @@ class TopPickPipeline:
                     continue
                 # 局部前后偏置、指爪包络与 TCP 均使用实际执行角，轴向角仅用于协议输出。
                 closing_axis, longitudinal_axis = axis_vectors(physical_yaw_deg)
+                seed_robot = np.asarray(self.transform.pixel_to_robot(
+                    *seed_pixel, apply_tcp_offset=False,
+                ), dtype=np.float64)
                 candidate_center_robot = (
-                    base_center_robot
+                    seed_robot
                     + float(longitudinal_offset_mm) * longitudinal_axis
                     + float(closing_offset_mm) * closing_axis
                 )
@@ -961,14 +937,20 @@ class TopPickPipeline:
                     reject("candidate_robot_to_pixel_failed", yaw=yaw_deg)
                     continue
                 candidate_px = (float(candidate_px_f[0]), float(candidate_px_f[1]))
-                if use_core:
-                    # 多姿态搜索也不能悄悄把抓点移出已选择的核心安全区域。
-                    px, py = int(round(candidate_px[0])), int(round(candidate_px[1]))
-                    mask = grasp_result.preferred_mask
-                    if not (0 <= py < mask.shape[0] and 0 <= px < mask.shape[1] and mask[py, px]):
-                        reject("grasp_center_outside_core", px=candidate_px, yaw=yaw_deg)
-                        continue
+                px, py = int(round(candidate_px[0])), int(round(candidate_px[1]))
+                if not (0 <= py < frame.shape[0] and 0 <= px < frame.shape[1]
+                        and grasp_result.safe_mask[py, px]):
+                    reject("grasp_center_outside_safe_region", px=candidate_px, yaw=yaw_deg)
+                    continue
 
+                clearance = float(grasp_result.safe_distance_map[py, px])
+                self_clearance = max(0.0, cv2.pointPolygonTest(
+                    np.asarray(target_polygon, dtype=np.float32), candidate_px, True,
+                ))
+                obstacle_clearance = (
+                    float(collision_context.distance_to_obstacle[py, px])
+                    if collision_context.distance_to_obstacle is not None else 999.0
+                )
                 # 中心仍必须落在目标本体内，不能为了避障把夹爪中心移到物体外面。
                 inside = cv2.pointPolygonTest(
                     np.asarray(target_polygon, dtype=np.float32).reshape(-1, 1, 2),
@@ -997,6 +979,7 @@ class TopPickPipeline:
                     1.0e6,
                     finger_length_mm=self.gripper_footprint.finger_length_mm,
                     finger_longitudinal_offset_mm=self.gripper_footprint.finger_longitudinal_offset_mm,
+                    local_contact=self.geometric_grasp_enabled and self.geometric_grasp_config.get("local_contact", False),
                     min_side_gap_mm=0.0,
                     min_longitudinal_overlap_mm=0.0,
                 )
@@ -1004,6 +987,11 @@ class TopPickPipeline:
                 if not np.isfinite(trial_width_mm) or trial_width_mm <= 0.0:
                     reject("invalid_trial_width", px=candidate_px, yaw=yaw_deg)
                     continue
+
+                # 按实际执行闭合轴反投影宽度，圆形回退也能得到有效的像素宽度。
+                side_a = self._robot_to_pixel(candidate_center_robot - closing_axis * trial_width_mm * 0.5)
+                side_b = self._robot_to_pixel(candidate_center_robot + closing_axis * trial_width_mm * 0.5)
+                trial_width_px = math.dist(side_a, side_b) if side_a is not None and side_b is not None else 0.0
 
                 if self.grasp_min_opening_mm is not None and trial_width_mm < self.grasp_min_opening_mm:
                     reject("below_min_grasp_width", px=candidate_px, yaw=yaw_deg)
@@ -1030,6 +1018,7 @@ class TopPickPipeline:
                     engagement_opening,
                     finger_length_mm=self.gripper_footprint.finger_length_mm,
                     finger_longitudinal_offset_mm=self.gripper_footprint.finger_longitudinal_offset_mm,
+                    local_contact=self.geometric_grasp_enabled and self.geometric_grasp_config.get("local_contact", False),
                     min_side_gap_mm=self.grasp_search_min_side_gap_mm,
                     min_longitudinal_overlap_mm=self.grasp_search_min_target_overlap_mm,
                 )
@@ -1069,6 +1058,7 @@ class TopPickPipeline:
                     other_polygons=other_polygons,
                     image_shape=frame.shape,
                     context=collision_context,
+                    target_mask=target_mask if self.geometric_grasp_enabled else None,
                 )
                 if not footprint_check.safe:
                     reject(
@@ -1124,10 +1114,9 @@ class TopPickPipeline:
 
                 safe_count += 1
 
-                center_offset_mm = math.hypot(
-                    float(longitudinal_offset_mm),
-                    float(closing_offset_mm),
-                )
+                center_offset_mm = float(np.linalg.norm(candidate_center_robot - base_center_robot))
+                center_gap_base_px = max(0.0, obstacle_clearance - trial_width_px * 0.5)
+                balance_mm = abs(engagement.left_gap_mm - engagement.right_gap_mm) * 0.5
                 gripper_gap_score_mm = min(
                     max(float(footprint_check.clearance_mm), 0.0),
                     self.grasp_search_preferred_clearance_mm,
@@ -1145,7 +1134,7 @@ class TopPickPipeline:
                 confidence_score = max(0.0, min(confidence, 1.0))
 
                 # 安全间隙是主评分项；只有“偏离最近真实抓取族”的小角度才罚分。
-                # 因此矩形夹长边和夹短边在这里地位相同，最终由真实碰撞/间隙决定。
+                # 两个方向都保留；安全相近时，小开口与接触均衡可让矩形优先夹长边。
                 score = (
                     10.0 * gripper_gap_score_mm
                     + 0.25 * min(center_gap_base_px, 60.0)
@@ -1154,25 +1143,16 @@ class TopPickPipeline:
                     + 5.0 * confidence_score
                     - self.grasp_search_yaw_penalty_per_deg * yaw_deviation_from_family
                     - self.grasp_search_center_penalty_per_mm * center_offset_mm
+                    - (self.geometric_grasp_config["width_penalty_per_mm"] * trial_width_mm
+                       if self.geometric_grasp_enabled and self.grip_long_sides else 0.0)
+                    - (self.geometric_grasp_config["balance_penalty_per_mm"] * balance_mm
+                       if self.geometric_grasp_enabled else 0.0)
                 )
 
-                # 用当前物理宽度修正用于显示/兼容的像素宽度估计。
-                if orientation_family and nearest_family_index < len(orientation_family):
-                    trial_family = orientation_family[nearest_family_index]
-                    ref_width_mm = trial_family.grasp_width_mm
-                    ref_width_px = float(trial_family.grasp_width_px)
-                else:
-                    trial_family = None
-                    ref_width_mm = base_grasp_width_mm
-                    ref_width_px = float(base_grasp_width_px)
-
-                if ref_width_mm is not None and float(ref_width_mm) > 1e-6:
-                    trial_width_px = max(
-                        0.0,
-                        ref_width_px * trial_width_mm / float(ref_width_mm),
-                    )
-                else:
-                    trial_width_px = max(0.0, ref_width_px)
+                trial_family = (
+                    orientation_family[nearest_family_index]
+                    if orientation_family and nearest_family_index < len(orientation_family) else None
+                )
 
                 candidate = TopPickCandidate(
                     object_index=int(obj.get("index", list_index)),
@@ -1218,8 +1198,8 @@ class TopPickPipeline:
                         if trial_family is not None else support_max_point_px
                     ),
                     clearance_px=clearance,
-                    self_clearance_px=float(grasp_result.self_clearance),
-                    obstacle_clearance_px=float(grasp_result.obstacle_clearance),
+                    self_clearance_px=float(self_clearance),
+                    obstacle_clearance_px=float(obstacle_clearance),
                     approach_gap_px=float(center_gap_base_px),
                     safe_area_px=int(grasp_result.safe_area),
                     gripper_clearance_px=float(footprint_check.clearance_px),
@@ -1235,8 +1215,9 @@ class TopPickPipeline:
                     search_trial_count=0,  # 结束搜索后统一写入
                     search_safe_count=0,
                     score=float(score),
-                    grasp_core_polygon=planning_polygon.copy() if use_core else None,
-                    grasp_strategy=grasp_result.strategy_name,
+                    grasp_strategy=geometry_kind,
+                    grasp_point_source=seed_source,
+                    contact_balance_mm=balance_mm,
                 )
 
                 trial_record = {
@@ -1247,6 +1228,7 @@ class TopPickPipeline:
                     "opening_mm": None if preopen_mm is None else float(preopen_mm),
                     "clearance_mm": float(footprint_check.clearance_mm),
                     "score": float(score),
+                    "point_source": seed_source,
                     "yaw_offset_deg": float(yaw_offset_deg),
                     "longitudinal_offset_mm": float(longitudinal_offset_mm),
                     "closing_offset_mm": float(closing_offset_mm),
@@ -1310,6 +1292,7 @@ class TopPickPipeline:
                     f"{log_tag} "
                     f"obj={best_candidate.object_index} "
                     f"trials={trial_count} safe={safe_count} "
+                    f"point={best_candidate.grasp_pixel} source={best_candidate.grasp_point_source} "
                     f"best_yaw={best_candidate.yaw_deg:+.1f}deg "
                     f"physical={self._physical_yaw(best_candidate.yaw_deg):+.1f}deg "
                     f"dyaw={best_candidate.search_yaw_offset_deg:+.1f}deg "
@@ -1410,7 +1393,7 @@ class TopPickPipeline:
         # 这样物体很多但存在明显可抓目标时，不再为所有物体
         # 跑几十/上百个候选姿态。
         # ============================================================
-        if self.grasp_search_enabled:
+        if self.grasp_search_enabled and not getattr(self, "geometric_grasp_enabled", False):
             candidates = self._build_candidates(
                 frame,
                 objects,
