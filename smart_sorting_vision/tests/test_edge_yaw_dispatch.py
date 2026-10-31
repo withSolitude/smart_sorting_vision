@@ -14,7 +14,7 @@ from vision.grasp.edge_yaw_limit import EdgeYawLimit
 
 class EdgeYawDispatchTests(unittest.TestCase):
     yaw = YawServoCalibration(-63.280987, 0.232430, 1.04720792, -90, 90)
-    rule = EdgeYawLimit(True, -20, 40, 80, 60, 5)
+    rule = EdgeYawLimit(True, -40, 40, 80, 60, 5)
 
     def runtime(self, x, axis, drift=None):
         result = SimpleNamespace(ready=True, object_count=1, x_mm=x, y_mm=-100,
@@ -61,9 +61,9 @@ class EdgeYawDispatchTests(unittest.TestCase):
         self.assertEqual(runtime.state, RuntimeState.WAIT_TOP_OBJECT)
 
     def test_final_protocol_x_at_exact_boundary_is_not_the_edge_region(self):
-        runtime = self.runtime(-19.96, 20)
+        runtime = self.runtime(-39.96, 20)
         runtime.process_top()
-        self.assertEqual(runtime.current_pick_command.x_mm, -20.0)
+        self.assertEqual(runtime.current_pick_command.x_mm, -40.0)
         runtime._send_command.assert_called_once()
         runtime._fail.assert_not_called()
 

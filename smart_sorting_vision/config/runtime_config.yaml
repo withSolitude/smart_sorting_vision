@@ -119,7 +119,7 @@ vision:
     # 仅限制靠近电机/相机一侧的抓取姿态；角度为下位机Yaw舵机命令角，不是PICK_TARGET轴向角。
     edge_yaw_limit:
       enabled: true  # 是否启用边缘抓取姿态约束；下位机中转路线另由edge_motion_config.h配置。
-      x_threshold_mm: -20.0  # 最终下发X大于该值时限角；应与下位机中转边界保持一致。
+      x_threshold_mm: -40.0  # 最终下发X大于该值时限角；应与下位机中转边界保持一致。
       servo_min_deg: 40.0  # 边缘区允许的最小实际Yaw舵机角（度）。
       servo_max_deg: 80.0  # 边缘区允许的最大实际Yaw舵机角（度）。
       preferred_servo_deg: 60.0  # 接触条件相近时优先的平行姿态（度）。

@@ -28,7 +28,7 @@ class EdgeYawPipelineTests(unittest.TestCase):
                 model_path=directory / "model.pt", calibration_path=directory / "mapping.json",
                 yaw_servo_calibration=yaw, orientation_enabled=False,
                 default_grasp_axis_robot_deg=60, grasp_search_enabled=False,
-                edge_yaw_config={"enabled": enabled, "x_threshold_mm": -20,
+                edge_yaw_config={"enabled": enabled, "x_threshold_mm": -40,
                                  "servo_min_deg": 40, "servo_max_deg": 80,
                                  "preferred_servo_deg": 60, "sample_step_deg": 5},
                 x_limits_mm=(-300, 0), y_limits_mm=(-300, 0),
@@ -55,14 +55,14 @@ class EdgeYawPipelineTests(unittest.TestCase):
         wire = SortingProtocol.unpack(SortingProtocol.pack(SortingFrame(
             mode=Mode.PICK_TARGET, x_mm=result.x_mm, y_mm=result.y_mm, yaw_deg=result.yaw_deg,
         )))
-        self.assertGreater(wire.x_mm, -20)
+        self.assertGreater(wire.x_mm, -40)
         self.assertTrue(40 <= pipeline.yaw_servo_calibration.command_deg(wire.yaw_deg) <= 80)
         self.assertNotEqual(wire.yaw_deg, 60)  # 60是舵机偏好角，不能直接当成协议角。
         self.assertTrue(any(r["reason"] == "edge_yaw_outside_servo_range"
                             for r in pipeline.last_gripper_rejections))
 
     def test_outside_and_exact_boundary_keep_original_direction(self):
-        for x in (-50, -20):
+        for x in (-50, -40):
             with self.subTest(x=x):
                 self.assertEqual(self.result(self.make(x)).yaw_deg, 60)
 
@@ -80,21 +80,21 @@ class EdgeYawPipelineTests(unittest.TestCase):
         self.assertTrue(40 <= pipeline.yaw_servo_calibration.command_deg(result.yaw_deg) <= 80)
 
     def test_consensus_crossing_x_boundary_rechecks_average_servo_angle(self):
-        pipeline = self.make(-20.1)
+        pipeline = self.make(-40.1)
         frame = np.zeros((200, 200, 3), np.uint8)
         candidate = pipeline._build_candidates(
             frame, pipeline.segmenter.get_objects.return_value,
         )[0]
         # 第一帧在区域外，协议20°对应舵机87.4°，允许保留原姿态；
         # 第二帧已进入区域，协议12°对应舵机79.1°，也合法。
-        # 共识中位X=-19.95已在区域内，但均值协议16°对应舵机83.3°，必须拒绝。
-        outside = replace(candidate, x_mm=-20.1, yaw_deg=20.0)
-        inside = replace(candidate, x_mm=-19.8, yaw_deg=12.0)
+        # 共识中位X=-39.95已在区域内，但均值协议16°对应舵机83.3°，必须拒绝。
+        outside = replace(candidate, x_mm=-40.1, yaw_deg=20.0)
+        inside = replace(candidate, x_mm=-39.8, yaw_deg=12.0)
         with patch.object(pipeline, "_build_candidates", side_effect=[[outside], [inside]]):
             self.assertFalse(pipeline.process(frame).ready)
             result = pipeline.process(frame)
         self.assertFalse(result.ready)
-        self.assertAlmostEqual(result.x_mm, -19.95)
+        self.assertAlmostEqual(result.x_mm, -39.95)
         self.assertIsNone(result.yaw_deg)
         self.assertEqual(result.reason, "edge_yaw_consensus_outside_servo_range")
 

@@ -20,7 +20,7 @@ def yaw_calibration(slope=1.04720792):
 
 class EdgeYawLimitTests(unittest.TestCase):
     config = {
-        "enabled": True, "x_threshold_mm": -20.0,
+        "enabled": True, "x_threshold_mm": -40.0,
         "servo_min_deg": 40.0, "servo_max_deg": 80.0,
         "preferred_servo_deg": 60.0, "sample_step_deg": 5.0,
     }
@@ -35,13 +35,13 @@ class EdgeYawLimitTests(unittest.TestCase):
         return (physical + 90.0) % 180.0 - 90.0
 
     def test_x_threshold_is_strict_and_safe_side_preserves_original_angles(self):
-        self.assertFalse(self.limit.active(-20.0))
-        self.assertFalse(self.limit.active(-20.01))
-        self.assertTrue(self.limit.active(-19.99))
+        self.assertFalse(self.limit.active(-40.0))
+        self.assertFalse(self.limit.active(-40.01))
+        self.assertTrue(self.limit.active(-39.99))
         axis = self.axis_for_servo(-30)
-        self.assertTrue(self.limit.allows(-20.0, axis, self.yaw))
+        self.assertTrue(self.limit.allows(-40.0, axis, self.yaw))
         self.assertTrue(self.limit.allows(-80.0, axis, self.yaw))
-        self.assertFalse(self.limit.allows(-19.99, axis, self.yaw))
+        self.assertFalse(self.limit.allows(-39.99, axis, self.yaw))
 
     def test_uses_real_servo_angle_and_accepts_both_endpoints(self):
         for servo in (40.0, 60.0, 80.0):
@@ -87,7 +87,7 @@ class EdgeYawLimitTests(unittest.TestCase):
         self.assertTrue(all(restricted.command_deg(axis) <= 65.0 for axis in candidates))
         self.assertFalse(self.limit.allows(-100.0, 20.0, restricted))
         # 执行区间是[-90,90)，90°反解会绕到-90°，必须剔除而不是产生另一分支。
-        limit = EdgeYawLimit(True, -20, 80, 100, 90, 5)
+        limit = EdgeYawLimit(True, -40, 80, 100, 90, 5)
         cal = YawServoCalibration(0.0, 0.0, 1.0, -135.0, 135.0)
         self.assertEqual([cal.command_deg(axis) for axis in limit.candidate_axes(cal)], [85.0, 80.0])
 

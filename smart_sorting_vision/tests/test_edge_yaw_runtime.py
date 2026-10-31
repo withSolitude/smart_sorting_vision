@@ -24,7 +24,10 @@ class EdgeYawRuntimeTests(unittest.TestCase):
                                  yaw_deg=60, preopen_mm=20, grasp_width_mm=12)
         runtime.top_camera = SimpleNamespace(read=lambda: np.zeros((4, 4, 3), np.uint8))
         runtime.top_pipeline = SimpleNamespace(
-            process=lambda image: result, reset=Mock(), edge_yaw_limit=EdgeYawLimit(enabled=True),
+            process=lambda image: result, reset=Mock(), edge_yaw_limit=EdgeYawLimit(
+                enabled=True, x_threshold_mm=-40.0, servo_min_deg=40.0,
+                servo_max_deg=80.0, preferred_servo_deg=60.0, sample_step_deg=5.0,
+            ),
         )
         runtime.descent_drift_compensator = SimpleNamespace(apply=lambda x, y, yaw: SimpleNamespace(
             x_mm=-10, y_mm=y, predicted_drift_x_mm=-12, predicted_drift_y_mm=0,
