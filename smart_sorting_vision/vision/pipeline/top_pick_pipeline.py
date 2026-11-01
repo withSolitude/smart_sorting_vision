@@ -1131,46 +1131,6 @@ class TopPickPipeline:
                             preopen_mm = float(expanded_opening)
                             engagement_opening = float(expanded_opening)
                             engagement = expanded
-                    if not engagement.fits_between_fingers:
-                        # 开口达到上限仍不足时，只沿夹爪闭合轴把“补偿后的”抓点
-                        # 拉回目标投影中线；不回退到旧原始点，也不改变Yaw方向。
-                        closing_axis, _ = axis_vectors(physical_yaw_deg)
-                        close_projection = target_robot @ closing_axis
-                        target_middle = 0.5 * (
-                            float(np.min(close_projection)) + float(np.max(close_projection))
-                        )
-                        center_projection = float(candidate_center_robot @ closing_axis)
-                        center_delta = target_middle - center_projection
-                        if abs(center_delta) > 1e-3:
-                            recentered_robot = candidate_center_robot + center_delta * closing_axis
-                            try:
-                                recentered_px = self._robot_to_pixel(recentered_robot)
-                                rx, ry = int(round(recentered_px[0])), int(round(recentered_px[1]))
-                                recentered_inside = cv2.pointPolygonTest(
-                                    np.asarray(target_polygon, dtype=np.float32).reshape(-1, 1, 2),
-                                    (float(recentered_px[0]), float(recentered_px[1])), False,
-                                ) >= 0.0
-                                recentered_safe = (
-                                    0 <= rx < frame.shape[1] and 0 <= ry < frame.shape[0]
-                                    and bool(grasp_result.safe_mask[ry, rx])
-                                )
-                            except (TypeError, ValueError, RuntimeError):
-                                recentered_inside = recentered_safe = False
-                            if recentered_inside and recentered_safe:
-                                recentered_engagement = evaluate_target_engagement(
-                                    target_robot,
-                                    recentered_robot,
-                                    physical_yaw_deg,
-                                    engagement_opening,
-                                    finger_length_mm=self.gripper_footprint.finger_length_mm,
-                                    finger_longitudinal_offset_mm=self.gripper_footprint.finger_longitudinal_offset_mm,
-                                    min_side_gap_mm=self.grasp_search_min_side_gap_mm,
-                                    min_longitudinal_overlap_mm=self.grasp_search_min_target_overlap_mm,
-                                )
-                                if recentered_engagement.fits_between_fingers:
-                                    candidate_center_robot = np.asarray(recentered_robot, dtype=np.float64)
-                                    candidate_px = (float(recentered_px[0]), float(recentered_px[1]))
-                                    engagement = recentered_engagement
                 if not engagement.fits_between_fingers:
                     reject(
                         "target_not_between_fingers",
