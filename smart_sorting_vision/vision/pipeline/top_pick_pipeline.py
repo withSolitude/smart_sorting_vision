@@ -909,6 +909,14 @@ class TopPickPipeline:
                             break
             else:
                 trial_specs = [(0.0, 0.0, 0.0)]
+                # 即使关闭全局多姿态搜索，也要检查同一轮廓的其它真实平行边。
+                # 否则边角目标只有主方向会被测试，合法的另一组夹持方向会丢失。
+                for family_yaw_deg in orientation_family_yaws[1:]:
+                    trial_specs.append((
+                        axial_difference_deg(family_yaw_deg, base_yaw_deg),
+                        0.0,
+                        0.0,
+                    ))
             # 边缘区独立尝试允许的真实舵机角，即使全局多姿态搜索关闭也能抓取。
             # 额外姿态只供 x>阈值 的目标使用，区域外仍保留原规划结果。
             edge_only_trials = set()
@@ -1033,8 +1041,27 @@ class TopPickPipeline:
                     reject("candidate_xy_not_finite", px=candidate_px, yaw=yaw_deg)
                     continue
                 selected = self._compensate_yaw_xy(float(x_mm), float(y_mm), physical_yaw_deg)
+                if selected is None and radial_shift_px > 0.0:
+                    # 向外补偿靠近工作区上边界时可能把合法抓点推到x/y=0之外。
+                    # 回退到未补偿点仍使用同一Yaw和夹持检查，避免把合法的60°姿态误判为不可执行。
+                    try:
+                        fallback_px = uncompensated_px
+                        fallback_center = self.transform.pixel_to_robot(
+                            fallback_px[0], fallback_px[1], apply_tcp_offset=True,
+                        )
+                        fallback_selected = self._compensate_yaw_xy(
+                            float(fallback_center[0]), float(fallback_center[1]), physical_yaw_deg,
+                        )
+                    except (ValueError, RuntimeError):
+                        fallback_selected = None
+                    if fallback_selected is not None:
+                        candidate_px = fallback_px
+                        radial_shift_px = 0.0
+                        candidate_center_robot = np.asarray(fallback_center, dtype=np.float64)
+                        selected = fallback_selected
                 if selected is None:
-                    reject("yaw_tcp_or_workspace_unavailable", px=candidate_px, yaw=yaw_deg)
+                    reject("yaw_tcp_or_workspace_unavailable", px=candidate_px, yaw=yaw_deg,
+                           meta={"x_mm": float(x_mm), "y_mm": float(y_mm)})
                     continue
                 x_mm, y_mm = selected
                 edge_active = self.edge_yaw_limit.active(x_mm)
@@ -1090,6 +1117,31 @@ class TopPickPipeline:
                     min_side_gap_mm=self.grasp_search_min_side_gap_mm,
                     min_longitudinal_overlap_mm=self.grasp_search_min_target_overlap_mm,
                 )
+                if not engagement.fits_between_fingers and radial_shift_px > 0.0:
+                    # 径向补偿可能把抓点从目标中线推向托盘边缘，导致一侧指爪没有间隙。
+                    # 先回退到同一姿态的原始抓点；这不会改变Yaw，只取消本次不安全的外移。
+                    try:
+                        fallback_px = uncompensated_px
+                        fallback_center = np.asarray(self.transform.pixel_to_robot(
+                            fallback_px[0], fallback_px[1], apply_tcp_offset=False,
+                        ), dtype=np.float64)
+                        fallback_engagement = evaluate_target_engagement(
+                            target_robot,
+                            fallback_center,
+                            physical_yaw_deg,
+                            engagement_opening,
+                            finger_length_mm=self.gripper_footprint.finger_length_mm,
+                            finger_longitudinal_offset_mm=self.gripper_footprint.finger_longitudinal_offset_mm,
+                            min_side_gap_mm=self.grasp_search_min_side_gap_mm,
+                            min_longitudinal_overlap_mm=self.grasp_search_min_target_overlap_mm,
+                        )
+                    except (ValueError, RuntimeError):
+                        fallback_engagement = None
+                    if fallback_engagement is not None and fallback_engagement.fits_between_fingers:
+                        candidate_px = fallback_px
+                        candidate_center_robot = fallback_center
+                        radial_shift_px = 0.0
+                        engagement = fallback_engagement
                 if not engagement.fits_between_fingers:
                     reject(
                         "target_not_between_fingers",
@@ -1098,6 +1150,10 @@ class TopPickPipeline:
                         opening=preopen_mm,
                         meta={
                             "min_side_gap_mm": float(engagement.min_side_gap_mm),
+                            "left_gap_mm": float(engagement.left_gap_mm),
+                            "right_gap_mm": float(engagement.right_gap_mm),
+                            "opening_mm": float(engagement_opening),
+                            "width_mm": float(trial_width_mm),
                             "yaw_offset_deg": float(yaw_offset_deg),
                             "longitudinal_offset_mm": float(longitudinal_offset_mm),
                             "closing_offset_mm": float(closing_offset_mm),
