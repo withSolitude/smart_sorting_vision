@@ -1059,9 +1059,14 @@ class TopPickPipeline:
                     continue
                 x_mm, y_mm = selected
                 edge_active = self.edge_yaw_limit.active(x_mm)
+                workspace_edge_active = edge_active
+                if self.edge_yaw_limit.enabled and self.y_limits_mm is not None:
+                    workspace_edge_active = workspace_edge_active or (
+                        y_mm >= float(self.y_limits_mm[1]) - self.edge_yaw_limit.workspace_clamp_mm
+                    )
                 engagement_min_side_gap_mm = (
                     self.edge_yaw_limit.min_side_gap_mm
-                    if edge_active else self.grasp_search_min_side_gap_mm
+                    if workspace_edge_active else self.grasp_search_min_side_gap_mm
                 )
                 if (yaw_offset_deg, longitudinal_offset_mm, closing_offset_mm) in edge_only_trials and not edge_active:
                     continue
