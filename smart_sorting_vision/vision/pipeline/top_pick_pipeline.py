@@ -1046,6 +1046,11 @@ class TopPickPipeline:
                 x_mm, workspace_clamped = self.edge_yaw_limit.clamp_workspace_x(
                     float(x_mm), workspace_max_x,
                 )
+                if self.edge_yaw_limit.enabled and y_mm > 0.0:
+                    y_limit = float(self.y_limits_mm[1]) if self.y_limits_mm is not None else 0.0
+                    if y_mm <= y_limit + self.edge_yaw_limit.workspace_clamp_mm:
+                        y_mm = y_limit
+                        workspace_clamped = True
                 selected = self._compensate_yaw_xy(float(x_mm), float(y_mm), physical_yaw_deg)
                 if selected is None:
                     reject("yaw_tcp_or_workspace_unavailable", px=candidate_px, yaw=yaw_deg,
@@ -1054,6 +1059,10 @@ class TopPickPipeline:
                     continue
                 x_mm, y_mm = selected
                 edge_active = self.edge_yaw_limit.active(x_mm)
+                engagement_min_side_gap_mm = (
+                    self.edge_yaw_limit.min_side_gap_mm
+                    if edge_active else self.grasp_search_min_side_gap_mm
+                )
                 if (yaw_offset_deg, longitudinal_offset_mm, closing_offset_mm) in edge_only_trials and not edge_active:
                     continue
                 if not self.edge_yaw_limit.allows(x_mm, yaw_deg, self.yaw_servo_calibration):
@@ -1103,7 +1112,7 @@ class TopPickPipeline:
                     engagement_opening,
                     finger_length_mm=self.gripper_footprint.finger_length_mm,
                     finger_longitudinal_offset_mm=self.gripper_footprint.finger_longitudinal_offset_mm,
-                    min_side_gap_mm=self.grasp_search_min_side_gap_mm,
+                    min_side_gap_mm=engagement_min_side_gap_mm,
                     min_longitudinal_overlap_mm=self.grasp_search_min_target_overlap_mm,
                 )
                 if not engagement.fits_between_fingers:

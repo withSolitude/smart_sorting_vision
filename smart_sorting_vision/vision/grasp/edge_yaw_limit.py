@@ -17,6 +17,7 @@ class EdgeYawLimit:
     preferred_servo_deg: float = 60.0
     sample_step_deg: float = 5.0
     workspace_clamp_mm: float = 5.0
+    min_side_gap_mm: float = -1.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -30,6 +31,8 @@ class EdgeYawLimit:
             raise ValueError("edge_yaw_limit.sample_step_deg 必须大于0")
         if self.workspace_clamp_mm < 0:
             raise ValueError("edge_yaw_limit.workspace_clamp_mm 必须非负")
+        if not math.isfinite(self.min_side_gap_mm):
+            raise ValueError("edge_yaw_limit.min_side_gap_mm 必须为有限数值")
 
     @classmethod
     def from_config(cls, config: dict | None) -> "EdgeYawLimit":
@@ -43,7 +46,7 @@ class EdgeYawLimit:
         enabled = config.get("enabled", False)
         if not isinstance(enabled, bool):
             raise ValueError("edge_yaw_limit.enabled 必须为 true/false")
-        required_names = names - {"workspace_clamp_mm"}
+        required_names = names - {"workspace_clamp_mm", "min_side_gap_mm"}
         if enabled and required_names - set(config):
             raise ValueError(f"启用边缘Yaw限制需要填写：{', '.join(sorted(required_names - set(config)))}")
         values = {key: (value if key == "enabled" else float(value)) for key, value in config.items()}

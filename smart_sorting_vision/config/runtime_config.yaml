@@ -126,6 +126,7 @@ vision:
       preferred_servo_deg: 60.0  # 接触条件相近时优先的平行姿态（度）。
       sample_step_deg: 5.0  # 在允许舵机角范围内重新搜索的步长（度），之后仍检查协议量化值。
       workspace_clamp_mm: 5.0  # 边缘标定小越界允许压回工作区上限（mm）；明显越界仍拒绝。
+      min_side_gap_mm: -1.0  # 边缘目标允许的最小单侧夹指间隙（mm）；只放宽边缘，抓点不移动。
 
     # p_new = p + gain * (p - center)，仅向外补偿最终抓点；不改变原抓长边/方向算法。
     outward_radial_compensation:
