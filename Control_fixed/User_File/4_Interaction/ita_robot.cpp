@@ -1465,13 +1465,23 @@ float Class_Robot::Convert_Grasp_Axis_To_Servo_Yaw_Rad(float Grasp_Axis_Robot_De
     if (delta_deg < 0.0f) delta_deg += 180.0f;
     delta_deg -= 90.0f;
 
-    const float servo_command_deg = Pick_Yaw_Reference_Servo_Command_Deg +
+    float servo_command_deg = Pick_Yaw_Reference_Servo_Command_Deg +
         Pick_Yaw_Servo_Deg_Per_Gripper_Deg * delta_deg;
-    if (!std::isfinite(servo_command_deg) ||
-        servo_command_deg < Pick_Yaw_Servo_Command_Min_Deg ||
-        servo_command_deg > Pick_Yaw_Servo_Command_Max_Deg)
+    if (!std::isfinite(servo_command_deg))
     {
         return NAN;
+    }
+    if (servo_command_deg < Pick_Yaw_Servo_Command_Min_Deg)
+    {
+        if (Pick_Yaw_Servo_Command_Min_Deg - servo_command_deg >
+            Pick_Yaw_Servo_Command_Tolerance_Deg) return NAN;
+        servo_command_deg = Pick_Yaw_Servo_Command_Min_Deg;
+    }
+    else if (servo_command_deg > Pick_Yaw_Servo_Command_Max_Deg)
+    {
+        if (servo_command_deg - Pick_Yaw_Servo_Command_Max_Deg >
+            Pick_Yaw_Servo_Command_Tolerance_Deg) return NAN;
+        servo_command_deg = Pick_Yaw_Servo_Command_Max_Deg;
     }
     return servo_command_deg * PI / 180.0f;
 }

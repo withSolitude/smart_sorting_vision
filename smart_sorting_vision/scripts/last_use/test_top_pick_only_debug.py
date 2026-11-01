@@ -597,6 +597,7 @@ def make_frozen_target(
     alignment_y = float(result.y_mm)
     yaw_deg = normalize_axial_deg(float(result.yaw_deg))
     # 与生产程序一致：先量化协议角度，再确定唯一物理姿态并校验舵机限位。
+    yaw_deg = yaw.safe_wire_axis_deg(yaw_deg)
     yaw_deg = quantized(make_pick_target(alignment_x, alignment_y, yaw_deg)).yaw_deg
     physical_yaw = yaw.physical_axis_deg(yaw_deg)
     yaw.command_deg(yaw_deg)

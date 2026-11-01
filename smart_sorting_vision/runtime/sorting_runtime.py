@@ -1098,6 +1098,7 @@ class SortingRuntime:
             self._safe_reset(self.top_pipeline)
             return
         # 先采用协议实际发送的整度轴向角，尤其避免跨180°区间边界后TCP相反。
+        yaw_deg = self.yaw_servo_calibration.safe_wire_axis_deg(yaw_deg)
         yaw_deg = ((float(round(yaw_deg)) + 90.0) % 180.0) - 90.0
         try:
             if self.yaw_servo_calibration is None:

@@ -96,6 +96,7 @@ calibration:
     servo_deg_per_axis_deg: 1.04720792  # 夹爪物理轴每转1度对应舵机命令变化（度/度）。
     safe_command_min_deg: -90.0  # 已通过机械行程测试的舵机最小命令（度）。
     safe_command_max_deg: 90.0  # 已通过机械行程测试的舵机最大命令（度）。
+    safe_command_tolerance_deg: 2.0  # 拟合小误差容差；例如90.58°会压回90°，明显超出仍拒绝。
   side_background_capture:
     settle_frames: 15  # 采集背景前等待的稳定帧数。
     frame_count: 30  # 用于生成背景的采样帧数。

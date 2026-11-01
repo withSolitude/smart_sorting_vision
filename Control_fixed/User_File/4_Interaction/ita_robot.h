@@ -266,6 +266,7 @@ private:
     // 保留现有舵机机械限位；角度换算失败时拒绝目标，不静默截断。
     float Pick_Yaw_Servo_Command_Min_Deg = -90.0f;
     float Pick_Yaw_Servo_Command_Max_Deg =  90.0f;
+    float Pick_Yaw_Servo_Command_Tolerance_Deg = 2.0f;
 
     float Convert_Grasp_Axis_To_Servo_Yaw_Rad(float Grasp_Axis_Robot_Deg) const;
 

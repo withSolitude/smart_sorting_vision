@@ -595,10 +595,11 @@ class TopPickPipeline:
             raise ValueError("new claw requires a measured width; no legacy fixed preopen")
         return self.claw_preopen_profile.command_for_width(width_mm)
 
-    @staticmethod
-    def _wire_yaw(axial_yaw_deg: float) -> float:
+    def _wire_yaw(self, axial_yaw_deg: float) -> float:
         """先按协议的1°分辨率量化，再规划实际物理姿态，避免窗口边界错侧。"""
         axial = normalize_axial_deg(axial_yaw_deg)
+        if self.yaw_servo_calibration is not None:
+            axial = self.yaw_servo_calibration.safe_wire_axis_deg(axial)
         return normalize_axial_deg(round(axial / YAW_SCALE_DEG) * YAW_SCALE_DEG)
 
     def _physical_yaw(self, axial_yaw_deg: float) -> float:
