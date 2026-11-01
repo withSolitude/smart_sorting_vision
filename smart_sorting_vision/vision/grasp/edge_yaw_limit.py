@@ -49,8 +49,9 @@ class EdgeYawLimit:
         x = float(x_mm)
         if not math.isfinite(x):
             raise ValueError("用于边缘Yaw判断的最终X必须为有限数值")
-        # x=-20 位于中转边界，严格按照用户指定的 x>-20 才限制角度。
-        return self.enabled and x > self.x_threshold_mm
+        # 机械X范围是负向的：边缘区明确表示 threshold < X <= 0，
+        # 例如 threshold=-40 时就是 -40<X<=0；X<=-40 不限角。
+        return self.enabled and self.x_threshold_mm < x <= 0.0
 
     def allows(self, x_mm: float, axis_yaw_deg: float, calibration: YawServoCalibration) -> bool:
         """使用最终X及量化后的协议角检查，绝不把协议角当成舵机角。"""

@@ -168,6 +168,13 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"calibration.yaw_servo 无效: {exc}") from exc
 
+    swap_xy = cfg["calibration"].get("pixel_to_robot_swap_xy", False)
+    if not isinstance(swap_xy, bool):
+        raise ConfigError("calibration.pixel_to_robot_swap_xy 必须为 true/false")
+    # 所有使用 camera.top 构造 PixelToRobotTransform 的入口共用这一标志，
+    # 避免主程序、调试脚本和校准验证脚本各自维护一份轴顺序。
+    cfg["camera"]["top"]["swap_robot_xy"] = swap_xy
+
     try:
         OutwardRadialCompensator.validate_config(cfg["vision"]["top"].get("outward_radial_compensation"))
     except (ValueError, TypeError) as exc:
