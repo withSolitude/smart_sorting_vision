@@ -1471,18 +1471,11 @@ float Class_Robot::Convert_Grasp_Axis_To_Servo_Yaw_Rad(float Grasp_Axis_Robot_De
     {
         return NAN;
     }
+    // 运行期间任何超出范围的拟合结果都压到最大安全角，不能因此中止本次抓取。
     if (servo_command_deg < Pick_Yaw_Servo_Command_Min_Deg)
-    {
-        if (Pick_Yaw_Servo_Command_Min_Deg - servo_command_deg >
-            Pick_Yaw_Servo_Command_Tolerance_Deg) return NAN;
         servo_command_deg = Pick_Yaw_Servo_Command_Min_Deg;
-    }
     else if (servo_command_deg > Pick_Yaw_Servo_Command_Max_Deg)
-    {
-        if (servo_command_deg - Pick_Yaw_Servo_Command_Max_Deg >
-            Pick_Yaw_Servo_Command_Tolerance_Deg) return NAN;
         servo_command_deg = Pick_Yaw_Servo_Command_Max_Deg;
-    }
     return servo_command_deg * PI / 180.0f;
 }
 

@@ -49,15 +49,8 @@ class YawServoCalibration:
         command = self.reference_servo_deg + self.servo_deg_per_axis_deg * (
             physical - self.reference_axis_deg
         )
-        if command < self.safe_command_min_deg:
-            if self.safe_command_min_deg - command <= self.safe_command_tolerance_deg:
-                return self.safe_command_min_deg
-        elif command > self.safe_command_max_deg:
-            if command - self.safe_command_max_deg <= self.safe_command_tolerance_deg:
-                return self.safe_command_max_deg
-        elif self.safe_command_min_deg <= command <= self.safe_command_max_deg:
-            return command
-        raise ValueError(f"Yaw 舵机目标 {command:.3f}° 超出已配置安全区间")
+        # 标定拟合可能略超边界；运行时始终压到配置的最大物理角，不能因此终止抓取。
+        return min(self.safe_command_max_deg, max(self.safe_command_min_deg, command))
 
     def safe_wire_axis_deg(self, axial_deg: float) -> float:
         """将小拟合误差压回安全舵机角，再按协议1°量化并复核。"""
@@ -66,15 +59,11 @@ class YawServoCalibration:
             physical - self.reference_axis_deg
         )
         if raw_command < self.safe_command_min_deg:
-            if self.safe_command_min_deg - raw_command > self.safe_command_tolerance_deg:
-                raise ValueError(f"Yaw 舵机目标 {raw_command:.3f}° 超出已配置安全区间")
             target_command = self.safe_command_min_deg
             target_physical = self.reference_axis_deg + (
                 target_command - self.reference_servo_deg
             ) / self.servo_deg_per_axis_deg
         elif raw_command > self.safe_command_max_deg:
-            if raw_command - self.safe_command_max_deg > self.safe_command_tolerance_deg:
-                raise ValueError(f"Yaw 舵机目标 {raw_command:.3f}° 超出已配置安全区间")
             target_command = self.safe_command_max_deg
             target_physical = self.reference_axis_deg + (
                 target_command - self.reference_servo_deg

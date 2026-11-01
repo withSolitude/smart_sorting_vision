@@ -37,9 +37,9 @@ class SingleYawTests(unittest.TestCase):
             for period in (-360.0, -180.0, 180.0, 360.0):
                 self.assertAlmostEqual(self.yaw.physical_axis_deg(axis + period), physical)
                 self.assertAlmostEqual(self.yaw.command_deg(axis + period), command)
-        # 当前实机安全限位为±90°，会拒绝唯一窗口两端的少量超限角度。
+        # 运行时超出安全角度统一压到配置边界，不因拟合小误差拒绝抓取。
         self.assertGreater(reachable, 1600)
-        self.assertGreater(rejected, 0)
+        self.assertEqual(rejected, 0)
 
     def test_reported_minus_82_target_uses_updated_calibration(self):
         # 用户日志中旧参数算到 137.78° 而被拒绝；新标定应约为 -19.16°。
@@ -63,8 +63,7 @@ class SingleYawTests(unittest.TestCase):
             -60.0,
             60.0,
         )
-        with self.assertRaises(ValueError):
-            narrow.command_deg(narrow.reference_axis_deg + 89.0)
+        self.assertEqual(narrow.command_deg(narrow.reference_axis_deg + 89.0), 60.0)
         for invalid in (math.nan, math.inf, -math.inf):
             with self.assertRaises(ValueError):
                 self.yaw.command_deg(invalid)
