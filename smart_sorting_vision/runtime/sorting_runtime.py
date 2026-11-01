@@ -1131,6 +1131,14 @@ class SortingRuntime:
         # R06 defense-in-depth：Pipeline 已过滤一次，真正发送机械动作前
         # Runtime 再按正式机械工作区复核。注意这里检查的是加入下降预补偿后的
         # 最终PICK命令，避免为了补偿把机构推到工作区之外。
+        edge_limit = getattr(self.top_pipeline, "edge_yaw_limit", None)
+        if edge_limit is not None:
+            x_mm, clamped = edge_limit.clamp_workspace_x(
+                x_mm,
+                float(self.pick_x_limits_mm[1]) if self.pick_x_limits_mm is not None else 0.0,
+            )
+            if clamped:
+                print(f"[Runtime] edge X calibration clamp -> {x_mm:.3f}mm")
         if not self._pick_xy_inside_limits(x_mm, y_mm):
             self._fail(
                 "PICK_TARGET outside workspace: "

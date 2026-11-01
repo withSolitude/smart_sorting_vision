@@ -40,6 +40,8 @@ class EdgeYawLimitTests(unittest.TestCase):
         self.assertTrue(self.limit.active(-39.99))
         self.assertTrue(self.limit.active(0.0))
         self.assertFalse(self.limit.active(0.01))
+        self.assertEqual(self.limit.clamp_workspace_x(2.0), (0.0, True))
+        self.assertEqual(self.limit.clamp_workspace_x(6.0), (6.0, False))
         axis = self.axis_for_servo(-30)
         self.assertTrue(self.limit.allows(-40.0, axis, self.yaw))
         self.assertTrue(self.limit.allows(-80.0, axis, self.yaw))

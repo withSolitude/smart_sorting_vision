@@ -617,6 +617,11 @@ def make_frozen_target(
         predicted_dx = float(drift.predicted_drift_x_mm)
         predicted_dy = float(drift.predicted_drift_y_mm)
 
+    if edge_yaw_limit is not None:
+        command_x, clamped = edge_yaw_limit.clamp_workspace_x(command_x, 0.0)
+        if clamped:
+            print(f"[DEBUG] edge X calibration clamp -> {command_x:.3f}mm")
+
     # 用真正下发的0.1mm/1°指令判断，避免下降预补偿把抓点推入边缘限制区。
     wire = quantized(make_pick_target(command_x, command_y, yaw_deg))
     if edge_yaw_limit is not None and not edge_yaw_limit.allows(wire.x_mm, wire.yaw_deg, yaw):

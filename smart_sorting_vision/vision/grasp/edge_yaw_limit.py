@@ -16,6 +16,7 @@ class EdgeYawLimit:
     servo_max_deg: float = 80.0
     preferred_servo_deg: float = 60.0
     sample_step_deg: float = 5.0
+    workspace_clamp_mm: float = 5.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
@@ -27,6 +28,8 @@ class EdgeYawLimit:
             raise ValueError("边缘舵机角必须满足 servo_min_deg <= preferred_servo_deg <= servo_max_deg")
         if self.sample_step_deg <= 0:
             raise ValueError("edge_yaw_limit.sample_step_deg 必须大于0")
+        if self.workspace_clamp_mm < 0:
+            raise ValueError("edge_yaw_limit.workspace_clamp_mm 必须非负")
 
     @classmethod
     def from_config(cls, config: dict | None) -> "EdgeYawLimit":
@@ -40,8 +43,9 @@ class EdgeYawLimit:
         enabled = config.get("enabled", False)
         if not isinstance(enabled, bool):
             raise ValueError("edge_yaw_limit.enabled 必须为 true/false")
-        if enabled and names - set(config):
-            raise ValueError(f"启用边缘Yaw限制需要填写：{', '.join(sorted(names - set(config)))}")
+        required_names = names - {"workspace_clamp_mm"}
+        if enabled and required_names - set(config):
+            raise ValueError(f"启用边缘Yaw限制需要填写：{', '.join(sorted(required_names - set(config)))}")
         values = {key: (value if key == "enabled" else float(value)) for key, value in config.items()}
         return cls(**values)
 
@@ -52,6 +56,20 @@ class EdgeYawLimit:
         # 机械X范围是负向的：边缘区明确表示 threshold < X <= 0，
         # 例如 threshold=-40 时就是 -40<X<=0；X<=-40 不限角。
         return self.enabled and self.x_threshold_mm < x <= 0.0
+
+    def clamp_workspace_x(self, x_mm: float, workspace_max_mm: float = 0.0) -> tuple[float, bool]:
+        """只把靠近上边界的小标定越界压回边界，不吞掉明显错误坐标。"""
+        x = float(x_mm)
+        limit = float(workspace_max_mm)
+        if (
+            self.enabled
+            and math.isfinite(x)
+            and math.isfinite(limit)
+            and x > limit
+            and x <= limit + self.workspace_clamp_mm
+        ):
+            return limit, True
+        return x, False
 
     def allows(self, x_mm: float, axis_yaw_deg: float, calibration: YawServoCalibration) -> bool:
         """使用最终X及量化后的协议角检查，绝不把协议角当成舵机角。"""

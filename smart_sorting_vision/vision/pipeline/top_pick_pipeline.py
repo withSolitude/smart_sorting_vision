@@ -1040,28 +1040,17 @@ class TopPickPipeline:
                 if not (np.isfinite(x_mm) and np.isfinite(y_mm)):
                     reject("candidate_xy_not_finite", px=candidate_px, yaw=yaw_deg)
                     continue
+                workspace_max_x = (
+                    float(self.x_limits_mm[1]) if self.x_limits_mm is not None else 0.0
+                )
+                x_mm, workspace_clamped = self.edge_yaw_limit.clamp_workspace_x(
+                    float(x_mm), workspace_max_x,
+                )
                 selected = self._compensate_yaw_xy(float(x_mm), float(y_mm), physical_yaw_deg)
-                if selected is None and radial_shift_px > 0.0:
-                    # 向外补偿靠近工作区上边界时可能把合法抓点推到x/y=0之外。
-                    # 回退到未补偿点仍使用同一Yaw和夹持检查，避免把合法的60°姿态误判为不可执行。
-                    try:
-                        fallback_px = uncompensated_px
-                        fallback_center = self.transform.pixel_to_robot(
-                            fallback_px[0], fallback_px[1], apply_tcp_offset=True,
-                        )
-                        fallback_selected = self._compensate_yaw_xy(
-                            float(fallback_center[0]), float(fallback_center[1]), physical_yaw_deg,
-                        )
-                    except (ValueError, RuntimeError):
-                        fallback_selected = None
-                    if fallback_selected is not None:
-                        candidate_px = fallback_px
-                        radial_shift_px = 0.0
-                        candidate_center_robot = np.asarray(fallback_center, dtype=np.float64)
-                        selected = fallback_selected
                 if selected is None:
                     reject("yaw_tcp_or_workspace_unavailable", px=candidate_px, yaw=yaw_deg,
-                           meta={"x_mm": float(x_mm), "y_mm": float(y_mm)})
+                           meta={"x_mm": float(x_mm), "y_mm": float(y_mm),
+                                 "workspace_clamped": bool(workspace_clamped)})
                     continue
                 x_mm, y_mm = selected
                 edge_active = self.edge_yaw_limit.active(x_mm)
@@ -1117,31 +1106,71 @@ class TopPickPipeline:
                     min_side_gap_mm=self.grasp_search_min_side_gap_mm,
                     min_longitudinal_overlap_mm=self.grasp_search_min_target_overlap_mm,
                 )
-                if not engagement.fits_between_fingers and radial_shift_px > 0.0:
-                    # 径向补偿可能把抓点从目标中线推向托盘边缘，导致一侧指爪没有间隙。
-                    # 先回退到同一姿态的原始抓点；这不会改变Yaw，只取消本次不安全的外移。
-                    try:
-                        fallback_px = uncompensated_px
-                        fallback_center = np.asarray(self.transform.pixel_to_robot(
-                            fallback_px[0], fallback_px[1], apply_tcp_offset=False,
-                        ), dtype=np.float64)
-                        fallback_engagement = evaluate_target_engagement(
+                if not engagement.fits_between_fingers:
+                    # 保持补偿后的抓点和Yaw，先用预开口余量弥补中心偏移造成的单侧间隙不足。
+                    required_gap = max(0.0, float(self.grasp_search_min_side_gap_mm))
+                    opening_extra = 2.0 * max(
+                        0.0, required_gap - float(engagement.min_side_gap_mm),
+                    )
+                    expanded_opening = min(
+                        float(self.preopen_command_max_mm),
+                        float(engagement_opening) + opening_extra,
+                    )
+                    if expanded_opening > float(engagement_opening) + 1e-6:
+                        expanded = evaluate_target_engagement(
                             target_robot,
-                            fallback_center,
+                            candidate_center_robot,
                             physical_yaw_deg,
-                            engagement_opening,
+                            expanded_opening,
                             finger_length_mm=self.gripper_footprint.finger_length_mm,
                             finger_longitudinal_offset_mm=self.gripper_footprint.finger_longitudinal_offset_mm,
                             min_side_gap_mm=self.grasp_search_min_side_gap_mm,
                             min_longitudinal_overlap_mm=self.grasp_search_min_target_overlap_mm,
                         )
-                    except (ValueError, RuntimeError):
-                        fallback_engagement = None
-                    if fallback_engagement is not None and fallback_engagement.fits_between_fingers:
-                        candidate_px = fallback_px
-                        candidate_center_robot = fallback_center
-                        radial_shift_px = 0.0
-                        engagement = fallback_engagement
+                        if expanded.fits_between_fingers:
+                            preopen_mm = float(expanded_opening)
+                            engagement_opening = float(expanded_opening)
+                            engagement = expanded
+                    if not engagement.fits_between_fingers:
+                        # 开口达到上限仍不足时，只沿夹爪闭合轴把“补偿后的”抓点
+                        # 拉回目标投影中线；不回退到旧原始点，也不改变Yaw方向。
+                        closing_axis, _ = axis_vectors(physical_yaw_deg)
+                        close_projection = target_robot @ closing_axis
+                        target_middle = 0.5 * (
+                            float(np.min(close_projection)) + float(np.max(close_projection))
+                        )
+                        center_projection = float(candidate_center_robot @ closing_axis)
+                        center_delta = target_middle - center_projection
+                        if abs(center_delta) > 1e-3:
+                            recentered_robot = candidate_center_robot + center_delta * closing_axis
+                            try:
+                                recentered_px = self._robot_to_pixel(recentered_robot)
+                                rx, ry = int(round(recentered_px[0])), int(round(recentered_px[1]))
+                                recentered_inside = cv2.pointPolygonTest(
+                                    np.asarray(target_polygon, dtype=np.float32).reshape(-1, 1, 2),
+                                    (float(recentered_px[0]), float(recentered_px[1])), False,
+                                ) >= 0.0
+                                recentered_safe = (
+                                    0 <= rx < frame.shape[1] and 0 <= ry < frame.shape[0]
+                                    and bool(grasp_result.safe_mask[ry, rx])
+                                )
+                            except (TypeError, ValueError, RuntimeError):
+                                recentered_inside = recentered_safe = False
+                            if recentered_inside and recentered_safe:
+                                recentered_engagement = evaluate_target_engagement(
+                                    target_robot,
+                                    recentered_robot,
+                                    physical_yaw_deg,
+                                    engagement_opening,
+                                    finger_length_mm=self.gripper_footprint.finger_length_mm,
+                                    finger_longitudinal_offset_mm=self.gripper_footprint.finger_longitudinal_offset_mm,
+                                    min_side_gap_mm=self.grasp_search_min_side_gap_mm,
+                                    min_longitudinal_overlap_mm=self.grasp_search_min_target_overlap_mm,
+                                )
+                                if recentered_engagement.fits_between_fingers:
+                                    candidate_center_robot = np.asarray(recentered_robot, dtype=np.float64)
+                                    candidate_px = (float(recentered_px[0]), float(recentered_px[1]))
+                                    engagement = recentered_engagement
                 if not engagement.fits_between_fingers:
                     reject(
                         "target_not_between_fingers",

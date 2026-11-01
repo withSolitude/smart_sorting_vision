@@ -211,6 +211,10 @@ def execute_pick_first_stage(
     x = float(target["x_mm"])
     y = float(target["y_mm"])
     yaw = normalize_axial_deg(float(target["yaw_deg"]))
+    if edge_yaw_limit is not None:
+        x, clamped = edge_yaw_limit.clamp_workspace_x(x, 0.0)
+        if clamped:
+            print(f"[DEBUG] edge X calibration clamp -> {x:.3f}mm")
     # 所有动作（包括预开口）之前复核最终线上指令；旧调用不传限制时保持兼容。
     frame = SortingProtocol.unpack(SortingProtocol.pack(make_pick_target(x, y, yaw)))
     if edge_yaw_limit is not None and not edge_yaw_limit.allows(frame.x_mm, frame.yaw_deg, yaw_calibration):
