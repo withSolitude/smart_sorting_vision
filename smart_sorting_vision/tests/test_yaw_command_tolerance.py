@@ -19,9 +19,10 @@ class YawCommandToleranceTests(unittest.TestCase):
         self.assertLessEqual(self.cal.command_deg(round(safe_axis)), 96.0)
 
     def test_large_overrun_is_clamped_to_96(self):
-        self.assertAlmostEqual(self.cal.command_deg(25.0), 96.0)
-        safe_axis = self.cal.safe_wire_axis_deg(25.0)
-        self.assertLessEqual(self.cal.command_deg(round(safe_axis)), 96.0)
+        cal = YawServoCalibration(0.0, 0.0, 2.0, -96.0, 96.0, 6.0)
+        self.assertAlmostEqual(cal.command_deg(49.0), 96.0)
+        safe_axis = cal.safe_wire_axis_deg(49.0)
+        self.assertLessEqual(cal.command_deg(round(safe_axis)), 96.0)
 
 
 if __name__ == "__main__":
