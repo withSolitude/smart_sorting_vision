@@ -262,9 +262,12 @@ private:
     float Pick_Yaw_Reference_Servo_Command_Deg = 0.394945458f;
     float Pick_Yaw_Servo_Deg_Per_Gripper_Deg = 1.077582510f;
 
-    // 保留现有舵机机械限位；角度换算失败时拒绝目标，不静默截断。
-    float Pick_Yaw_Servo_Command_Min_Deg = -135.0f;
-    float Pick_Yaw_Servo_Command_Max_Deg =  135.0f;
+    // 运行时允许的Yaw舵机命令范围。拟合结果略微越界时由下方转换函数压到边界，
+    // 不能因为浮点拟合误差让整次抓取直接失败。
+    float Pick_Yaw_Servo_Command_Min_Deg = -96.0f;
+    float Pick_Yaw_Servo_Command_Max_Deg =  96.0f;
+    // 保留兼容字段：旧配置曾使用该容差；当前统一采用±96°硬限幅。
+    float Pick_Yaw_Servo_Command_Tolerance_Deg = 6.0f;
 
     float Convert_Grasp_Axis_To_Servo_Yaw_Rad(float Grasp_Axis_Robot_Deg) const;
 

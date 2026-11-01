@@ -1480,14 +1480,17 @@ float Class_Robot::Convert_Grasp_Axis_To_Servo_Yaw_Rad(float Grasp_Axis_Robot_De
     if (delta_deg < 0.0f) delta_deg += 180.0f;
     delta_deg -= 90.0f;
 
-    const float servo_command_deg = Pick_Yaw_Reference_Servo_Command_Deg +
+    float servo_command_deg = Pick_Yaw_Reference_Servo_Command_Deg +
         Pick_Yaw_Servo_Deg_Per_Gripper_Deg * delta_deg;
-    if (!std::isfinite(servo_command_deg) ||
-        servo_command_deg < Pick_Yaw_Servo_Command_Min_Deg ||
-        servo_command_deg > Pick_Yaw_Servo_Command_Max_Deg)
+    if (!std::isfinite(servo_command_deg))
     {
         return NAN;
     }
+    // 拟合值超出机械安全范围时直接压到边界，继续执行本次抓取。
+    if (servo_command_deg < Pick_Yaw_Servo_Command_Min_Deg)
+        servo_command_deg = Pick_Yaw_Servo_Command_Min_Deg;
+    else if (servo_command_deg > Pick_Yaw_Servo_Command_Max_Deg)
+        servo_command_deg = Pick_Yaw_Servo_Command_Max_Deg;
     return servo_command_deg * PI / 180.0f;
 }
 
