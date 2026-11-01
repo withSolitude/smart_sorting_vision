@@ -131,6 +131,8 @@ class TopPickPipelineResult:
     inference_ms: float
 
     candidates: list[TopPickCandidate]
+    # 原始YOLO分割结果，供调试画面区分“模型未检出”和“抓取规划无安全候选”。
+    raw_objects: list[dict] | None = None
 
 
 class TopPickPipeline:
@@ -1545,4 +1547,6 @@ class TopPickPipeline:
                 float(inference_ms),
             candidates=
                 candidates,
+            raw_objects=
+                objects,
         )

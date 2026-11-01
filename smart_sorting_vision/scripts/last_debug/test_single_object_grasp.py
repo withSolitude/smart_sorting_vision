@@ -61,6 +61,22 @@ def _draw_polygon(image: np.ndarray, polygon, color, thickness: int = 2) -> None
         )
 
 
+
+def _draw_raw_object(image: np.ndarray, obj: dict) -> None:
+    """调试时始终绘制YOLO原始目标，即使后续没有安全抓取候选。"""
+    polygon = obj.get("polygon")
+    if polygon is not None:
+        _draw_polygon(image, polygon, (255, 150, 0), 2)
+    bbox = obj.get("bbox")
+    if bbox is None:
+        return
+    x1, y1, x2, y2 = (int(round(float(v))) for v in bbox)
+    cv2.rectangle(image, (x1, y1), (x2, y2), (255, 150, 0), 1, cv2.LINE_AA)
+    label = f"RAW {obj.get('index', '?')} {float(obj.get('confidence', 0.0)):.2f}"
+    cv2.putText(image, label, (x1 + 4, max(18, y1 + 18)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 150, 0), 1, cv2.LINE_AA)
+
+
 def _draw_cross(image: np.ndarray, center, color, size: int = 10) -> None:
     x, y = int(round(center[0])), int(round(center[1]))
     cv2.drawMarker(
@@ -358,6 +374,11 @@ def main() -> int:
                     )
 
             # 其它候选只画细轮廓，当前选中的目标突出显示。
+            # 先画YOLO原始目标：候选规划失败时也能确认模型是否检出。
+            raw_objects = list(getattr(result, "raw_objects", []) or []) if result is not None else []
+            for raw_object in raw_objects:
+                _draw_raw_object(view, raw_object)
+
             for other in getattr(result, "candidates", []) or []:
                 if candidate is not None and other is candidate:
                     continue
@@ -397,6 +418,7 @@ def main() -> int:
                 f"FPS={fps:.1f}  paused={paused}",
                 f"radial={bool(getattr(radial, 'enabled', False))}  gain={float(getattr(radial, 'gain', 0.0)):.4f}",
                 f"objects={0 if result is None else result.object_count}  candidates={0 if result is None else result.candidate_count}",
+                f"raw masks={0 if result is None else len(raw_objects)}  edge yaw limit X>-40mm",
                 f"READY={ready}  consensus={0 if result is None else result.votes}/{0 if result is None else result.required_hits}",
                 f"selected={selected_index if selected_index is not None else 'best-score'}",
                 f"MCU={'STARTED' if link_state['started'] else 'STOPPED/OFFLINE'}",
@@ -419,6 +441,17 @@ def main() -> int:
                 )
             elif result is not None:
                 panel.append(f"reason={result.reason}")
+                if raw_objects and not getattr(result, "candidates", None):
+                    reason_counts = {}
+                    for rejection in getattr(pipeline, "last_gripper_rejections", []) or []:
+                        reason = str(rejection.get("reason", "unknown"))
+                        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+                    if reason_counts:
+                        panel.append("reject=" + ", ".join(
+                            f"{name}:{count}" for name, count in sorted(
+                                reason_counts.items(), key=lambda item: (-item[1], item[0])
+                            )[:3]
+                        ))
             _put_panel(view, panel)
 
             cv2.imshow(window, view)
