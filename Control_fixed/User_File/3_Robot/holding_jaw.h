@@ -294,10 +294,10 @@ private:
     // ========================================================
 
     float X_Move_Speed_mm_s =
-        75.0f;
+        110.0f;
 
     float Y_Move_Speed_mm_s =
-        75.0f;
+        110.0f;
 
 
     // ========================================================
@@ -564,7 +564,7 @@ private:
     // --------------------------------------------------------
 
     float Lift_Descend_Speed =
-        45.0f *
+        60.0f *
         PI / 180.0f;
 
 
@@ -698,7 +698,7 @@ private:
     // 包含每个 XY 阶段的命令提交重试、移动时间和舵机动作时间。
     uint32_t Grap_State_Start_Tick = 0U;
     static constexpr uint32_t XY_State_Timeout_ms = 30000U;
-    static constexpr uint32_t Servo_Move_Time_ms = 350U;
+    static constexpr uint32_t Servo_Move_Time_ms = 280U;
     static constexpr uint32_t Servo_Stop_Settle_ms = 20U;
     uint32_t Grap_Output_Complete_Tick = 0U;
     uint32_t Return_Lift_Command_Tick = 0U;
