@@ -317,7 +317,7 @@ class TopPickPipeline:
             rule = self.edge_yaw_limit
             print(
                 "[EDGE YAW] limit ON "
-                f"x>{rule.x_threshold_mm:.1f}mm -> servo "
+                f"{rule.boundary_axis.upper()}>{rule.x_threshold_mm:.1f}mm -> servo "
                 f"[{rule.servo_min_deg:.1f}, {rule.servo_max_deg:.1f}]deg "
                 f"preferred={rule.preferred_servo_deg:.1f}deg"
             )
