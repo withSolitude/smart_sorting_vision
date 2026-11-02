@@ -1721,6 +1721,32 @@ bool Class_Holding_Jaw::Move_XY_Yaw_Via_Edge(float X_mm, float Y_mm, float Yaw_R
             Edge_Move_Step = 7U;
             return true;
         }
+        // 不需要转向：全程不会在危险带动舵机，直接一步走到目标，省掉中转点。
+        if (std::fabs(Yaw_Servo_Motor_Target_Angle - Yaw_Rad) < 0.0001f &&
+            !Calibration_Yaw_Override)
+        {
+            xy_status = XY_Motion.Move_To_mm(
+                X_mm, Y_mm, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
+            if (xy_status == HAL_OK) Edge_Move_Step = 6U;
+            else if (xy_status != HAL_BUSY) Abort_XY_Fault();
+            return false;
+        }
+
+        // 已经在安全侧：Yaw 与 XY 同时下发，省掉"到点后再等一整段舵机时间"。
+        if (boundary_of(XY_Motion.Get_X_mm(), XY_Motion.Get_Y_mm()) <= inside_boundary)
+        {
+            if (Yaw_Servo_Motor.Control_Angle(Yaw_Rad, Servo_Move_Time_ms) != HAL_OK)
+                return false;
+            Yaw_Servo_Motor_Target_Angle = Yaw_Rad;
+            Edge_Yaw_Command_Tick = HAL_GetTick();
+            const Point2 p_fast = pack(turn_b, target_o);
+            xy_status = XY_Motion.Move_To_mm(
+                p_fast.x, p_fast.y, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
+            if (xy_status == HAL_OK) Edge_Move_Step = 4U;
+            else if (xy_status != HAL_BUSY) Abort_XY_Fault();
+            return false;
+        }
+
         if (boundary_of(XY_Motion.Get_X_mm(), XY_Motion.Get_Y_mm()) > boundary)
         {
             // HAL_BUSY时保持原步骤重试；真正提交时记录"行进轴"的当前实测值。
