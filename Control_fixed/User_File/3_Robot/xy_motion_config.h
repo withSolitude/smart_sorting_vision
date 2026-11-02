@@ -28,8 +28,8 @@ constexpr double Pi = 3.14159265358979323846;
 // 换向时只改这里，不能在视觉侧和电控侧重复换向。
 constexpr int Direction_A = 1;
 constexpr int Direction_B = 1;
-constexpr double Travel_Per_Rev_A_mm = Pi * 12.0; // 待标定！不是已知硬件参数
-constexpr double Travel_Per_Rev_B_mm = Pi * 12.0; // 带轮齿数*带距/减速比
+constexpr double Travel_Per_Rev_A_mm = Pi * 12.8; // 实测 2026-11-02：命令 150mm 实走 160mm(×1.0667)，12.0→12.8
+constexpr double Travel_Per_Rev_B_mm = Pi * 12.8; // 与 A 同规格带轮，同一实测比例
 constexpr uint16_t Full_Steps_Per_Rev = 200U; // MotType=1.8deg
 constexpr uint16_t Microsteps = 16U;         // 电机 MStep 必须一致
 constexpr uint32_t Pulses_Per_Rev = Full_Steps_Per_Rev * Microsteps;
