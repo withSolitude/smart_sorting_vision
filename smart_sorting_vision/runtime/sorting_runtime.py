@@ -1131,6 +1131,15 @@ class SortingRuntime:
         # R06 defense-in-depth：Pipeline 已过滤一次，真正发送机械动作前
         # Runtime 再按正式机械工作区复核。注意这里检查的是加入下降预补偿后的
         # 最终PICK命令，避免为了补偿把机构推到工作区之外。
+        # 下降预补偿可能把已在边界内的 X 又推回边缘危险带，这里再夹一次。
+        edge_limit = getattr(self.top_pipeline, "edge_yaw_limit", None)
+        if edge_limit is not None:
+            x_mm, edge_clamped = edge_limit.clamp_workspace_x(
+                float(x_mm),
+                float(self.pick_x_limits_mm[1]) if self.pick_x_limits_mm is not None else 0.0,
+            )
+            if edge_clamped:
+                print(f"[Runtime] edge X calibration clamp -> {x_mm:.3f}mm")
         if not self._pick_xy_inside_limits(x_mm, y_mm):
             self._fail(
                 "PICK_TARGET outside workspace: "
@@ -1161,6 +1170,26 @@ class SortingRuntime:
         except Exception as exc:
             self._fail(f"PICK_TARGET pack failed: {exc}")
             return
+
+        # 下降预补偿与协议量化之后才是 MCU 真正收到的 X/Yaw，再核对一次边缘限角：
+        # 协议把轴向角量化到 1°，可能把舵机角挤出 40~80°，也可能把 X 推过阈值。
+        # 不可用姿态只跳过本次候选继续找物体，不进入永久 ERROR。
+        if edge_limit is not None and self.yaw_servo_calibration is not None:
+            if not edge_limit.allows(
+                self.current_pick_command.x_mm,
+                self.current_pick_command.yaw_deg,
+                self.yaw_servo_calibration,
+            ):
+                print(
+                    "[Runtime] 跳过边缘Yaw受限候选："
+                    f"X={self.current_pick_command.x_mm:.1f}mm, "
+                    f"servo={servo_yaw_deg:.2f}deg"
+                )
+                self.current_pick = None
+                self.current_pick_command = None
+                self.current_preopen_command = None
+                self._safe_reset(self.top_pipeline)
+                return
 
         print(
             "[Runtime] single-yaw selected "
