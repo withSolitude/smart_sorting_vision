@@ -29,6 +29,10 @@ def load_config(path: str | Path = BASE / "sam3_config.yaml") -> dict:
             if not value.is_absolute():
                 value = path.parent / value
             config[section][key] = value.resolve()
+    prelabels = config.get("interactive", {}).get("prelabels_dir")
+    if prelabels and str(prelabels).lower() != "latest":
+        value = Path(prelabels).expanduser()
+        config["interactive"]["prelabels_dir"] = (path.parent / value).resolve() if not value.is_absolute() else value.resolve()
     return config
 
 

@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 
 FDCAN_HandleTypeDef hfdcan1{1}, hfdcan2{2}, hfdcan3{3};
@@ -57,6 +58,68 @@ static void test_jaw_async_motion()
     std::puts("PASS: jaw retries asynchronous XY busy and cannot preclose before measured arrival");
 }
 
+// 通过真实抓取入口进入下降阶段，TOF 保持有效且尚未接近物体。
+static Class_Holding_Jaw descending_jaw()
+{
+    auto j=ready_jaw();
+    j.TOF050F.Distance=200;
+    assert(j.Start_Grap(-10,10,0,20,true)==HAL_OK);
+    for(unsigned i=0;i<6000 && j.Get_Grap_Move_Status()!=Enum_Grap_Move_Descend;++i)
+        jaw_step(j,1,true);
+    assert(j.Get_Grap_Move_Status()==Enum_Grap_Move_Descend);
+    return j;
+}
+
+static void test_jaw_decreasing_lift_limit_retry()
+{
+    auto j=descending_jaw();
+    const float start=28.0f*PI/180.0f;
+    const float end=-40.0f*PI/180.0f;
+    jaw_step(j,100);
+    assert(j.Get_Grap_Move_Status()==Enum_Grap_Move_Descend);
+    assert(j.Lift_Servo_Motor.Commands.back().Value<start);
+    assert(j.Lift_Servo_Motor.Commands.back().Value>end);
+
+    // 终点指令没发送成功前，不能误认为已到底而提前夹紧。
+    const size_t claw_before=j.Claw_Servo_Motor.Commands.size();
+    j.Lift_Servo_Motor.Forced_Status=HAL_BUSY;
+    jaw_step(j,3000);
+    assert(j.Get_Grap_Move_Status()==Enum_Grap_Move_Descend);
+    assert(j.Claw_Servo_Motor.Commands.size()==claw_before);
+    j.Lift_Servo_Motor.Forced_Status=HAL_OK;
+    jaw_step(j,20);
+    assert(j.Get_Grap_Move_Status()==Enum_Grap_Move_Descend);
+    assert(std::fabs(j.Lift_Servo_Motor.Commands.back().Value-end)<0.00001f);
+    jaw_step(j,200);
+    assert(j.Get_Grap_Move_Status()==Enum_Grap_Move_Clip);
+    float previous=start;
+    for(const auto &command:j.Lift_Servo_Motor.Commands)
+    {
+        assert(command.Value<=previous+0.00001f);
+        assert(command.Value>=end-0.00001f);
+        previous=command.Value;
+    }
+    std::puts("PASS: lift descends 28 to -40 without overshoot and retries the limit command before clipping");
+}
+
+static void test_jaw_decreasing_lift_tof_stop()
+{
+    auto j=descending_jaw();
+    jaw_step(j,100);
+    // TOF 无效时冻结下降，恢复有效后仍可由连续近距离反馈提前停止。
+    const size_t before=j.Lift_Servo_Motor.Commands.size();
+    j.TOF050F.Valid=false;
+    jaw_step(j,100);
+    assert(j.Lift_Servo_Motor.Commands.size()==before);
+    assert(j.Get_Grap_Move_Status()==Enum_Grap_Move_Descend);
+    j.TOF050F.Valid=true;
+    j.TOF050F.Distance=3;
+    jaw_step(j,200);
+    assert(j.Get_Grap_Move_Status()==Enum_Grap_Move_Clip);
+    assert(j.Lift_Servo_Motor.Commands.back().Value>-40.0f*PI/180.0f);
+    std::puts("PASS: invalid TOF freezes decreasing descent and near-object feedback stops before the limit");
+}
+
 static void test_jaw_true_disable_and_settle()
 {
     tick=0;huart3.gState=HAL_UART_STATE_READY;
@@ -78,7 +141,8 @@ static void test_jaw_true_disable_and_settle()
     j.XY_Motion.Arrive();
     jaw_step(j,2000);
     assert(j.Get_Disable_Ready());
-    assert(std::fabs(j.XY_Motion.X)<0.001f && std::fabs(j.XY_Motion.Y-20)<0.001f);
+    // 当前待机点与上电软件原点一致，回待机后应回到 (0,0)。
+    assert(std::fabs(j.XY_Motion.X)<0.001f && std::fabs(j.XY_Motion.Y)<0.001f);
     std::puts("PASS: Disable label cannot bypass actual standby XY, lift clearance or servo settling");
 }
 
@@ -293,8 +357,12 @@ static void test_storage_fault_cannot_auto_enable()
     std::puts("PASS: latched storage faults prohibit automatic DM clear/enable until explicit STOP authorizes safe recovery");
 }
 
-int main()
+int main(int argc,char **argv)
 {
+    test_jaw_decreasing_lift_limit_retry();test_jaw_decreasing_lift_tof_stop();
+    // 实机配置变动时可单独验证 Lift，避免其他机构的旧测试假设干扰定位。
+    if(argc==2 && std::strcmp(argv[1],"--lift-only")==0)
+        return 0;
     test_jaw_async_motion();test_jaw_true_disable_and_settle();test_jaw_fault_stop_retry();test_jaw_busy_deadline();test_jaw_yaw_calibration_override();
     test_storage_delivery_and_done();test_storage_feedback_freshness();test_storage_stop_and_uart_deadline();test_storage_can_type_filter();test_storage_reversed_output_direction();
     test_storage_fault_cannot_auto_enable();

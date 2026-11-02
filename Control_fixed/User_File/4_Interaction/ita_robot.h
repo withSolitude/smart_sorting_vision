@@ -238,7 +238,6 @@ private:
         false;
 
     uint16_t Pick_Start_Wait_Count = 0;
-    static constexpr uint16_t Pick_Start_Timeout_10ms = 300;
 
 
     // ========================================================
@@ -256,16 +255,19 @@ private:
     // 例如直驱同向约为 +1；外啮合齿轮通常为负号，数值还要乘传动比。
     // 具体值必须实测，不从照片/视觉代码猜。
     // ========================================================
-    // 2026-10-30 当前实机标定：q = q0 + k * (theta - theta0)。
+    // 2026-10-29 最新实机标定：q = q0 + k * (theta - theta0)。
     // 与上位机 calibration.yaw_servo 三项参数保持一致。
     // theta 采用以 theta0 为中心的唯一 180° 区间，不再搜索另一物理姿态。
-    float Pick_Yaw_Reference_Closing_Axis_Robot_Deg = -63.280987000f;
-    float Pick_Yaw_Reference_Servo_Command_Deg = 0.232430000f;
-    float Pick_Yaw_Servo_Deg_Per_Gripper_Deg = 1.047207920f;
+    float Pick_Yaw_Reference_Closing_Axis_Robot_Deg = -63.856443506f;
+    float Pick_Yaw_Reference_Servo_Command_Deg = 0.394945458f;
+    float Pick_Yaw_Servo_Deg_Per_Gripper_Deg = 1.077582510f;
 
-    // 保留现有舵机机械限位；角度换算失败时拒绝目标，不静默截断。
-    float Pick_Yaw_Servo_Command_Min_Deg = -90.0f;
-    float Pick_Yaw_Servo_Command_Max_Deg =  90.0f;
+    // 运行时允许的Yaw舵机命令范围。拟合结果略微越界时由下方转换函数压到边界，
+    // 不能因为浮点拟合误差让整次抓取直接失败。
+    float Pick_Yaw_Servo_Command_Min_Deg = -96.0f;
+    float Pick_Yaw_Servo_Command_Max_Deg =  96.0f;
+    // 保留兼容字段：旧配置曾使用该容差；当前统一采用±96°硬限幅。
+    float Pick_Yaw_Servo_Command_Tolerance_Deg = 6.0f;
 
     float Convert_Grasp_Axis_To_Servo_Yaw_Rad(float Grasp_Axis_Robot_Deg) const;
 
@@ -316,7 +318,6 @@ private:
     Struct_Sorting_Result_Request Pending_Sort_Request{};
     bool Sort_Start_Pending = false;
     uint16_t Sort_Start_Wait_Count = 0;
-    static constexpr uint16_t Sort_Start_Timeout_10ms = 300;
 
     // XY标定独立运动状态
     bool Calib_Action_Active = false;
@@ -354,7 +355,6 @@ private:
     bool Storage_Test_Done_Notify_Pending = false;
     uint8_t Storage_Test_Box_ID = 0U;
     uint16_t Storage_Test_Start_Wait_Count = 0U;
-    static constexpr uint16_t Storage_Test_Start_Timeout_10ms = 300U;
 
 
     // ========================================================

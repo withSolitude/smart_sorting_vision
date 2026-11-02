@@ -538,7 +538,7 @@ private:
 
     // 位置外环PID。初值以P为主，D直接使用-now_omega抑制过冲。
     float DM4310_Pos_Kp =
-        2.5f;
+        2.0f;
 
     float DM4310_Pos_Ki =
         0.0f;
@@ -675,7 +675,7 @@ private:
     // ========================================================
 
     uint16_t Tray_Servo_PWM_Disable =
-        1480;
+        1260; // 当前实机标定的托盘待机 PWM，调试舵机时只改这里
 
 
     uint16_t Tray_Servo_PWM_Flip =

@@ -42,8 +42,8 @@ camera:
     buffer_size: 1  # V4L2 缓冲帧数；1 可降低识别延迟。
     warmup_frames: 10  # 打开相机后丢弃的预热帧数。
     reconnect_interval_s: 0.5  # 相机掉线后的重连间隔（秒）。
-    roi: [392, 1, 1260, 720]             # 最终实测侧面机械ROI
-    roi_polygon: [[392, 469], [414, 358], [454, 255], [516, 173], [594, 118], [653, 74], [690, 13], [903, 1], [1044, 26], [1090, 60], [1166, 130], [1228, 211], [1250, 295], [1251, 371], [1259, 432], [1216, 563], [1176, 637], [1126, 693], [1078, 718], [726, 719], [519, 689]]  # 当前关闭多边形掩膜，使用整个矩形roi；填写点集后才启用多边形边界。
+    roi: [346, 0, 1233, 720]             # 最终实测侧面机械ROI，裁剪尺寸为887×720。
+    roi_polygon: [[346, 500], [419, 387], [447, 291], [493, 216], [504, 183], [533, 133], [586, 106], [665, 77], [677, 21], [708, 0], [930, 24], [1024, 65], [1131, 130], [1181, 189], [1208, 235], [1232, 364], [1226, 537], [1173, 640], [1110, 705], [1078, 719], [542, 719]]  # 已启用多边形掩膜，点集使用完整去畸变图坐标；设为 [] 可关闭。
     controls:
       auto_exposure: 1  # V4L2曝光模式：1=手动模式（关闭自动曝光），3=光圈优先模式（自动曝光）。
       exposure_time_absolute: 185  # 手动曝光时间；自动曝光关闭时生效。
@@ -62,7 +62,7 @@ camera:
 # 使用工程根目录相对路径，禁止再写 /home/nvidia/...。
 model:
   top:
-    path: outputs/training/top_seg/top_seg_v1_aug/weights/best.engine  # 资源或模型路径；相对工程根目录解析。
+    path: outputs/training/top_seg/v2/weights/best.engine  # 资源或模型路径；相对工程根目录解析。
     conf: 0.35  # 模型置信度阈值。
     imgsz: 832  # 模型输入尺寸（像素）。
     device: 0  # 相机设备路径或推理设备编号。
@@ -76,6 +76,7 @@ model:
 calibration:
   top_intrinsics: data/calibration/top_camera/top_camera_intrinsics.npz  # 顶部相机内参文件路径。
   pixel_to_robot: data/calibration/top_camera/robot_mapping/pixel_to_robot.json  # 像素到机械 XY 的标定文件路径。
+  pixel_to_robot_swap_xy: false  # 当前标定文件已按真实[X,Y]顺序保存，不再交换两个机械轴。
   side_background: data/calibration/side_camera/side_mechanical_roi_background.png  # 侧面颜色/二维码裁剪辅助使用的空背景；不再用于判断是否有物体。
   top_camera:
     image_dir: data/calibration/top_camera/images  # 标定图片目录。
@@ -93,8 +94,9 @@ calibration:
     reference_axis_deg: -63.280987  # 参考舵机姿态下夹爪闭合轴在机械XY中的方向（度）。
     reference_servo_deg: 0.232430  # 参考闭合轴对应的舵机命令（度）。
     servo_deg_per_axis_deg: 1.04720792  # 夹爪物理轴每转1度对应舵机命令变化（度/度）。
-    safe_command_min_deg: -90.0  # 已通过机械行程测试的舵机最小命令（度）。
-    safe_command_max_deg: 90.0  # 已通过机械行程测试的舵机最大命令（度）。
+    safe_command_min_deg: -96.0  # 运行时Yaw舵机最小命令（度），超出时统一按-96°执行。
+    safe_command_max_deg: 96.0  # 运行时Yaw舵机最大命令（度），超出时统一按+96°执行。
+    safe_command_tolerance_deg: 6.0  # 保留兼容字段；当前范围外角度全部硬限幅到±96°。
   side_background_capture:
     settle_frames: 15  # 采集背景前等待的稳定帧数。
     frame_count: 30  # 用于生成背景的采样帧数。
@@ -115,6 +117,26 @@ vision:
     border_margin_px: 12  # 图像边缘安全余量（像素）。
     min_safe_area_px: 50  # 安全区域最小面积（像素）。
     min_clearance_px: 3.0  # 抓取点最小安全间隙（像素）。
+
+    # 仅限制靠近电机/相机一侧的抓取姿态；角度为下位机Yaw舵机命令角，不是PICK_TARGET轴向角。
+    edge_yaw_limit:
+      enabled: true  # 是否启用边缘抓取姿态约束；下位机中转路线另由edge_motion_config.h配置。
+      boundary_axis: y  # 危险边界所在轴：电机在图像下边沿 -> y。必须与下位机 Boundary_Axis_Y 一致。
+      x_threshold_mm: -40.0  # 沿 boundary_axis 的阈值：y 轴时表示 y > -40 算边缘区。
+      servo_min_deg: 40.0  # 边缘区允许的最小实际Yaw舵机角（度）。
+      servo_max_deg: 80.0  # 边缘区允许的最大实际Yaw舵机角（度）。
+      preferred_servo_deg: 60.0  # 接触条件相近时优先的平行姿态（度）。
+      sample_step_deg: 5.0  # 在允许舵机角范围内重新搜索的步长（度），之后仍检查协议量化值。
+      workspace_clamp_mm: 5.0  # 边缘标定小越界允许压回工作区上限（mm）；明显越界仍拒绝。
+      min_side_gap_mm: -1.0  # 边缘目标允许的最小单侧夹指间隙（mm）；只放宽边缘，抓点不移动。
+
+    # p_new = p + gain * (p - center)，仅向外补偿最终抓点；不改变原抓长边/方向算法。
+    outward_radial_compensation:
+      enabled: true  # 是否启用向外径向补偿；false恢复原抓取点。
+      gain: 0.05  # 位移 = 离主点距离 * gain；0 不补偿，禁止负值。
+      max_shift_px: 100.0  # 单次向外位移上限（像素）；gain=0.1 时约 1000px 触顶。
+      center_full_px: null  # null读取去畸变内参new_camera_matrix主点；也可填实测垂足[x,y]。
+      # 手填坐标属于完整去畸变图，程序自动减当前safe_roi原点；不能填ROI中心。
 
     # 动态抓取Yaw。这里的角度是“夹爪闭合轴在机械XY坐标系中的方向”，
     # 上位机不直接假设舵机安装零位。下位机再把该方向换算成真实舵机角度。
@@ -156,8 +178,10 @@ vision:
         closed_servo_deg: 0.7100046104195457  # 夹爪闭合舵机角度（度）。
         standby_servo_deg: -89.28307976025819  # 夹爪待机张开舵机角度（度）。
         # command 是两片硅胶内侧之间的目标净开口。
-        # 物体宽度 + 总余量；薄硅胶安装后先使用5mm（两侧合计）。
-        margin_mm: 5.0  # 物体宽度之外增加的安全余量（mm）。
+        # 物体宽度 + 总余量；当前使用8mm（两侧合计）。
+        # 每侧余量 = margin/2，直接等于允许的"抓取中心偏移"容差：
+        # margin 8 只容 ±3.85mm，边缘目标会被 target_not_between_fingers 拒绝。
+        margin_mm: 10.0  # 物体宽度之外增加的安全余量（mm）；每侧 5mm，容差 ±4.85mm。
         # 安全协议范围；STM32 与 PC 使用同一条线性公式。
         min_command_mm: 13  # 预开口命令最小值（mm）。
         max_command_mm: 77  # 预开口命令最大值（mm）。

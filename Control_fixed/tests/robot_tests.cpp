@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <vector>
 
@@ -26,8 +27,8 @@ HAL_StatusTypeDef Class_Sorting_Vision_UART::Send_Frame(const Enum_Sorting_Visio
 int8_t Class_Sorting_Vision_UART::Yaw_Deg_To_Raw(const float &angle)
 { return static_cast<int8_t>(std::round(angle)); }
 
-static void queue(Enum_Sorting_Vision_Mode mode,float x=0,float y=0,uint8_t box=0)
-{ Struct_Sorting_Vision_UART_Data d;d.Mode=mode;d.X_mm=x;d.Y_mm=y;d.Box_ID=box;incoming.push_back(d); }
+static void queue(Enum_Sorting_Vision_Mode mode,float x=0,float y=0,uint8_t box=0,float yaw=0)
+{ Struct_Sorting_Vision_UART_Data d;d.Mode=mode;d.X_mm=x;d.Y_mm=y;d.Box_ID=box;d.Grasp_Axis_Deg=yaw;incoming.push_back(d); }
 static unsigned sent_count(Enum_Sorting_Vision_Mode mode)
 { unsigned n=0;for(auto m:sent)if(m==mode)++n;return n; }
 static void step(Class_Robot &r,uint32_t ms,bool arrive=false,bool follow_dm=false)
@@ -84,7 +85,8 @@ static void test_fault_stopped_ack_and_origin_recovery()
     assert(!r.Sorting_Handshake.Get_Stop_Ack_Pending());
     assert(sent_count(Sorting_Vision_Mode_MCU_STOP_ACK)==1U);
     assert(!r.Request_Sorting_Start());
-    assert(r.Confirm_XY_Origin_mm(0,20)==HAL_OK);step(r,1000);
+    // 当前软件原点与待机点均为 (0,0)。
+    assert(r.Confirm_XY_Origin_mm(0,0)==HAL_OK);step(r,1000);
     assert(r.Request_Sorting_Start());step(r,30);
     assert(r.Get_Sorting_Running());
     std::puts("PASS: faulted but stopped axes can synchronize STOP while START requires explicit origin recovery");
@@ -103,8 +105,49 @@ static void test_storage_completion_and_tx_busy()
     step(r,100);assert(sent_count(Sorting_Vision_Mode_MCU_STORAGE_TEST_DONE)==1U);
     std::puts("PASS: robot stores mechanical completion across TX busy and publishes storage done once");
 }
-int main()
+
+// 经真实 Robot/握手/抓取状态机读取实际下发的 Yaw，避免只测试一份重复公式。
+static float run_single_yaw_pick(float axis_deg)
 {
+    auto r=ready_robot();
+    assert(r.Request_Sorting_Start());
+    step(r,30);
+    const size_t yaw_before=r.Holding_Jaw.Yaw_Servo_Motor.Commands.size();
+    queue(Sorting_Vision_Mode_PICK_PREOPEN,20);
+    queue(Sorting_Vision_Mode_PICK_TARGET,-10,10,0,axis_deg);
+    for(unsigned i=0;i<2500 && r.Holding_Jaw.Yaw_Servo_Motor.Commands.size()==yaw_before;++i)
+        step(r,1,true);
+    assert(sent_count(Sorting_Vision_Mode_MCU_PICK_PREOPEN_ACK)==1U);
+    assert(sent_count(Sorting_Vision_Mode_MCU_PICK_TARGET_ACK)==1U);
+    assert(sent_count(Sorting_Vision_Mode_MCU_ERROR)==0U);
+    assert(r.Holding_Jaw.Yaw_Servo_Motor.Commands.size()==yaw_before+1U);
+    // 已删除分支事务，整个抓取不应出现旧的 0x91 分支应答。
+    assert(sent_count(static_cast<Enum_Sorting_Vision_Mode>(0x91))==0U);
+    return r.Holding_Jaw.Yaw_Servo_Motor.Commands.back().Value*180.0f/PI;
+}
+
+static void test_single_yaw_full_cycle()
+{
+    for(int axis=-90;axis<90;++axis)
+    {
+        const float command=run_single_yaw_pick(static_cast<float>(axis));
+        assert(std::isfinite(command));
+        assert(command>=-135.0f && command<=135.0f);
+    }
+    assert(std::fabs(run_single_yaw_pick(-82.0f)-(-19.156234f))<0.001f);
+    for(float axis: {-82.0f,-30.0f,0.0f,26.0f,60.0f,89.0f})
+    {
+        const float command=run_single_yaw_pick(axis);
+        assert(std::fabs(run_single_yaw_pick(axis+180.0f)-command)<0.001f);
+        assert(std::fabs(run_single_yaw_pick(axis-180.0f)-command)<0.001f);
+    }
+    std::puts("PASS: single-yaw picks cover 180 degrees, preserve periodicity and map -82 to -19.156 degrees without a branch transaction");
+}
+
+int main(int argc,char **argv)
+{
+    test_single_yaw_full_cycle();
+    if(argc==2 && std::strcmp(argv[1],"--single-yaw-only")==0) return 0;
     test_calibration_start_returns_home();test_fault_stopped_ack_and_origin_recovery();test_storage_completion_and_tx_busy();
     std::puts("All robot scheduling regressions passed.");
 }

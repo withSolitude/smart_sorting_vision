@@ -7,7 +7,8 @@ class Class_XY_Motion
 public:
     struct Move { float X,Y,VX,VY; uint32_t Tick; };
     bool Position_Valid=true, Fault=false, Motion_Finished=true, Stop_Confirmed=true;
-    float X=0,Y=20;
+    // 当前机构以上电位置作为软件原点，待机点的 XY 夹具也从 (0,0) 开始。
+    float X=0,Y=0;
     uint32_t Stop_Calls=0;
     HAL_StatusTypeDef Move_Status=HAL_OK;
     HAL_StatusTypeDef Homing_Status=HAL_ERROR;

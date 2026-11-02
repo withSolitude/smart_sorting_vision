@@ -364,7 +364,7 @@ python -m scripts.last_debug.calibrate_yaw_alignment
 
 按 `舵机角度:实测间隙_mm` 逐点输入，示例：
 
-```bash                                                     
+```bash
 python -m scripts.last_debug.calibrate_preopen_profile \
   --point=-20:8 --point=-35:20 --point=-50:35 --point=-65:50 \
   --margin-mm 5 --confirmed-safe \
@@ -426,7 +426,6 @@ data/calibration/side_camera/side_mechanical_roi_background.png
 
 顶部数据目录通常为：
 
-
 ```text
 data/datasets/top_seg/raw/
 ```
@@ -452,7 +451,6 @@ python -m scripts.last_debug.prepare_top_dataset \
 这个步骤按 layout 划分 train/val/test，避免同一连续场景泄漏到不同集合；输出目录作为后续检查和训练的输入。
 
 ## 11. 顶部数据集整理和检查
-
 
 建议划分：
 
@@ -643,6 +641,7 @@ ShapeClassifier → 真实形状
 
 ```text
 顶部识别
+→ PICK_YAW_BRANCH
 → PICK_TARGET
 → PICK_ACK
 → RECOGNITION_READY

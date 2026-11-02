@@ -22,6 +22,8 @@ public:
     HAL_StatusTypeDef Move_To_mm(float x, float y, float vx, float vy);
     void Stop();
     bool Get_Position_Valid() const;
+    bool Get_Origin_Valid() const { return Origin_Valid; }
+    bool Get_Power_On_Origin_Captured() const { return Power_On_Origin_Captured; }
     bool Get_Fault() const { return Fault != XY_Fault::None; }
     XY_Fault Get_Fault_Code() const { return Fault; }
     bool Get_Motion_Finished() const;
@@ -49,6 +51,8 @@ private:
     State Phase = State::Idle;
     XY_Fault Fault = XY_Fault::None;
     bool Origin_Valid = false;
+    bool Power_On_Origin_Pending = false;
+    bool Power_On_Origin_Captured = false;
     double Origin_X = 0, Origin_Y = 0, Now_X = 0, Now_Y = 0;
     int64_t Origin_A = 0, Origin_B = 0, Target_A = 0, Target_B = 0;
     int64_t Last_A = 0, Last_B = 0;
@@ -85,6 +89,8 @@ private:
     void Poll();
     void Update_Position();
     void Capture_Feedback_Baselines();
+    void Capture_Power_On_Origin(const Struct_Motor_EmmV5_Data &a,
+                                 const Struct_Motor_EmmV5_Data &b);
 };
 
 #endif

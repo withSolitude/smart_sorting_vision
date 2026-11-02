@@ -1,0 +1,69 @@
+{
+  "version": 2,
+  "coordinate_space": "undistorted_full",
+  "source": "TopCamera.read_undistorted()",
+  "image_width": 1920,
+  "image_height": 1080,
+  "homography": [
+    [
+      0.2161190413207619,
+      0.002679161669265612,
+      -343.1148766595124
+    ],
+    [
+      -0.002611103212912366,
+      0.21189708489449594,
+      -204.52715561752908
+    ],
+    [
+      7.136286662868215e-05,
+      -9.313322558841594e-06,
+      1.0
+    ]
+  ],
+  "tcp_offset_x_mm": 0.0,
+  "tcp_offset_y_mm": 0.0,
+  "swap_xy": false,
+  "metadata": {
+    "point_count": 4,
+    "points_pixel": [
+      [
+        1587.0,
+        50.0
+      ],
+      [
+        1578.0,
+        776.0
+      ],
+      [
+        709.0,
+        777.0
+      ],
+      [
+        712.0,
+        92.0
+      ]
+    ],
+    "points_robot": [
+      [
+        0.0,
+        -178.0
+      ],
+      [
+        0.0,
+        -40.0
+      ],
+      [
+        -180.0,
+        -40.0
+      ],
+      [
+        -180.0,
+        -178.0
+      ]
+    ],
+    "verify_tolerance_mm": 5.0,
+    "workspace_ok": true,
+    "force_saved": false
+  }
+}

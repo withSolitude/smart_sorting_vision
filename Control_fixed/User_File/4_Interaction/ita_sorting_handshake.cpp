@@ -166,6 +166,10 @@ Request_Start_Work()
         return false;
     }
 
+    // 这里已经完成一次新的START握手。清除上一次掉线安全STOP留下的
+    // “显式停止”标志，避免后续普通机械故障被误判成操作员STOP。
+    Explicit_Stop_Request_Pending = false;
+
 
     // ========================================================
     // 清空上一轮
@@ -366,8 +370,8 @@ Handle_Frame(
         {
             if (State == Sorting_Handshake_State_WAIT_PICK_TARGET)
             {
-                // Reject uncalibrated/unreachable openings BEFORE acknowledging them.
-                // 错误 8：新夹爪预开口查表或请求开口量无效。
+                // 在确认前先检查请求开口是否在当前线性公式的安全范围内。
+                // 错误 8：预开口公式未配置、参数非法或请求超出范围。
                 float unused_angle_deg = 0.0f;
                 if (std::fabs(Data.Y_mm) > 0.051f ||
                     !ClawPreopen::ToAngle(Data.X_mm, unused_angle_deg))

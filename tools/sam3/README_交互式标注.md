@@ -3,6 +3,10 @@
 此入口使用官方单实例正负点分割，不依赖 `inference.prompts` 的文字语义。
 可以标完整物体，也可以尝试只选平顶物体的顶面；最终由人确认边界。
 
+本文以原顶部单类配置为例。侧面12类请运行 `run_side_interactive.cmd`，
+使用 `sam3_side_config.yaml`，类别自动按形状目录预选，也可在窗口中修改。
+侧面完整步骤见 [README_侧面分割预标注.md](README_侧面分割预标注.md)。
+
 ## 1. 启动与配置
 
 本机直接双击 `E:\gongxun\27\sam3\run_interactive.cmd`。
@@ -29,7 +33,11 @@ interactive:
 
 切换数据集改 `dataset.source_dir`；换数据集时同时换一个新的 `interactive.output_dir`。
 整物体和顶面两种标注也应分别使用输出目录，避免混在一起。
-已有的 `run_prelabel.cmd` 继续运行原文字批量预标注，两个入口独立。
+可以先运行 `run_prelabel.cmd` 自动生成候选，再运行 `run_interactive.cmd` 复核。
+默认 `interactive.prelabels_dir: latest` 自动加载当前数据集最近完成的批次；
+也可用窗口“加载自动预标注批次……”按钮指定批次目录。侧面对应 `run_side_prelabel.cmd` → `run_side_interactive.cmd`。
+候选正确时直接 S/N 确认本张；错误实例选中后 Delete，再点选或手工补标。
+已保存的人工标签优先；自动草稿及零检出图片在确认前不会进入交互导出数据集。
 
 首次启动会加载模型，可能等待几十秒；随后每张图编码一次，继续补点会复用缓存。
 程序不会因为没有候选而退出，可以重画或用手工多边形。

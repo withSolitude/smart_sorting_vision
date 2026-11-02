@@ -1,11 +1,16 @@
 # SAM 3 分拣物料预标注工具
 
 使用官方 SAM 3 本地权重，对已有 train/val/test 图片递归预标注，
-导出单类别 `object` 的 YOLO-seg 标签、预览图和 CVAT 导入包。
+导出 YOLO-seg 标签、预览图和 CVAT 导入包。顶部使用单类别 `object`，侧面使用具体形状类别。
 
 完整操作说明见 [README_SAM3_使用说明.md](README_SAM3_使用说明.md)。
 几何体与顶面标注规则见 [几何体与顶面标注说明.md](几何体与顶面标注说明.md)。
 正负点交互入口见 [README_交互式标注.md](README_交互式标注.md)，本机双击 `run_interactive.cmd`。
+侧面12类入口见 [README_侧面分割预标注.md](README_侧面分割预标注.md)：
+双击 `run_side_interactive.cmd` 点选标注，或 `run_side_prelabel.cmd` 自动生成候选。
+侧面参数集中在 `sam3_side_config.yaml`，类别从现有形状目录读取。
+支持先批量自动标注、再用交互窗口复核。`interactive.prelabels_dir: latest`
+会加载当前数据集最近完成的自动批次；也可在窗口中选择指定批次。
 
 ## 从 GitHub 下载后的准备
 
@@ -30,7 +35,7 @@
 
 ## 当前版本的含义
 
-`inference.prompts` 是 SAM 3 的文字提示，每个提示独立推理，再按 mask IoU 去重。
+原顶部入口的 `inference.prompts` 是 SAM 3 的文字提示，每个提示独立推理，再按 mask IoU 去重。
 提示名称不会变成训练类别：所有实例仍导出为类别 `0: object`。
 数据集输入保留本机的 `top_seg/v2`，批量入口读取你当前填写的文字提示。
 交互入口不依赖文字提示，用鼠标指定目标区域；标完整物体还是顶面由人工确认。

@@ -19,9 +19,9 @@ from vision.pipeline.top_pick_pipeline import TopPickPipeline
 
 def calibration(minimum=-135.0, maximum=135.0):
     return YawServoCalibration(
-        reference_axis_deg=-63.280987,
-        reference_servo_deg=0.232430,
-        servo_deg_per_axis_deg=1.04720792,
+        reference_axis_deg=-63.85644350593594,
+        reference_servo_deg=0.39494545820893734,
+        servo_deg_per_axis_deg=1.0775825104837484,
         safe_command_min_deg=minimum,
         safe_command_max_deg=maximum,
     )

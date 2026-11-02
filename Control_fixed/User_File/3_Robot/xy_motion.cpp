@@ -64,6 +64,8 @@ void Class_XY_Motion::Init()
     Phase_Tick = HAL_GetTick();
     Fault = Config_Valid() ? XY_Fault::None : XY_Fault::Configuration;
     Origin_Valid = false;
+    Power_On_Origin_Pending = XY_Config::Power_On_Origin_Enabled && (Fault == XY_Fault::None);
+    Power_On_Origin_Captured = false;
     Now_X = Now_Y = 0;
     Last_Position_A_Count = Last_Position_B_Count = 0;
     Poll_Tick = HAL_GetTick();
@@ -173,6 +175,8 @@ HAL_StatusTypeDef Class_XY_Motion::Confirm_Origin_mm(float x, float y)
     Origin_X = Now_X = x; Origin_Y = Now_Y = y;
     Target_A = Origin_A; Target_B = Origin_B;
     Origin_Valid = true;
+    Power_On_Origin_Pending = false;
+    Power_On_Origin_Captured = false;
     Motion_Completed = true;
     Track_Enabled = a.Enabled && b.Enabled;
     Fault = XY_Fault::None;
@@ -181,6 +185,33 @@ HAL_StatusTypeDef Class_XY_Motion::Confirm_Origin_mm(float x, float y)
     Last_Position_A_Tick = a.Position_Timestamp_ms; Last_Position_B_Tick = b.Position_Timestamp_ms;
     Motor_A.Reset_Encoder_Unwrap(); Motor_B.Reset_Encoder_Unwrap();
     return HAL_OK;
+}
+
+void Class_XY_Motion::Capture_Power_On_Origin(
+    const Struct_Motor_EmmV5_Data &a,
+    const Struct_Motor_EmmV5_Data &b)
+{
+    // 这里只记录当前反馈位置，不发送清除多圈位置命令，也不移动电机。
+    Origin_A = a.Position_Ticks;
+    Origin_B = b.Position_Ticks;
+    Origin_X = Now_X = XY_Config::Power_On_Origin_X_mm;
+    Origin_Y = Now_Y = XY_Config::Power_On_Origin_Y_mm;
+    Target_A = Origin_A;
+    Target_B = Origin_B;
+    Last_A = Origin_A;
+    Last_B = Origin_B;
+    Origin_Valid = true;
+    Power_On_Origin_Pending = false;
+    Power_On_Origin_Captured = true;
+    Motion_Completed = true;
+    Track_Enabled = a.Enabled && b.Enabled;
+    Fault = XY_Fault::None;
+    Last_Position_A_Count = a.Position_Count;
+    Last_Position_B_Count = b.Position_Count;
+    Last_Position_A_Tick = a.Position_Timestamp_ms;
+    Last_Position_B_Tick = b.Position_Timestamp_ms;
+    Motor_A.Reset_Encoder_Unwrap();
+    Motor_B.Reset_Encoder_Unwrap();
 }
 
 HAL_StatusTypeDef Class_XY_Motion::Move_To_mm(float x, float y, float vx, float vy)
@@ -241,6 +272,8 @@ void Class_XY_Motion::Fail_Homing()
     Homing_Active = false;
     Homing_Failed = true;
     Origin_Valid = false;
+    Power_On_Origin_Pending = false;
+    Power_On_Origin_Captured = false;
     Fault = XY_Fault::Homing_Failed;
     Begin_Stop();
 }
@@ -254,6 +287,8 @@ void Class_XY_Motion::Set_Fault(XY_Fault fault)
     }
     if (Fault == XY_Fault::None) Fault = fault;
     Origin_Valid = false;
+    Power_On_Origin_Pending = false;
+    Power_On_Origin_Captured = false;
     if (Phase < State::Stop_A) Begin_Stop();
 }
 
@@ -305,6 +340,17 @@ void Class_XY_Motion::TIM_1ms_PeriodElapsedCallback()
     const uint32_t now = HAL_GetTick();
     Update_Position();
     auto a = Motor_A.Get_Data(), b = Motor_B.Get_Data();
+
+    // 上电置零只在两台电机反馈齐全、停稳且没有堵转时执行。
+    // 如果此时反馈未刷新或机构仍在运动，本次不置零，继续等待下一周期。
+    if (Power_On_Origin_Pending && XY_Config::Power_On_Origin_Enabled &&
+        Phase == State::Idle && Fault == XY_Fault::None && Feedback_Fresh() &&
+        !a.Stall && !b.Stall && !a.Stall_Protection && !b.Stall_Protection &&
+        std::abs(a.Speed_RPM) <= XY_Config::Stopped_RPM &&
+        std::abs(b.Speed_RPM) <= XY_Config::Stopped_RPM)
+    {
+        Capture_Power_On_Origin(a, b);
+    }
     if (Origin_Valid && !Feedback_Fresh()) Set_Fault(XY_Fault::Feedback_Timeout);
     if (Origin_Valid && (a.Stall || b.Stall || a.Stall_Protection || b.Stall_Protection)) Set_Fault(XY_Fault::Drive_Stall);
     if (Origin_Valid && Track_Enabled && Phase == State::Idle && (!a.Enabled || !b.Enabled))
@@ -555,6 +601,8 @@ void Class_XY_Motion::TIM_1ms_PeriodElapsedCallback()
                 Target_A = Origin_A;
                 Target_B = Origin_B;
                 Origin_Valid = true;
+                Power_On_Origin_Pending = false;
+                Power_On_Origin_Captured = false;
                 Motion_Completed = true;
                 Homing_Active = false;
                 Homing_Failed = false;

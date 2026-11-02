@@ -1,7 +1,8 @@
-"""把 SAM 3 预测结果整理成单类别 YOLO-seg 数据集和 CVAT 导入包。"""
+"""把 SAM 3 预测结果整理成 YOLO-seg 数据集和 CVAT 导入包。"""
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import shutil
 import zipfile
@@ -12,6 +13,7 @@ from typing import Callable, Iterable
 import cv2
 import numpy as np
 from PIL import Image
+import yaml
 
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
@@ -21,6 +23,8 @@ def scan_dataset(
     source_dir: str | Path,
     splits: Iterable[str],
     limit: int = 0,
+    *,
+    allow_duplicate_stems: bool = False,
 ) -> dict[str, list[Path]]:
     """递归寻找已有 train/val/test 图片；limit 为每个 split 上限，0 表示全部。"""
     source = Path(source_dir).expanduser().resolve()
@@ -50,7 +54,7 @@ def scan_dataset(
         # 输出按 split 展平。相同 stem 会对应同一个标签文件，因此必须先检查。
         for path in files:
             key = path.stem.casefold()
-            if key in seen_stems:
+            if key in seen_stems and not allow_duplicate_stems:
                 raise ValueError(
                     "发现重名图片，展平后可能造成标签错配，请先调整文件名：\n"
                     f"  {seen_stems[key]}\n  {path}"
@@ -62,6 +66,15 @@ def scan_dataset(
         for split in names:
             result[split] = result[split][:int(limit)]
     return result
+
+
+def export_image_name(path: Path, source: Path, *, unique: bool = False) -> str:
+    """侧面采集目录经常重名，按原相对路径生成稳定后缀，不修改源图片。"""
+    if not unique:
+        return path.name
+    relative = path.resolve().relative_to(source.resolve()).as_posix()
+    suffix = hashlib.sha1(relative.encode("utf-8")).hexdigest()[:12]
+    return f"{path.stem}__{suffix}{path.suffix}"
 
 
 def process_masks(predictions: list[dict], config: dict) -> list[dict]:
@@ -132,18 +145,21 @@ def process_masks(predictions: list[dict], config: dict) -> list[dict]:
     return objects
 
 
-def to_yolo_text(objects: list[dict], width: int, height: int) -> str:
-    """统一写成类别0的归一化多边形；没有实例时写空标签。"""
+def to_yolo_text(objects: list[dict], width: int, height: int, class_count: int | None = None) -> str:
+    """写入各实例的类别 ID 和归一化多边形；旧实例没有 ID 时仍为类别0。"""
     if width <= 0 or height <= 0:
         raise ValueError("图片宽高必须大于0")
     lines: list[str] = []
     for obj in objects:
+        class_id = int(obj.get("class_id", 0))
+        if class_id < 0 or (class_count is not None and class_id >= class_count):
+            raise ValueError(f"实例类别 ID 超出 names 范围：{class_id}")
         points = np.asarray(obj["polygon"], dtype=np.float64).reshape(-1, 2).copy()
         points[:, 0] = np.clip(points[:, 0], 0, width - 1) / width
         points[:, 1] = np.clip(points[:, 1], 0, height - 1) / height
         if len(points) < 3 or not np.isfinite(points).all():
             raise ValueError("待导出的 polygon 无效")
-        lines.append("0 " + " ".join(f"{coordinate:.6f}" for coordinate in points.ravel()))
+        lines.append(f"{class_id} " + " ".join(f"{coordinate:.6f}" for coordinate in points.ravel()))
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -161,8 +177,9 @@ def draw_preview(image_bgr: np.ndarray, objects: list[dict]) -> np.ndarray:
         polygon = np.rint(obj["polygon"]).astype(np.int32).reshape(-1, 1, 2)
         cv2.polylines(view, [polygon], True, color, 2)
         x, y = polygon.reshape(-1, 2).min(axis=0)
-        review = obj["disconnected_pixels"] > 0 or obj["has_holes"]
-        text = f"{index + 1}: object {obj['score']:.2f}" + (" REVIEW" if review else "")
+        review = obj["disconnected_pixels"] > 0 or obj["has_holes"] or bool(obj.get("review_reason"))
+        label = f"class={obj['class_id']}" if "class_id" in obj else "object"
+        text = f"{index + 1}: {label} {obj['score']:.2f}" + (" REVIEW" if review else "")
         cv2.putText(view, text, (int(x), max(18, int(y) - 6)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
     if not objects:
@@ -175,11 +192,14 @@ def export_dataset(
     source_dir: str | Path,
     output_dir: str | Path,
     splits: Iterable[str],
-    predict: Callable[[Image.Image], list[dict]],
+    predict: Callable[..., list[dict]],
     config: dict,
     limit: int = 0,
+    *,
+    names: list[str] | None = None,
+    predict_with_path: bool = False,
 ) -> dict:
-    """保留已有 split，生成新预标注数据和 CVAT 包，不改动源图或人工标签。"""
+    """保留 split 生成预标注；侧面入口可传类别表和接收图片路径的预测函数。"""
     source = Path(source_dir).expanduser().resolve()
     output = Path(output_dir).expanduser().resolve()
     if source == output or source in output.parents:
@@ -187,7 +207,9 @@ def export_dataset(
     dataset = output / "dataset"
     if dataset.exists():
         raise FileExistsError(f"输出数据集已存在，请换一个输出目录，避免覆盖人工标签：{dataset}")
-    split_images = scan_dataset(source, splits, limit=limit)
+    unique_names = names is not None
+    names = list(names) if names is not None else ["object"]
+    split_images = scan_dataset(source, splits, limit=limit, allow_duplicate_stems=unique_names)
     if not any(split_images.values()):
         raise FileNotFoundError(f"没有找到待标注图片：{source}")
 
@@ -205,11 +227,13 @@ def export_dataset(
         "disconnected_mask_images": 0,
         "hole_mask_images": 0,
         "splits": {},
+        "names": names,
     }
     fieldnames = [
         "split", "source_relative_path", "image", "label", "width", "height",
         "raw_predictions", "instances_auto", "zero_detection", "review_needed",
         "review_reasons", "disconnected_pixels", "hole_instances", "scores", "prompts",
+        "class_ids", "class_names",
     ]
     with (output / "manifest.csv").open("w", encoding="utf-8-sig", newline="") as stream:
         manifest = csv.DictWriter(stream, fieldnames=fieldnames)
@@ -230,16 +254,18 @@ def export_dataset(
                 with Image.open(path) as opened:
                     image = opened.convert("RGB")
                 width, height = image.size
-                predictions = predict(image)
+                predictions = predict(image, path) if predict_with_path else predict(image)
                 objects = process_masks(predictions, config)
                 if any(obj["mask"].shape != (height, width) for obj in objects):
                     raise ValueError(f"SAM mask 尺寸与原图不一致：{path}")
 
-                image_relative = f"images/{split}/{path.name}"
-                label_relative = f"labels/{split}/{path.stem}.txt"
-                shutil.copy2(path, image_dir / path.name)
-                (label_dir / f"{path.stem}.txt").write_text(
-                    to_yolo_text(objects, width, height), encoding="utf-8",
+                exported_name = export_image_name(path, source, unique=unique_names)
+                label_name = Path(exported_name).stem + ".txt"
+                image_relative = f"images/{split}/{exported_name}"
+                label_relative = f"labels/{split}/{label_name}"
+                shutil.copy2(path, image_dir / exported_name)
+                (label_dir / label_name).write_text(
+                    to_yolo_text(objects, width, height, class_count=len(names)), encoding="utf-8",
                 )
                 # ./ 前缀让 YOLO 按清单所在目录解析图片，而不是按运行目录解析。
                 image_list.append("./" + image_relative)
@@ -253,6 +279,9 @@ def export_dataset(
                     reasons.append("disconnected_mask")
                 if hole_instances:
                     reasons.append("mask_has_holes")
+                reasons.extend(dict.fromkeys(
+                    str(obj["review_reason"]) for obj in objects if obj.get("review_reason")
+                ))
                 needs_review = bool(reasons)
                 manifest.writerow({
                     "split": split,
@@ -270,6 +299,8 @@ def export_dataset(
                     "hole_instances": hole_instances,
                     "scores": ";".join(f"{obj['score']:.4f}" for obj in objects),
                     "prompts": ";".join(dict.fromkeys(str(obj.get("prompt", "")) for obj in objects)),
+                    "class_ids": ";".join(str(obj.get("class_id", 0)) for obj in objects),
+                    "class_names": ";".join(names[int(obj.get("class_id", 0))] for obj in objects),
                 })
                 stream.flush()
 
@@ -278,7 +309,7 @@ def export_dataset(
                     encoded, data = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 92])
                     if not encoded:
                         raise RuntimeError(f"无法编码标注预览：{path}")
-                    data.tofile(str(preview_dir / f"{path.stem}.jpg"))
+                    data.tofile(str(preview_dir / f"{Path(exported_name).stem}.jpg"))
 
                 split_stats["images"] += 1
                 split_stats["instances"] += len(objects)
@@ -296,10 +327,12 @@ def export_dataset(
                 summary[name] += split_stats[name]
 
     # 省略 path 字段，使训练端以 data.yaml 所在目录为数据集根目录。
-    yaml_lines = [f"{split}: {split}.txt" for split in split_images]
-    yaml_lines.extend(["names:", "  0: object", ""])
-    (dataset / "data.yaml").write_text("\n".join(yaml_lines), encoding="utf-8")
-    (dataset / "classes.txt").write_text("object\n", encoding="utf-8")
+    data_config = {split: f"{split}.txt" for split in split_images}
+    data_config["names"] = dict(enumerate(names))
+    (dataset / "data.yaml").write_text(
+        yaml.safe_dump(data_config, allow_unicode=True, sort_keys=False), encoding="utf-8",
+    )
+    (dataset / "classes.txt").write_text("\n".join(names) + "\n", encoding="utf-8")
 
     if bool(config["make_zip"]):
         zip_path = output / "sam3_cvat_project.zip"

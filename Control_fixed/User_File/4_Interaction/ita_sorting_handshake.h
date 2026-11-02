@@ -113,7 +113,7 @@ struct Struct_Sorting_Pick_Request
         0.0f;
 
     // 视觉估计的“下降前夹爪目标预开口”，单位mm。
-    // Valid=false 时 HoldingJaw 保持旧固定预收缩角。
+    // Valid=false 时不允许开始抓取，不能退回旧的固定预收缩角。
     float Preopen_mm =
         0.0f;
 

@@ -4,6 +4,7 @@
 
 #include "3_Robot/holding_jaw.h"
 #include "3_Robot/claw_preopen_profile.h"
+#include "3_Robot/edge_motion_config.h"
 #include <cmath>
 
 
@@ -18,6 +19,7 @@ void Class_Holding_Jaw::Init()
     Fault_Lift_Stop_Pending = false;
     Fault_Yaw_Stop_Pending = false;
     Calibration_Yaw_Override = false;
+    Edge_Move_Step = 0U;
 
     // ========================================================
     // 舵机初始化
@@ -54,6 +56,9 @@ void Class_Holding_Jaw::Init()
 
     Grap_Move_Status =
         Enum_Grap_Move_Disable;
+
+    // 复位后每次都重新执行一次“反馈有效后自动回 Disable”。
+    Power_On_Disable_Pending = true;
 
 
     Grap_Move_Count =
@@ -301,23 +306,21 @@ TIM_1ms_PeriodElapsedCallback()
 
 
     // ========================================================
-    // Lift按照固定角速度持续下降
-    //
-    // 当前：
-    //
-    // 10° / s
-    //
-    // 1ms一次：
-    //
-    // delta =
-    // 10°/s × 0.001s
-    //
-    // = 0.01°
+    // 朝下降终点匀速运动，速度配置始终为正值。
+    // 方向由剩余角度决定，支持当前 28° -> -40°，也支持角度递增的机构。
     // ========================================================
 
-    Lift_Descend_Target_Angle +=
-        Lift_Descend_Speed *
-        0.001f;
+    const float remaining_angle = Lift_Descend_Max_Angle - Lift_Descend_Target_Angle;
+    const float angle_step = Lift_Descend_Speed * 0.001f;
+    if (std::fabs(remaining_angle) <= angle_step)
+    {
+        // 最后一步直接到终点，避免越界和来回振荡。
+        Lift_Descend_Target_Angle = Lift_Descend_Max_Angle;
+    }
+    else
+    {
+        Lift_Descend_Target_Angle += remaining_angle > 0.0f ? angle_step : -angle_step;
+    }
 
 
     // ========================================================
@@ -335,14 +338,6 @@ TIM_1ms_PeriodElapsedCallback()
     // 注意：这里只对“有效TOF一直大于阈值、但Lift已经到底”做兜底。
     // TOF失效/超时仍然按故障处理，不盲目继续下降。
     // ========================================================
-
-    if (Lift_Descend_Target_Angle >=
-        Lift_Descend_Max_Angle)
-    {
-        Lift_Descend_Target_Angle =
-            Lift_Descend_Max_Angle;
-    }
-
 
     // ========================================================
     // 1ms内部计算
@@ -411,9 +406,10 @@ TIM_1ms_PeriodElapsedCallback()
     // 再让夹爪闭合，避免“最后几毫米还没下完就先夹”。
     // ========================================================
 
+    // 到位判断与角度增减方向无关；串口忙时继续重试终点指令。
     if (lift_tx_status == HAL_OK &&
-        Lift_Descend_Target_Angle >=
-            (Lift_Descend_Max_Angle - 0.0001f) && !Grap_Lift_Limit_Commanded)
+        std::fabs(Lift_Descend_Target_Angle - Lift_Descend_Max_Angle) <= 0.0001f &&
+        !Grap_Lift_Limit_Commanded)
     {
         Grap_Lift_Limit_Command_Tick = HAL_GetTick();
         Grap_Lift_Limit_Commanded =
@@ -441,6 +437,40 @@ TIM_100ms_PeriodElapsedCallback()
     // ========================================================
 
     Grap_Move();
+
+    // ========================================================
+    // 上电自动回到 Disable XY 坐标
+    //
+    // XY_Motion.Init() 后必须先收到两台 EMM 的有效反馈，
+    // 上电软件原点才会建立。此时不能在 Init() 里直接调用
+    // Move_To_mm()，否则会因为 Position_Valid=false 被拒绝。
+    // 等舵机待机命令稳定、XY反馈有效后再走统一 Return 状态机，
+    // 这样与STOP/故障回位使用完全相同的角度和速度参数。
+    // ========================================================
+    if (Power_On_Disable_Pending &&
+        Grap_Move_Status == Enum_Grap_Move_Disable)
+    {
+        if (Get_Disable_Ready())
+        {
+            // 上电时已经在 Disable，清掉一次性请求，不再重复下发移动。
+            Power_On_Disable_Pending = false;
+        }
+        else if (XY_Motion.Get_Position_Valid() &&
+                 !XY_Motion.Get_Fault() &&
+                 Motion_Configuration_Valid() &&
+                 Get_Stop_Ready())
+        {
+            // Request_Return_To_Disable() 内部会把状态切换到 Return，
+            // 下一次100ms回调由 Outputs()发送 XY 的 Disable 坐标。
+            const HAL_StatusTypeDef status = Request_Return_To_Disable();
+            if (status == HAL_OK)
+            {
+                Power_On_Disable_Pending = false;
+            }
+            // HAL_BUSY 表示反馈/舵机仍在稳定，下一周期继续尝试；
+            // HAL_ERROR 也保留请求，避免一次时序抖动导致永远不回位。
+        }
+    }
 }
 
 
@@ -902,9 +932,6 @@ void Class_Holding_Jaw::Outputs()
         HAL_BUSY;
 
 
-    HAL_StatusTypeDef xy_status = HAL_ERROR;
-
-
     switch (Grap_Move_Status)
     {
         // ====================================================
@@ -1022,66 +1049,9 @@ void Class_Holding_Jaw::Outputs()
 
         case Enum_Grap_Move_X_Y_Start:
         {
-            // ------------------------------------------------
-            // Step 0
-            //
-            // X/Y同时开始
-            // ------------------------------------------------
-
-            if (Grap_Output_Step == 0)
-            {
-                xy_status = XY_Motion.Move_To_mm(
-                    Grap_Target_X_mm, Grap_Target_Y_mm, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
-
-                if (xy_status == HAL_OK)
-                {
-                    Grap_Output_Step =
-                        1;
-                }
-                else
-                {
-                    if (xy_status != HAL_BUSY)
-                    {
-                        Abort_XY_Fault();
-                    }
-                    break;
-                }
-            }
-
-
-            // ------------------------------------------------
-            // Step 1
-            //
-            // Yaw
-            // ------------------------------------------------
-
-            if (Grap_Output_Step == 1)
-            {
-                Yaw_Servo_Motor_Target_Angle =
-                    Grap_Target_Yaw_Angle;
-
-
-                tx_status =
-                    Yaw_Servo_Motor.Control_Angle(
-                        Yaw_Servo_Motor_Target_Angle,
-                        500
-                    );
-
-
-                if (tx_status == HAL_OK)
-                {
-                    Grap_Output_Step =
-                        2;
-
-
-                    Complete_Outputs();
-                }
-
-
-                break;
-            }
-
-
+            if (!Grap_Output_Flag && Move_XY_Yaw_Via_Edge(
+                    Grap_Target_X_mm, Grap_Target_Y_mm, Grap_Target_Yaw_Angle))
+                Complete_Outputs();
             break;
         }
 
@@ -1211,66 +1181,9 @@ void Class_Holding_Jaw::Outputs()
 
         case Enum_Grap_Move_X_Y_Tray:
         {
-            // ------------------------------------------------
-            // Step 0
-            //
-            // X/Y
-            // ------------------------------------------------
-
-            if (Grap_Output_Step == 0)
-            {
-                xy_status = XY_Motion.Move_To_mm(
-                    Tray_X_mm, Tray_Y_mm, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
-
-                if (xy_status == HAL_OK)
-                {
-                    Grap_Output_Step =
-                        1;
-                }
-                else
-                {
-                    if (xy_status != HAL_BUSY)
-                    {
-                        Abort_XY_Fault();
-                    }
-                    break;
-                }
-            }
-
-
-            // ------------------------------------------------
-            // Step 1
-            //
-            // Yaw
-            // ------------------------------------------------
-
-            if (Grap_Output_Step == 1)
-            {
-                Yaw_Servo_Motor_Target_Angle =
-                    Tray_Yaw_Angle;
-
-
-                tx_status =
-                    Yaw_Servo_Motor.Control_Angle(
-                        Yaw_Servo_Motor_Target_Angle,
-                        500
-                    );
-
-
-                if (tx_status == HAL_OK)
-                {
-                    Grap_Output_Step =
-                        2;
-
-
-                    Complete_Outputs();
-                }
-
-
-                break;
-            }
-
-
+            if (!Grap_Output_Flag && Move_XY_Yaw_Via_Edge(
+                    Tray_X_mm, Tray_Y_mm, Tray_Yaw_Angle))
+                Complete_Outputs();
             break;
         }
 
@@ -1387,118 +1300,43 @@ void Class_Holding_Jaw::Outputs()
 
         case Enum_Grap_Move_Recognition_Position:
         {
-            // ------------------------------------------------
-            // Step 0: X/Y
-            // ------------------------------------------------
-
+            // 识别姿态的 X/Y + Yaw 摆位方式：
+            //   false = 直达（当前）：识别姿态是固定工位、夹爪已空，
+            //           实测在该处转 Yaw 不会碰到电机，省一次绕行。
+            //   true  = 绕行：先退到 x=-40 内侧再转 Yaw，与抓取/放料/回位路线一致。
+            // 注意：若改了 Recognition_X_mm 或夹爪外形，必须重新确认这个假设；
+            //       拿不准就把这里置 true。
+            constexpr bool kRecognitionTransitViaEdge = false;
             if (Grap_Output_Step == 0)
             {
-                xy_status = XY_Motion.Move_To_mm(
-                    Recognition_X_mm, Recognition_Y_mm, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
-
-                if (xy_status == HAL_OK)
-                {
-                    Grap_Output_Step =
-                        1;
-                }
-                else
-                {
-                    if (xy_status != HAL_BUSY)
-                    {
-                        Abort_XY_Fault();
-                    }
-                    break;
-                }
+                const bool positioned = kRecognitionTransitViaEdge
+                    ? Move_XY_Yaw_Via_Edge(
+                          Recognition_X_mm, Recognition_Y_mm, Recognition_Yaw_Angle)
+                    : Move_XY_Yaw_Direct(
+                          Recognition_X_mm, Recognition_Y_mm, Recognition_Yaw_Angle);
+                if (positioned)
+                    Grap_Output_Step = 1;
+                break;
             }
-
-
-            // ------------------------------------------------
-            // Step 1: Yaw
-            // ------------------------------------------------
-
             if (Grap_Output_Step == 1)
             {
-                Yaw_Servo_Motor_Target_Angle =
-                    Recognition_Yaw_Angle;
-
-
-                tx_status =
-                    Yaw_Servo_Motor.Control_Angle(
-                        Yaw_Servo_Motor_Target_Angle,
-                        500
-                    );
-
-
-                if (tx_status == HAL_OK)
-                {
-                    Grap_Output_Step =
-                        2;
-                }
-
-
+                Lift_Servo_Motor_Target_Angle = Recognition_Lift_Angle;
+                tx_status = Lift_Servo_Motor.Control_Angle(
+                    Lift_Servo_Motor_Target_Angle, Servo_Move_Time_ms);
+                if (tx_status == HAL_OK) Grap_Output_Step = 2;
                 break;
             }
-
-
-            // ------------------------------------------------
-            // Step 2: Lift
-            // ------------------------------------------------
-
             if (Grap_Output_Step == 2)
             {
-                Lift_Servo_Motor_Target_Angle =
-                    Recognition_Lift_Angle;
-
-
-                tx_status =
-                    Lift_Servo_Motor.Control_Angle(
-                        Lift_Servo_Motor_Target_Angle,
-                        500
-                    );
-
-
+                Claw_Servo_Motor_Target_Angle = Recognition_Claw_Angle;
+                tx_status = Claw_Servo_Motor.Control_Angle(
+                    Claw_Servo_Motor_Target_Angle, Servo_Move_Time_ms);
                 if (tx_status == HAL_OK)
                 {
-                    Grap_Output_Step =
-                        3;
-                }
-
-
-                break;
-            }
-
-
-            // ------------------------------------------------
-            // Step 3: Claw
-            // ------------------------------------------------
-
-            if (Grap_Output_Step == 3)
-            {
-                Claw_Servo_Motor_Target_Angle =
-                    Recognition_Claw_Angle;
-
-
-                tx_status =
-                    Claw_Servo_Motor.Control_Angle(
-                        Claw_Servo_Motor_Target_Angle,
-                        500
-                    );
-
-
-                if (tx_status == HAL_OK)
-                {
-                    Grap_Output_Step =
-                        4;
-
-
+                    Grap_Output_Step = 3;
                     Complete_Outputs();
                 }
-
-
-                break;
             }
-
-
             break;
         }
 
@@ -1531,32 +1369,20 @@ void Class_Holding_Jaw::Outputs()
             }
             if (Grap_Output_Step == 2)
             {
-                xy_status = XY_Motion.Move_To_mm(
-                    Disable_X_mm, Disable_Y_mm, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
-                if (xy_status == HAL_OK) Grap_Output_Step = 3;
-                else
-                {
-                    if (xy_status != HAL_BUSY) Abort_XY_Fault();
-                    break;
-                }
+                // 保持夹爪闭合，先退到边界，再转待机Yaw；全程到位后才允许松爪。
+                if (Move_XY_Yaw_Via_Edge(
+                        Disable_X_mm, Disable_Y_mm, Yaw_Servo_Motor_Angle_Disable))
+                    Grap_Output_Step = 3;
+                break;
             }
             if (Grap_Output_Step == 3)
             {
-                Yaw_Servo_Motor_Target_Angle = Yaw_Servo_Motor_Angle_Disable;
-                tx_status = Yaw_Servo_Motor.Control_Angle(
-                    Yaw_Servo_Motor_Target_Angle, Servo_Move_Time_ms);
-                if (tx_status == HAL_OK) Grap_Output_Step = 4;
-                break;
-            }
-            if (Grap_Output_Step == 4)
-            {
-                if (!XY_Move_Finished()) break;
                 Claw_Servo_Motor_Target_Angle = Claw_Servo_Motor_Angle_Disable;
                 tx_status = Claw_Servo_Motor.Control_Angle(
                     Claw_Servo_Motor_Target_Angle, Servo_Move_Time_ms);
                 if (tx_status == HAL_OK)
                 {
-                    Grap_Output_Step = 5;
+                    Grap_Output_Step = 4;
                     Complete_Outputs();
                 }
             }
@@ -1689,8 +1515,7 @@ Class_Holding_Jaw::Start_Grap(
     Grap_Target_Preopen_mm = Target_Preopen_mm;
     Grap_Target_Preopen_Valid = Target_Preopen_Valid;
 
-    // 共用查表提供保守的“内侧开口量 -> 夹爪舵机角度”映射。
-    // 旧版 Claw_CAD_*/Claw_Preopen_* 几何常数已不再使用。
+    // 使用统一线性公式完成“内侧开口量 -> 夹爪舵机角度”换算。
     Grap_Target_Pre_Clip_Angle = preopen_deg * PI / 180.0f;
 
 
@@ -1772,6 +1597,7 @@ void Class_Holding_Jaw::Set_Grap_Move_Status(
     Enum_Grap_Move_Status New_Status)
 {
     Grap_State_Start_Tick = HAL_GetTick();
+    Edge_Move_Step = 0U;
     Grap_Move_Status =
         New_Status;
 
@@ -1796,9 +1622,7 @@ void Class_Holding_Jaw::Set_Grap_Move_Status(
         Enum_Grap_Move_Descend)
     {
         // ----------------------------------------------------
-        // 从当前抬升位置开始
-        //
-        // -70°
+        // 每次从配置的抬升位置开始，下降方向由终点自动确定。
         // ----------------------------------------------------
 
         Lift_Descend_Target_Angle =
@@ -1848,6 +1672,216 @@ void Class_Holding_Jaw::Set_Grap_Move_Status(
         Grap_TOF_No_Update_Count_ms =
             0;
     }
+}
+
+
+// 共用非阻塞路线：边缘内先保持Yaw退到边界内侧，再在边界外联动XY/Yaw。
+// 守哪条边由 Edge_Motion_Config::Boundary_Axis_Y 决定：
+//   false = 电机在 x=0 一侧（旧设计，退避沿 X 走）
+//   true  = 电机在图像下边沿，即 y=0 一侧（当前实机，退避沿 Y 走）
+// 被守的轴统一叫"边界轴"(b)，另一轴叫"行进轴"(o)，两种配置共用同一套步骤：
+//   0) 当前在危险带 -> 只改边界轴退到内侧，行进轴保持不变
+//   1) 等退避到位
+//   2) 保持边界轴，把行进轴移到目标
+//   3) 确认仍在安全侧后才发 Yaw
+//   4) 等 XY 到位且舵机动作完成
+//   5) 目标本身在危险带时，最后只改边界轴进入
+// 40~80°是上位机对"抓取目标"的筛选范围；固定托盘、待机姿态仍按原值执行，
+// 但也必须先在边界外完成转向。
+bool Class_Holding_Jaw::Move_XY_Yaw_Via_Edge(float X_mm, float Y_mm, float Yaw_Rad)
+{
+    struct Point2 { float x; float y; };
+    constexpr bool axis_y = Edge_Motion_Config::Boundary_Axis_Y;
+    const auto boundary_of = [axis_y](float x, float y) { return axis_y ? y : x; };
+    const auto other_of = [axis_y](float x, float y) { return axis_y ? x : y; };
+    const auto pack = [axis_y](float b, float o) {
+        return axis_y ? Point2{o, b} : Point2{b, o};
+    };
+    const auto clamp_other = [axis_y](float v) {
+        return axis_y
+            ? std::fmin(XY_Config::X_Max_mm, std::fmax(XY_Config::X_Min_mm, v))
+            : std::fmin(XY_Config::Y_Max_mm, std::fmax(XY_Config::Y_Min_mm, v));
+    };
+
+    const float boundary = Edge_Motion_Config::Turn_Boundary_mm;
+    const float inside_boundary = boundary - static_cast<float>(XY_Config::Position_Tolerance_mm) -
+        Edge_Motion_Config::Turn_Extra_Clearance_mm;
+    const float target_b = boundary_of(X_mm, Y_mm);
+    const float target_o = other_of(X_mm, Y_mm);
+    const float turn_b = target_b > inside_boundary ? inside_boundary : target_b;
+    HAL_StatusTypeDef xy_status = HAL_BUSY;
+
+    if (Edge_Move_Step == 0U)
+    {
+        // 已在同一姿态时不必绕行；只认可实测停稳，不靠旧目标位置推断。
+        if (XY_Motion.Get_Motion_Finished() && XY_At_mm(X_mm, Y_mm) &&
+            std::fabs(Yaw_Servo_Motor_Target_Angle - Yaw_Rad) < 0.0001f &&
+            !Calibration_Yaw_Override)
+        {
+            Edge_Move_Step = 7U;
+            return true;
+        }
+        // 不需要转向：全程不会在危险带动舵机，直接一步走到目标，省掉中转点。
+        if (std::fabs(Yaw_Servo_Motor_Target_Angle - Yaw_Rad) < 0.0001f &&
+            !Calibration_Yaw_Override)
+        {
+            xy_status = XY_Motion.Move_To_mm(
+                X_mm, Y_mm, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
+            if (xy_status == HAL_OK) Edge_Move_Step = 6U;
+            else if (xy_status != HAL_BUSY) Abort_XY_Fault();
+            return false;
+        }
+
+        // 已经在安全侧：Yaw 与 XY 同时下发，省掉"到点后再等一整段舵机时间"。
+        if (boundary_of(XY_Motion.Get_X_mm(), XY_Motion.Get_Y_mm()) <= inside_boundary)
+        {
+            if (Yaw_Servo_Motor.Control_Angle(Yaw_Rad, Servo_Move_Time_ms) != HAL_OK)
+                return false;
+            Yaw_Servo_Motor_Target_Angle = Yaw_Rad;
+            Edge_Yaw_Command_Tick = HAL_GetTick();
+            const Point2 p_fast = pack(turn_b, target_o);
+            xy_status = XY_Motion.Move_To_mm(
+                p_fast.x, p_fast.y, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
+            if (xy_status == HAL_OK) Edge_Move_Step = 4U;
+            else if (xy_status != HAL_BUSY) Abort_XY_Fault();
+            return false;
+        }
+
+        if (boundary_of(XY_Motion.Get_X_mm(), XY_Motion.Get_Y_mm()) > boundary)
+        {
+            // HAL_BUSY时保持原步骤重试；真正提交时记录"行进轴"的当前实测值。
+            // 反馈可能带 0.01mm 级误差，夹回合法范围，避免把噪声当非法目标。
+            Edge_Retreat_Y_mm = clamp_other(
+                other_of(XY_Motion.Get_X_mm(), XY_Motion.Get_Y_mm()));
+            const Point2 p = pack(inside_boundary, Edge_Retreat_Y_mm);
+            xy_status = XY_Motion.Move_To_mm(
+                p.x, p.y, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
+            if (xy_status == HAL_OK) Edge_Move_Step = 1U;
+            else if (xy_status != HAL_BUSY) Abort_XY_Fault();
+            return false;
+        }
+        Edge_Move_Step = 2U;
+    }
+    if (Edge_Move_Step == 1U)
+    {
+        const Point2 p = pack(inside_boundary, Edge_Retreat_Y_mm);
+        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(p.x, p.y) ||
+            boundary_of(XY_Motion.Get_X_mm(), XY_Motion.Get_Y_mm()) > boundary)
+            return false;
+        Edge_Move_Step = 2U;
+    }
+    if (Edge_Move_Step == 2U)
+    {
+        // 旧XY命令可能在HAL_BUSY重试期间结束于危险带，提交联动前再次核对实测值。
+        if (boundary_of(XY_Motion.Get_X_mm(), XY_Motion.Get_Y_mm()) > boundary)
+        {
+            Edge_Move_Step = 0U;
+            return false;
+        }
+        const Point2 p = pack(turn_b, target_o);
+        xy_status = XY_Motion.Move_To_mm(
+            p.x, p.y, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
+        if (xy_status != HAL_OK)
+        {
+            if (xy_status != HAL_BUSY) Abort_XY_Fault();
+            return false;
+        }
+        Edge_Move_Step = 3U;
+    }
+    if (Edge_Move_Step == 3U)
+    {
+        // UART也可能忙着重试：真正发Yaw之前仍以当前反馈确认已离开危险带。
+        if (boundary_of(XY_Motion.Get_X_mm(), XY_Motion.Get_Y_mm()) > boundary)
+        {
+            Edge_Move_Step = 0U;
+            return false;
+        }
+        // XY已经留在安全半平面内，此时才允许同时改变Yaw；UART忙则继续重试。
+        if (Yaw_Servo_Motor.Control_Angle(Yaw_Rad, Servo_Move_Time_ms) != HAL_OK)
+            return false;
+        Yaw_Servo_Motor_Target_Angle = Yaw_Rad;
+        Edge_Yaw_Command_Tick = HAL_GetTick();
+        Edge_Move_Step = 4U;
+        return false;
+    }
+    if (Edge_Move_Step == 4U)
+    {
+        const Point2 p = pack(turn_b, target_o);
+        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(p.x, p.y) ||
+            (uint32_t)(HAL_GetTick() - Edge_Yaw_Command_Tick) < Servo_Move_Time_ms)
+            return false;
+        Edge_Move_Step = target_b > inside_boundary ? 5U : 7U;
+    }
+    if (Edge_Move_Step == 5U)
+    {
+        // 最后一段只改变边界轴，进入危险带期间不再发送任何Yaw转动命令。
+        xy_status = XY_Motion.Move_To_mm(
+            X_mm, Y_mm, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
+        if (xy_status != HAL_OK)
+        {
+            if (xy_status != HAL_BUSY) Abort_XY_Fault();
+            return false;
+        }
+        Edge_Move_Step = 6U;
+        return false;
+    }
+    if (Edge_Move_Step == 6U)
+    {
+        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(X_mm, Y_mm))
+            return false;
+        Edge_Move_Step = 7U;
+    }
+    return Edge_Move_Step == 7U;
+}
+
+
+// 识别姿态专用直达路线：物体已经放入识别托盘后直接去侧面相机姿态，
+// 不再为了固定识别姿态绕回边界点。Yaw 在 XY 实际到位后再发送。
+bool Class_Holding_Jaw::Move_XY_Yaw_Direct(float X_mm, float Y_mm, float Yaw_Rad)
+{
+    HAL_StatusTypeDef xy_status = HAL_BUSY;
+
+    if (Edge_Move_Step == 0U)
+    {
+        if (XY_Motion.Get_Motion_Finished() && XY_At_mm(X_mm, Y_mm) &&
+            std::fabs(Yaw_Servo_Motor_Target_Angle - Yaw_Rad) < 0.0001f &&
+            !Calibration_Yaw_Override)
+        {
+            Edge_Move_Step = 7U;
+            return true;
+        }
+
+        xy_status = XY_Motion.Move_To_mm(
+            X_mm, Y_mm, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
+        if (xy_status == HAL_OK)
+            Edge_Move_Step = 1U;
+        else if (xy_status != HAL_BUSY)
+            Abort_XY_Fault();
+        return false;
+    }
+
+    if (Edge_Move_Step == 1U)
+    {
+        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(X_mm, Y_mm))
+            return false;
+
+        if (Yaw_Servo_Motor.Control_Angle(Yaw_Rad, Servo_Move_Time_ms) != HAL_OK)
+            return false;
+        Yaw_Servo_Motor_Target_Angle = Yaw_Rad;
+        Edge_Yaw_Command_Tick = HAL_GetTick();
+        Edge_Move_Step = 2U;
+        return false;
+    }
+
+    if (Edge_Move_Step == 2U)
+    {
+        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(X_mm, Y_mm) ||
+            (uint32_t)(HAL_GetTick() - Edge_Yaw_Command_Tick) < Servo_Move_Time_ms)
+            return false;
+        Edge_Move_Step = 7U;
+    }
+
+    return Edge_Move_Step == 7U;
 }
 
 
@@ -1964,14 +1998,22 @@ bool Class_Holding_Jaw::Motion_Configuration_Valid() const
     return std::isfinite(X_Move_Speed_mm_s) && X_Move_Speed_mm_s > 0.0f &&
         std::isfinite(Y_Move_Speed_mm_s) && Y_Move_Speed_mm_s > 0.0f &&
         in_workspace(Tray_X_mm, Tray_Y_mm) && in_workspace(Recognition_X_mm, Recognition_Y_mm) &&
-        in_workspace(Disable_X_mm, Disable_Y_mm) && angle_valid(Tray_Yaw_Angle) &&
+        in_workspace(Disable_X_mm, Disable_Y_mm) &&
+        // 中转边界必须真的落在它所在轴的合法行程内（轴的选取见 edge_motion_config.h）。
+        (Edge_Motion_Config::Boundary_Axis_Y
+            ? (Edge_Motion_Config::Turn_Boundary_mm - XY_Config::Position_Tolerance_mm -
+                   Edge_Motion_Config::Turn_Extra_Clearance_mm >= XY_Config::Y_Min_mm &&
+               Edge_Motion_Config::Turn_Boundary_mm <= XY_Config::Y_Max_mm)
+            : (Edge_Motion_Config::Turn_Boundary_mm - XY_Config::Position_Tolerance_mm -
+                   Edge_Motion_Config::Turn_Extra_Clearance_mm >= XY_Config::X_Min_mm &&
+               Edge_Motion_Config::Turn_Boundary_mm <= XY_Config::X_Max_mm)) &&
+        angle_valid(Tray_Yaw_Angle) &&
         angle_valid(Recognition_Yaw_Angle) && angle_valid(Recognition_Lift_Angle) &&
         angle_valid(Recognition_Claw_Angle) && angle_valid(Yaw_Servo_Motor_Angle_Disable) &&
         angle_valid(Lift_Servo_Motor_Angle_Disable) && angle_valid(Claw_Servo_Motor_Angle_Disable) &&
         angle_valid(Lift_Servo_Motor_Angle_Recognition_Tray_Descend) &&
         angle_valid(Claw_Servo_Motor_Angle_Clip) && angle_valid(Claw_Servo_Motor_Angle_Release) &&
         angle_valid(Lift_Servo_Motor_Angle_Lift) && angle_valid(Lift_Descend_Max_Angle) &&
-        Lift_Servo_Motor_Angle_Lift <= Lift_Descend_Max_Angle &&
         std::isfinite(Lift_Descend_Speed) && Lift_Descend_Speed > 0.0f;
 }
 

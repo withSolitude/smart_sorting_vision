@@ -20,6 +20,7 @@ from vision.calibration.yaw_servo import YawServoCalibration
 
 
 def build_pipeline(cfg: dict, *, debug_rejections: bool) -> TopPickPipeline:
+    yaw = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
     top_model = cfg["model"]["top"]
     top_cfg = cfg["vision"]["top"]
     consensus = top_cfg["consensus"]
@@ -28,7 +29,6 @@ def build_pipeline(cfg: dict, *, debug_rejections: bool) -> TopPickPipeline:
     gc = top_cfg.get("gripper_collision", {}) or {}
     search = gc.get("grasp_search", {}) or {}
     body = gc.get("body", {}) or {}
-    yaw_servo = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
 
     mechanics = cfg.get("mechanics", {}) or {}
     x_limits = mechanics["workspace_mm"]["x"]
@@ -43,16 +43,20 @@ def build_pipeline(cfg: dict, *, debug_rejections: bool) -> TopPickPipeline:
             reference_axis_deg=float(tcp_cfg["reference_axis_deg"]),
             offset_axis0_x_mm=float(d0[0]),
             offset_axis0_y_mm=float(d0[1]),
-            min_axis_deg=float(tcp_cfg.get("min_axis_deg", -87.0)),
-            max_axis_deg=float(tcp_cfg.get("max_axis_deg", 89.0)),
+            min_axis_deg=yaw.physical_min_deg,
+            max_axis_deg=yaw.physical_max_deg,
             visual_to_command_matrix=tcp_cfg.get(
                 "visual_to_command_matrix", [[1.0, 0.0], [0.0, 1.0]]
             ),
         )
 
     return TopPickPipeline(
+        yaw_servo_calibration=yaw,
         model_path=top_model["path"],
         calibration_path=cfg["calibration"]["pixel_to_robot"],
+        outward_radial_config=cfg["vision"]["top"].get("outward_radial_compensation"),
+        edge_yaw_config=cfg["vision"]["top"].get("edge_yaw_limit"),
+        top_intrinsics_path=cfg["calibration"]["top_intrinsics"],
         camera_config=cfg["camera"]["top"],
         conf=top_model["conf"],
         imgsz=top_model["imgsz"],
@@ -120,7 +124,6 @@ def build_pipeline(cfg: dict, *, debug_rejections: bool) -> TopPickPipeline:
         x_limits_mm=x_limits,
         y_limits_mm=y_limits,
         yaw_tcp_compensator=yaw_comp,
-        yaw_servo_calibration=yaw_servo,
     )
 
 

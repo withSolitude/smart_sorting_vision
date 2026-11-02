@@ -6,6 +6,8 @@ from typing import Any
 
 import yaml
 from vision.calibration.yaw_servo import YawServoCalibration
+from vision.grasp.edge_yaw_limit import EdgeYawLimit
+from vision.grasp.outward_radial_compensation import OutwardRadialCompensator
 
 
 class ConfigError(ValueError):
@@ -165,6 +167,32 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
         YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"calibration.yaw_servo 无效: {exc}") from exc
+
+    # 当前机构的机械 X/Y 与历史四点标定文件的输出顺序相反：
+    # pixel_to_robot.json 里保存的是 [Y, X]，而 PICK_TARGET 需要 [X, Y]。
+    # 这里把标志注入 camera.top，使主程序、调试脚本、标定验证脚本
+    # 共用同一份轴顺序，避免各自维护。
+    swap_xy = cfg["calibration"].get("pixel_to_robot_swap_xy", False)
+    if not isinstance(swap_xy, bool):
+        raise ConfigError("calibration.pixel_to_robot_swap_xy 必须为 true/false")
+    cfg["camera"]["top"]["swap_robot_xy"] = swap_xy
+
+    # 抓取点向外径向补偿：边缘目标的分割 mask 会带上侧面，质心被拉向画面中心，
+    # 这里只做参数校验，真正的补偿在 TopPickPipeline 里按候选点逐次应用。
+    try:
+        OutwardRadialCompensator.validate_config(
+            cfg["vision"]["top"].get("outward_radial_compensation")
+        )
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(
+            f"vision.top.outward_radial_compensation 无效: {exc}"
+        ) from exc
+
+    # 边缘区 Yaw 限角：参数非法必须在启动时暴露，不能等到抓取第一件才报错。
+    try:
+        EdgeYawLimit.from_config(cfg["vision"]["top"].get("edge_yaw_limit"))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"vision.top.edge_yaw_limit 无效: {exc}") from exc
 
     top_tcp_comp = cfg["vision"]["top"].get("yaw_tcp_compensation", {})
     if bool(top_tcp_comp.get("enabled", False)):

@@ -294,10 +294,10 @@ private:
     // ========================================================
 
     float X_Move_Speed_mm_s =
-        45.0f;
+        150.0f;
 
     float Y_Move_Speed_mm_s =
-        45.0f;
+        150.0f;
 
 
     // ========================================================
@@ -335,13 +335,13 @@ private:
     // ========================================================
 
     float Tray_X_mm =
-        0.0f;
+        -15.0f;
 
     float Tray_Y_mm =
-        4.0f;
+        0.0f;
 
     float Tray_Yaw_Angle =
-        90.0f * PI / 180.0f;
+        70.0f * PI / 180.0f;
 
 
     // ========================================================
@@ -355,16 +355,16 @@ private:
     // ========================================================
 
     float Recognition_X_mm =
-        -72.0f;
-
-    float Recognition_Y_mm =
         0.0f;
 
+    float Recognition_Y_mm =
+        -70.0f;
+
     float Recognition_Yaw_Angle =
-        110.0f * PI / 180.0f;
+        20.0f * PI / 180.0f;
 
     float Recognition_Lift_Angle =
-        -65.0f * PI / 180.0f;
+        34.0f * PI / 180.0f;
 
     float Recognition_Claw_Angle =
         ClawPreopen::kStandbyAngleDeg * PI / 180.0f;
@@ -383,7 +383,7 @@ private:
         0.0f;
 
     float Disable_Y_mm =
-        20.0f;
+        0.0f;
 
 
     // =================================================
@@ -409,11 +409,11 @@ private:
     // float Claw_Servo_Motor_Angle_Disable =
     //     0.0f * PI / 180.0f;
     float Yaw_Servo_Motor_Angle_Disable =
-        110.0f * PI / 180.0f;
+        20.0f * PI / 180.0f;
 
 
     float Lift_Servo_Motor_Angle_Disable =
-        40.0f * PI / 180.0f;
+        34.0f * PI / 180.0f;
 
     float Claw_Servo_Motor_Angle_Disable =
         ClawPreopen::kStandbyAngleDeg * PI / 180.0f;
@@ -432,12 +432,8 @@ private:
         // ClawPreopen::kStandbyAngleDeg * PI / 180.0f;
 
     // --------------------------------------------------------
-    // 新夹爪动态预开口：claw_preopen_profile.h 中的 CAD 四连杆净开口表。
-    // -35° 正式闭合、-95° 待机张开；角度越负越张开。控制接口仍使用 rad。
-    // 当前 claw_preopen_profile.h 会将 -35° 重新定义为 0mm 实际闭合基准，
-    // 再把上位机下发的有效净开口转换回旧 CAD 表坐标后插值。
-    // 下面旧 CAD 参数仅留作历史记录，不参与任何预开口计算。
-    // 历史说明：基于旧夹爪CAD几何的“有效净开口(mm)” -> 舵机角度映射
+    // 新夹爪动态预开口：使用 claw_preopen_profile.h 中的线性公式。
+    // -35°闭合、-95°待机张开；角度越负越张开。控制接口仍使用 rad。
     // --------------------------------------------------------
     // 旧版问题：直接把 CAD 两个接触参考点的“绝对间距”当作夹爪净开口。
     // 这样 40° 时仍得到约31.02mm，并把上位机小于37.8mm的命令全部
@@ -474,34 +470,6 @@ private:
     bool Claw_Dynamic_Preopen_Enabled =
         true;
 
-    float Claw_CAD_Gear_Center_Distance_mm =
-        26.012459f;
-
-    float Claw_CAD_Contact_Rx_mm =
-        38.943000f;
-
-    float Claw_CAD_Contact_Ry_mm =
-        2.505842f;
-
-    float Claw_CAD_Reference_Clip_Angle_Deg =
-        35.0f;
-
-    // 0° 与现有 Release 一致，允许大物体保持完全打开。
-    float Claw_Preopen_Min_Angle_Deg =
-        0.0f;
-
-    // 预收缩最多到35°，仍给40°正式夹紧保留5°动作余量。
-    float Claw_Preopen_Max_Angle_Deg =
-        35.0f;
-
-    // 以下是“相对40°闭合参考”的有效净开口，而非旧版CAD绝对间距。
-    float Claw_Preopen_Min_Opening_mm =
-        6.8f;
-
-    float Claw_Preopen_Max_Opening_mm =
-        48.8f;
-
-
     // --------------------------------------------------------
     // 识别托盘放料下降角
     //
@@ -513,7 +481,7 @@ private:
     // --------------------------------------------------------
 
     float Lift_Servo_Motor_Angle_Recognition_Tray_Descend =
-        -45.0f * PI / 180.0f;
+        -20.0f * PI / 180.0f;
 
 
     // --------------------------------------------------------
@@ -529,7 +497,7 @@ private:
     // --------------------------------------------------------
 
     float Lift_Servo_Motor_Angle_Lift =
-        -65.0f * PI / 180.0f;
+        34.0f * PI / 180.0f;
 
 
     // --------------------------------------------------------
@@ -572,7 +540,7 @@ private:
     // --------------------------------------------------------
 
     uint16_t Grap_TOF_Trigger_Distance_mm =
-        5;
+        3;
 
 
     // --------------------------------------------------------
@@ -592,22 +560,20 @@ private:
     //
     // 单位：rad/s
     //
-    // 当前10°/s
+    // 必须为正值；运动方向由抬升位置和下降终点自动确定。
     // --------------------------------------------------------
 
     float Lift_Descend_Speed =
-        30.0f *
+        60.0f *
         PI / 180.0f;
 
 
     // --------------------------------------------------------
-    // Lift下降机械极限
-    //
-    // 当前-5°
+    // Lift下降终点：指机械最低位置，不要求它是数值最大的角度。
     // --------------------------------------------------------
 
     float Lift_Descend_Max_Angle =
-        15.0f *
+        -40.0f *
         PI / 180.0f;
 
 
@@ -616,8 +582,7 @@ private:
     // --------------------------------------------------------
 
     float Lift_Descend_Target_Angle =
-        -65.0f *
-        PI / 180.0f;
+        Lift_Servo_Motor_Angle_Lift;
 
 
     // --------------------------------------------------------
@@ -701,6 +666,11 @@ private:
     volatile Enum_Grap_Move_Status Grap_Move_Status =
         Enum_Grap_Move_Disable;
 
+    // 上电后先保持待机状态，等 XY 反馈建立并且舵机待机命令发送完成，
+    // 再自动进入 Return 流程移动到 Disable_X_mm/Disable_Y_mm。
+    // 这里不改变 XY 坐标角度；Frame_Rotation_Deg 仍由 xy_motion_config.h 控制。
+    bool Power_On_Disable_Pending = true;
+
 
     // ========================================================
     // 100ms状态持续计数
@@ -728,7 +698,7 @@ private:
     // 包含每个 XY 阶段的命令提交重试、移动时间和舵机动作时间。
     uint32_t Grap_State_Start_Tick = 0U;
     static constexpr uint32_t XY_State_Timeout_ms = 30000U;
-    static constexpr uint32_t Servo_Move_Time_ms = 500U;
+    static constexpr uint32_t Servo_Move_Time_ms = 280U;
     static constexpr uint32_t Servo_Stop_Settle_ms = 20U;
     uint32_t Grap_Output_Complete_Tick = 0U;
     uint32_t Return_Lift_Command_Tick = 0U;
@@ -739,6 +709,11 @@ private:
     bool Calibration_Yaw_Override = false;
     uint32_t Calibration_Yaw_Command_Tick = 0U;
     uint32_t Calibration_Yaw_Settle_ms = 0U;
+
+    // 多个移动阶段共用的边缘中转进度；切换状态时清零，禁止继承上一段路线。
+    uint8_t Edge_Move_Step = 0U;
+    float Edge_Retreat_Y_mm = 0.0f;
+    uint32_t Edge_Yaw_Command_Tick = 0U;
 
 
     // ========================================================
@@ -753,6 +728,8 @@ private:
     bool XY_Move_Finished() const;
     bool XY_At_mm(float X_mm, float Y_mm) const;
     bool Motion_Configuration_Valid() const;
+    bool Move_XY_Yaw_Via_Edge(float X_mm, float Y_mm, float Yaw_Rad);
+    bool Move_XY_Yaw_Direct(float X_mm, float Y_mm, float Yaw_Rad);
     void Complete_Outputs();
     void Abort_Grap_Fault(Enum_Grap_Error Reason);
     void Service_Fault_Servo_Stop();

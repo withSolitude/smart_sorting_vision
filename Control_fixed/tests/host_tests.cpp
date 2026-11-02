@@ -149,9 +149,11 @@ static void test_matrix() {
     }
     double a, b;
     Class_XY_Motion::XY_To_Motor_mm(-20, 10, a, b);
-    assert(std::fabs(a - std::sqrt(2.0)*10) < 1e-9);
-    assert(std::fabs(b + std::sqrt(2.0)*20) < 1e-9);
-    std::puts("PASS: XY transform inverse across workspace and signs");
+    // Frame_Rotation_Deg=0：工作平面X/Y保持与图片水平/竖直边平行，
+    // CoreXY电机指令为 A=X+Y、B=X-Y。
+    assert(std::fabs(a + 10.0) < 1e-9);
+    assert(std::fabs(b + 30.0) < 1e-9);
+    std::puts("PASS: XY transform inverse across workspace and CoreXY signs");
 }
 
 // Emulate a CAN driver at the protocol boundary. Poll replies, control ACKs
@@ -244,7 +246,7 @@ static void test_origin_and_motion() {
     assert(!r.xy.Get_Position_Valid());
     assert(r.xy.Move_To_mm(-10, 10, 20, 20) == HAL_ERROR);
     r.origin();
-    assert(r.xy.Move_To_mm(-80, 10, 20, 20) == HAL_ERROR);
+    assert(r.xy.Move_To_mm(-800, 10, 20, 20) == HAL_ERROR);
     assert(r.xy.Move_To_mm(-10, 10, 0, 20) == HAL_ERROR);
     assert(r.xy.Move_To_mm(-10, 10, 20, 20) == HAL_OK);
     assert(!r.xy.Get_Motion_Finished());
@@ -284,7 +286,9 @@ static void test_multi_turn_offset_origin() {
     assert(r.xy.Move_To_mm(-70, 50, 45, 45) == HAL_OK);
     r.step(2400);
     assert(r.xy.Get_Motion_Finished() && !r.xy.Get_Fault());
-    assert(std::abs(r.current[0]) > 65536 && std::abs(r.current[1]) > 65536);
+    // Frame=0 时该位移在 CoreXY 中可能主要落到一台电机，
+    // 只要求至少一台电机跨过一圈即可验证多圈位置偏置。
+    assert(std::abs(r.current[0]) > 65536 || std::abs(r.current[1]) > 65536);
     assert(std::fabs(r.xy.Get_X_mm() + 70) < 0.02);
     assert(std::fabs(r.xy.Get_Y_mm() - 50) < 0.02);
     const int64_t base_a = r.current[0], base_b = r.current[1];
