@@ -166,6 +166,13 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"calibration.yaw_servo 无效: {exc}") from exc
 
+    # 当前四点标定文件保存的轴顺序为旧机构的 [Y, X]；
+    # 统一在像素到机械坐标入口交换为下位机实际使用的 [X, Y]。
+    swap_xy = cfg["calibration"].get("pixel_to_robot_swap_xy", False)
+    if not isinstance(swap_xy, bool):
+        raise ConfigError("calibration.pixel_to_robot_swap_xy 必须为 true/false")
+    cfg["camera"]["top"]["swap_robot_xy"] = swap_xy
+
     top_tcp_comp = cfg["vision"]["top"].get("yaw_tcp_compensation", {})
     if bool(top_tcp_comp.get("enabled", False)):
         try:

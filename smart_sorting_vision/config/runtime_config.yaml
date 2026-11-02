@@ -76,6 +76,7 @@ model:
 calibration:
   top_intrinsics: data/calibration/top_camera/top_camera_intrinsics.npz  # 顶部相机内参文件路径。
   pixel_to_robot: data/calibration/top_camera/robot_mapping/pixel_to_robot.json  # 像素到机械 XY 的标定文件路径。
+  pixel_to_robot_swap_xy: true  # 当前四点文件按旧轴顺序保存，运行时交换为下位机真实[X,Y]。
   side_background: data/calibration/side_camera/side_mechanical_roi_background.png  # 侧面颜色/二维码裁剪辅助使用的空背景；不再用于判断是否有物体。
   top_camera:
     image_dir: data/calibration/top_camera/images  # 标定图片目录。

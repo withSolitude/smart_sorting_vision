@@ -18,8 +18,9 @@ constexpr bool Mechanical_Calibration_Confirmed = true; // 仅主机回归测试
 constexpr bool Mechanical_Calibration_Confirmed = true; // 实机标定后改 true
 #endif
 
-// +45° 表示机构 U 轴相对视觉 +X 逆时针旋转；顺时针请改 -45°。
-constexpr double Frame_Rotation_Deg = 0.0;
+// 机构的实际X/Y滑台相对CoreXY电机坐标旋转+45°。
+// 这样A≈√2·Y、B≈√2·X；X轴运动只改变B电机，Y轴运动只改变A电机。
+constexpr double Frame_Rotation_Deg = 45.0;
 constexpr double Pi = 3.14159265358979323846;
 
 // CoreXY: A=U+V, B=U-V。正的电机坐标对应协议 CW(方向0)。

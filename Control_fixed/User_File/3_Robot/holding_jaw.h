@@ -729,6 +729,7 @@ private:
     bool XY_At_mm(float X_mm, float Y_mm) const;
     bool Motion_Configuration_Valid() const;
     bool Move_XY_Yaw_Via_Edge(float X_mm, float Y_mm, float Yaw_Rad);
+    bool Move_XY_Yaw_Direct(float X_mm, float Y_mm, float Yaw_Rad);
     void Complete_Outputs();
     void Abort_Grap_Fault(Enum_Grap_Error Reason);
     void Service_Fault_Servo_Stop();

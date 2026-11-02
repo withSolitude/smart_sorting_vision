@@ -1303,7 +1303,7 @@ void Class_Holding_Jaw::Outputs()
             // 先完成边缘中转、XY和Yaw；之后保持原来的Lift/Claw输出顺序。
             if (Grap_Output_Step == 0)
             {
-                if (Move_XY_Yaw_Via_Edge(
+                if (Move_XY_Yaw_Direct(
                         Recognition_X_mm, Recognition_Y_mm, Recognition_Yaw_Angle))
                     Grap_Output_Step = 1;
                 break;
@@ -1768,6 +1768,56 @@ bool Class_Holding_Jaw::Move_XY_Yaw_Via_Edge(float X_mm, float Y_mm, float Yaw_R
             return false;
         Edge_Move_Step = 7U;
     }
+    return Edge_Move_Step == 7U;
+}
+
+
+// 识别姿态专用直达路线：物体已经放入识别托盘后直接去侧面相机姿态，
+// 不再为了固定识别姿态绕回边界点。Yaw 在 XY 实际到位后再发送。
+bool Class_Holding_Jaw::Move_XY_Yaw_Direct(float X_mm, float Y_mm, float Yaw_Rad)
+{
+    HAL_StatusTypeDef xy_status = HAL_BUSY;
+
+    if (Edge_Move_Step == 0U)
+    {
+        if (XY_Motion.Get_Motion_Finished() && XY_At_mm(X_mm, Y_mm) &&
+            std::fabs(Yaw_Servo_Motor_Target_Angle - Yaw_Rad) < 0.0001f &&
+            !Calibration_Yaw_Override)
+        {
+            Edge_Move_Step = 7U;
+            return true;
+        }
+
+        xy_status = XY_Motion.Move_To_mm(
+            X_mm, Y_mm, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
+        if (xy_status == HAL_OK)
+            Edge_Move_Step = 1U;
+        else if (xy_status != HAL_BUSY)
+            Abort_XY_Fault();
+        return false;
+    }
+
+    if (Edge_Move_Step == 1U)
+    {
+        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(X_mm, Y_mm))
+            return false;
+
+        if (Yaw_Servo_Motor.Control_Angle(Yaw_Rad, Servo_Move_Time_ms) != HAL_OK)
+            return false;
+        Yaw_Servo_Motor_Target_Angle = Yaw_Rad;
+        Edge_Yaw_Command_Tick = HAL_GetTick();
+        Edge_Move_Step = 2U;
+        return false;
+    }
+
+    if (Edge_Move_Step == 2U)
+    {
+        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(X_mm, Y_mm) ||
+            (uint32_t)(HAL_GetTick() - Edge_Yaw_Command_Tick) < Servo_Move_Time_ms)
+            return false;
+        Edge_Move_Step = 7U;
+    }
+
     return Edge_Move_Step == 7U;
 }
 
