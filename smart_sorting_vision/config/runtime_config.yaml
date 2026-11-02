@@ -76,6 +76,10 @@ model:
 calibration:
   top_intrinsics: data/calibration/top_camera/top_camera_intrinsics.npz  # 顶部相机内参文件路径。
   pixel_to_robot: data/calibration/top_camera/robot_mapping/pixel_to_robot.json  # 像素到机械 XY 的标定文件路径。
+  # 现场四点标定文件若按 [Y, X] 顺序保存，而下位机 PICK_TARGET 需要 [X, Y]，
+  # 就把它设为 true。默认 false = H 的输出已经是 [X, Y]（当前标定文件的状态）。
+  # 判断方法见 docs/axis_frame_fix.md：先跑标定，或临时翻转此值并用预览脚本验证。
+  pixel_to_robot_swap_xy: false  # true = 运行时把 H 输出由 [Y,X] 交换为 [X,Y]。
   side_background: data/calibration/side_camera/side_mechanical_roi_background.png  # 侧面颜色/二维码裁剪辅助使用的空背景；不再用于判断是否有物体。
   top_camera:
     image_dir: data/calibration/top_camera/images  # 标定图片目录。

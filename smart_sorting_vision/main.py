@@ -66,6 +66,10 @@ class SmartSortingApp:
         print("[CONFIG] side camera:", self.config["camera"]["side"]["device"])
         print(f"[CONFIG] workspace X={x_limits} mm, Y={y_limits} mm")
         print(
+            "[CONFIG] pixel_to_robot_swap_xy=",
+            bool(self.config["camera"]["top"].get("swap_robot_xy", True)),
+        )
+        print(
             "[CONFIG] consensus "
             f"top={top_consensus['required']}/{top_consensus['window']} "
             f"side={side_consensus['required']}/{side_consensus['window']}"

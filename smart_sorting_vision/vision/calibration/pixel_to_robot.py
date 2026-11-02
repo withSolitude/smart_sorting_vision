@@ -30,6 +30,7 @@ class PixelToRobotTransform:
         metadata: dict | None = None,
         coordinate_space: str = "roi",
         camera_config: dict | None = None,
+        swap_xy: bool = False,
     ) -> None:
         H = np.asarray(homography, dtype=np.float64)
         if H.shape != (3, 3):
@@ -44,6 +45,10 @@ class PixelToRobotTransform:
         self.tcp_offset_x_mm = float(tcp_offset_x_mm)
         self.tcp_offset_y_mm = float(tcp_offset_y_mm)
         self.metadata = dict(metadata or {})
+        # 现场四点标定文件按 [Y, X] 顺序保存，而下位机 PICK_TARGET 需要 [X, Y]。
+        # 该标志在 load() 时由 camera.top.swap_robot_xy（源自 YAML
+        # calibration.pixel_to_robot_swap_xy）决定，见 app_config.py。
+        self.swap_xy = bool(swap_xy)
         if coordinate_space not in {"roi", "undistorted_full"}:
             raise ValueError(f"不支持的像素标定坐标系：{coordinate_space}")
         self.coordinate_space = coordinate_space
@@ -70,10 +75,25 @@ class PixelToRobotTransform:
         self._input_size = (x2 - x1, y2 - y1)
 
     @classmethod
-    def load(cls, path: str | Path, *, camera_config: dict | None = None) -> "PixelToRobotTransform":
+    def load(
+        cls,
+        path: str | Path,
+        *,
+        camera_config: dict | None = None,
+        swap_xy: bool | None = None,
+    ) -> "PixelToRobotTransform":
         path = Path(path)
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
+
+        if swap_xy is None:
+            # YAML 运行配置优先；没有该字段时兼容旧标定文件中的可选标志。
+            if camera_config is not None:
+                swap_xy = bool(
+                    camera_config.get("swap_robot_xy", data.get("swap_xy", False))
+                )
+            else:
+                swap_xy = bool(data.get("swap_xy", False))
 
         return cls(
             homography=np.asarray(data["homography"], dtype=np.float64),
@@ -85,6 +105,7 @@ class PixelToRobotTransform:
             metadata=data.get("metadata", {}),
             coordinate_space=data.get("coordinate_space", "roi"),
             camera_config=camera_config,
+            swap_xy=bool(swap_xy),
         )
 
     def save(self, path: str | Path) -> None:
@@ -100,6 +121,7 @@ class PixelToRobotTransform:
             "homography": self.H.tolist(),
             "tcp_offset_x_mm": self.tcp_offset_x_mm,
             "tcp_offset_y_mm": self.tcp_offset_y_mm,
+            "swap_xy": self.swap_xy,
             "metadata": self.metadata,
         }
 
@@ -138,6 +160,10 @@ class PixelToRobotTransform:
         x_mm = float(result[0])
         y_mm = float(result[1])
 
+        if self.swap_xy:
+            # H 的输出是现场标定时的 [Y, X]；对外统一成真实 [X, Y]。
+            x_mm, y_mm = y_mm, x_mm
+
         if apply_tcp_offset:
             x_mm += self.tcp_offset_x_mm
             y_mm += self.tcp_offset_y_mm
@@ -158,6 +184,8 @@ class PixelToRobotTransform:
             return np.empty((0, 2), dtype=np.float64)
 
         out = cv2.perspectiveTransform(pts + self._input_origin, self.H).reshape(-1, 2)
+        if self.swap_xy:
+            out = out[:, ::-1]
         if apply_tcp_offset:
             out[:, 0] += self.tcp_offset_x_mm
             out[:, 1] += self.tcp_offset_y_mm
@@ -175,6 +203,9 @@ class PixelToRobotTransform:
             return np.empty((0, 2), dtype=np.float64)
         if apply_tcp_offset:
             pts -= [self.tcp_offset_x_mm, self.tcp_offset_y_mm]
+        if self.swap_xy:
+            # H 保存的是反向轴顺序；逆变换前先把真实 (X,Y) 换回 H 的 (Y,X)。
+            pts = pts[:, :, ::-1]
         full_pixels = cv2.perspectiveTransform(pts, np.linalg.inv(self.H)).reshape(-1, 2)
         return full_pixels - self._input_origin
 
@@ -208,7 +239,7 @@ class PixelToRobotTransform:
         return type(self)(
             self.H @ translation, width, height, source="TopCamera.read_undistorted()",
             tcp_offset_x_mm=self.tcp_offset_x_mm, tcp_offset_y_mm=self.tcp_offset_y_mm,
-            metadata=metadata, coordinate_space="undistorted_full",
+            metadata=metadata, coordinate_space="undistorted_full", swap_xy=self.swap_xy,
         )
 
     def robot_angle_from_image_angle(
