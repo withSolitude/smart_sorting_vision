@@ -179,7 +179,9 @@ vision:
         standby_servo_deg: -89.28307976025819  # 夹爪待机张开舵机角度（度）。
         # command 是两片硅胶内侧之间的目标净开口。
         # 物体宽度 + 总余量；当前使用8mm（两侧合计）。
-        margin_mm: 8.0  # 物体宽度之外增加的安全余量（mm）。
+        # 每侧余量 = margin/2，直接等于允许的"抓取中心偏移"容差：
+        # margin 8 只容 ±3.85mm，边缘目标会被 target_not_between_fingers 拒绝。
+        margin_mm: 14.0  # 物体宽度之外增加的安全余量（mm）；每侧 7mm。
         # 安全协议范围；STM32 与 PC 使用同一条线性公式。
         min_command_mm: 13  # 预开口命令最小值（mm）。
         max_command_mm: 77  # 预开口命令最大值（mm）。
