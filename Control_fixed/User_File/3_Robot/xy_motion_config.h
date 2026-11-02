@@ -34,7 +34,7 @@ constexpr uint16_t Full_Steps_Per_Rev = 200U; // MotType=1.8deg
 constexpr uint16_t Microsteps = 16U;         // 电机 MStep 必须一致
 constexpr uint32_t Pulses_Per_Rev = Full_Steps_Per_Rev * Microsteps;
 constexpr uint16_t Max_RPM = 300U;
-constexpr uint8_t Acceleration = 25U; // 0=恒速；两轴按位移比例分配转速
+constexpr uint8_t Acceleration = 45U; // 0=恒速；两轴按位移比例分配转速
 
 // 沿用当前视觉协议工作区；新结构调试时必须重新测量。
 constexpr float X_Min_mm = -770.0f;
@@ -46,7 +46,7 @@ constexpr double Stopped_RPM = 2.0;
 constexpr uint32_t Feedback_Timeout_ms = 150U;
 constexpr uint32_t Command_Timeout_ms = 500U;
 constexpr uint32_t Move_Timeout_ms = 15000U;
-constexpr uint32_t Settle_ms = 100U;
+constexpr uint32_t Settle_ms = 70U;
 constexpr uint32_t Poll_Interval_ms = 2U; // 每16ms读取一次每台电机的31/36/35/3A
 constexpr uint16_t Encoder_Unwrap_Max_Gap_ms = 80U; // 300RPM 时半圈=100ms
 
