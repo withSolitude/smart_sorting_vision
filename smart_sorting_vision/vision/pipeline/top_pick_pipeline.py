@@ -945,6 +945,8 @@ class TopPickPipeline:
                     trial_specs.append(spec)
                     edge_only_trials.add(spec)
             best_candidate: TopPickCandidate | None = None
+            # 记录"最接近通过"的两指间隙，便于判断是把开口改大还是把抓点扶正。
+            best_engagement_gap_mm = -math.inf
             best_trial_record: dict | None = None
             safe_trial_records: list[dict] = []
             reason_counts: dict[str, int] = {}
@@ -1108,6 +1110,9 @@ class TopPickPipeline:
                     min_side_gap_mm=self.grasp_search_min_side_gap_mm,
                     min_longitudinal_overlap_mm=self.grasp_search_min_target_overlap_mm,
                 )
+                best_engagement_gap_mm = max(
+                    best_engagement_gap_mm, float(engagement.min_side_gap_mm)
+                )
                 if not engagement.fits_between_fingers:
                     reject(
                         "target_not_between_fingers",
@@ -1116,6 +1121,9 @@ class TopPickPipeline:
                         opening=preopen_mm,
                         meta={
                             "min_side_gap_mm": float(engagement.min_side_gap_mm),
+                            "width_mm": float(engagement.width_mm),
+                            "left_gap_mm": float(engagement.left_gap_mm),
+                            "right_gap_mm": float(engagement.right_gap_mm),
                             "yaw_offset_deg": float(yaw_offset_deg),
                             "longitudinal_offset_mm": float(longitudinal_offset_mm),
                             "closing_offset_mm": float(closing_offset_mm),
@@ -1391,10 +1399,16 @@ class TopPickPipeline:
                         if fast_only
                         else "[GRASP SEARCH]"
                     )
+                    gap_text = (
+                        f"best_gap={best_engagement_gap_mm:+.2f}mm"
+                        if math.isfinite(best_engagement_gap_mm)
+                        else "best_gap=n/a"
+                    )
                     print(
                         f"{log_tag} "
                         f"obj={int(obj.get('index', list_index))} "
-                        f"trials={trial_count} safe=0 reasons={reason_text or 'none'}"
+                        f"trials={trial_count} safe=0 "
+                        f"reasons={reason_text or 'none'} {gap_text}"
                     )
                 continue
 
