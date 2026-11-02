@@ -34,7 +34,7 @@ constexpr uint16_t Full_Steps_Per_Rev = 200U; // MotType=1.8deg
 constexpr uint16_t Microsteps = 16U;         // 电机 MStep 必须一致
 constexpr uint32_t Pulses_Per_Rev = Full_Steps_Per_Rev * Microsteps;
 constexpr uint16_t Max_RPM = 300U;
-constexpr uint8_t Acceleration = 45U; // 0=恒速；两轴按位移比例分配转速
+constexpr uint8_t Acceleration = 25U; // 0=恒速；两轴按位移比例分配转速
 
 // 沿用当前视觉协议工作区；新结构调试时必须重新测量。
 constexpr float X_Min_mm = -770.0f;
