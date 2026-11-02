@@ -15,8 +15,8 @@ if str(ROOT) not in sys.path:
 from runtime.app_config import load_runtime_config
 from vision.cameras.top_camera import TopCamera
 from vision.pipeline.top_pick_pipeline import TopPickPipeline
-from vision.grasp.orientation_planner import polygon_long_axis_image_deg
 from vision.calibration.yaw_servo import YawServoCalibration
+from vision.grasp.orientation_planner import polygon_long_axis_image_deg
 
 
 def parse_args() -> argparse.Namespace:
@@ -53,7 +53,6 @@ def main() -> int:
     top_consensus = top_vision_cfg["consensus"]
     top_orientation = top_vision_cfg.get("grasp_orientation", {})
     top_preopen = top_orientation.get("dynamic_preopen", {}) or {}
-    yaw_servo = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
     calibration = args.calibration or cfg["calibration"]["pixel_to_robot"]
 
     TopCamera.configure(
@@ -62,6 +61,7 @@ def main() -> int:
     )
     camera = TopCamera()
     pipeline = TopPickPipeline(
+        yaw_servo_calibration=YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"]),
         model_path=top_model_cfg["path"],
         calibration_path=calibration,
         camera_config=cfg["camera"]["top"],
@@ -72,9 +72,6 @@ def main() -> int:
         border_margin=top_vision_cfg["border_margin_px"],
         min_safe_area=top_vision_cfg["min_safe_area_px"],
         min_clearance=top_vision_cfg["min_clearance_px"],
-        outward_radial_config=top_vision_cfg.get("outward_radial_compensation"),
-        edge_yaw_config=top_vision_cfg.get("edge_yaw_limit"),
-        top_intrinsics_path=cfg["calibration"]["top_intrinsics"],
         consensus_window=top_consensus["window"],
         consensus_required=top_consensus["required"],
         max_track_center_shift_px=top_consensus["max_track_center_shift_px"],
@@ -95,7 +92,6 @@ def main() -> int:
         preopen_standby_servo_deg=top_preopen.get("standby_servo_deg", -95.0),
         x_limits_mm=cfg["mechanics"]["workspace_mm"]["x"],
         y_limits_mm=cfg["mechanics"]["workspace_mm"]["y"],
-        yaw_servo_calibration=yaw_servo,
     )
 
     win = "TOP DYNAMIC YAW PREVIEW - Q quit / R reset consensus"

@@ -18,32 +18,22 @@ class SingleYawTests(unittest.TestCase):
         cfg = load_runtime_config(ROOT, ROOT / "config/runtime_config.yaml")
         self.yaw = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
 
-    def test_axial_period_uses_one_physical_window_and_honors_limits(self):
-        reachable = 0
-        rejected = 0
+    def test_entire_axial_period_has_one_safe_physical_angle(self):
         for step in range(1801):
             axis = -90.0 + step * 0.1
             physical = self.yaw.physical_axis_deg(axis)
             self.assertGreaterEqual(physical, self.yaw.physical_min_deg - 1e-10)
             self.assertLess(physical, self.yaw.physical_max_deg)
-            try:
-                command = self.yaw.command_deg(axis)
-            except ValueError:
-                rejected += 1
-                continue
-            reachable += 1
+            command = self.yaw.command_deg(axis)
             self.assertGreaterEqual(command, self.yaw.safe_command_min_deg)
             self.assertLessEqual(command, self.yaw.safe_command_max_deg)
             for period in (-360.0, -180.0, 180.0, 360.0):
                 self.assertAlmostEqual(self.yaw.physical_axis_deg(axis + period), physical)
                 self.assertAlmostEqual(self.yaw.command_deg(axis + period), command)
-        # 运行时超出安全角度统一压到配置边界，不因拟合小误差拒绝抓取。
-        self.assertGreater(reachable, 1600)
-        self.assertEqual(rejected, 0)
 
     def test_reported_minus_82_target_uses_updated_calibration(self):
         # 用户日志中旧参数算到 137.78° 而被拒绝；新标定应约为 -19.16°。
-        self.assertAlmostEqual(self.yaw.command_deg(-82.0), -19.370268668183, places=6)
+        self.assertAlmostEqual(self.yaw.command_deg(-82.0), -19.1562336977683, places=6)
 
     def test_reference_and_half_open_boundary(self):
         self.assertAlmostEqual(
@@ -63,7 +53,8 @@ class SingleYawTests(unittest.TestCase):
             -60.0,
             60.0,
         )
-        self.assertEqual(narrow.command_deg(narrow.reference_axis_deg + 89.0), 60.0)
+        with self.assertRaises(ValueError):
+            narrow.command_deg(narrow.reference_axis_deg + 89.0)
         for invalid in (math.nan, math.inf, -math.inf):
             with self.assertRaises(ValueError):
                 self.yaw.command_deg(invalid)

@@ -18,8 +18,7 @@ constexpr bool Mechanical_Calibration_Confirmed = true; // 仅主机回归测试
 constexpr bool Mechanical_Calibration_Confirmed = true; // 实机标定后改 true
 #endif
 
-// 当前下位机的 X/Y 是工作平面坐标，分别平行于图片的水平边和竖直边。
-// CoreXY 两台电机的合成关系由 XY_To_Motor_mm 处理，这里不再额外旋转工作平面。
+// +45° 表示机构 U 轴相对视觉 +X 逆时针旋转；顺时针请改 -45°。
 constexpr double Frame_Rotation_Deg = 0.0;
 constexpr double Pi = 3.14159265358979323846;
 

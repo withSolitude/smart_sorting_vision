@@ -190,9 +190,6 @@ def build_pipeline(cfg: dict) -> tuple[TopPickPipeline, YawServoCalibration]:
         border_margin=top_vision_cfg["border_margin_px"],
         min_safe_area=top_vision_cfg["min_safe_area_px"],
         min_clearance=top_vision_cfg["min_clearance_px"],
-        outward_radial_config=top_vision_cfg.get("outward_radial_compensation"),
-        edge_yaw_config=top_vision_cfg.get("edge_yaw_limit"),
-        top_intrinsics_path=cfg["calibration"]["top_intrinsics"],
         consensus_window=top_consensus["window"],
         consensus_required=top_consensus["required"],
         max_track_center_shift_px=top_consensus["max_track_center_shift_px"],
@@ -575,13 +572,7 @@ def send_stop_and_wait(link: STM32Link, state: dict, timeout_s: float = 2.0) -> 
         time.sleep(0.003)
 
 
-def make_frozen_target(
-    result,
-    yaw: YawServoCalibration,
-    drift_compensator: DescentDriftCompensator | None,
-    *,
-    edge_yaw_limit=None,
-) -> dict:
+def make_frozen_target(result, yaw: YawServoCalibration, drift_compensator: DescentDriftCompensator | None) -> dict:
     if not result.ready:
         raise ValueError("top result is not READY")
     if result.x_mm is None or result.y_mm is None or result.yaw_deg is None:
@@ -597,7 +588,6 @@ def make_frozen_target(
     alignment_y = float(result.y_mm)
     yaw_deg = normalize_axial_deg(float(result.yaw_deg))
     # 与生产程序一致：先量化协议角度，再确定唯一物理姿态并校验舵机限位。
-    yaw_deg = yaw.safe_wire_axis_deg(yaw_deg)
     yaw_deg = quantized(make_pick_target(alignment_x, alignment_y, yaw_deg)).yaw_deg
     physical_yaw = yaw.physical_axis_deg(yaw_deg)
     yaw.command_deg(yaw_deg)
@@ -617,19 +607,6 @@ def make_frozen_target(
         pre_dy = float(drift.command_delta_y_mm)
         predicted_dx = float(drift.predicted_drift_x_mm)
         predicted_dy = float(drift.predicted_drift_y_mm)
-
-    if edge_yaw_limit is not None:
-        command_x, clamped = edge_yaw_limit.clamp_workspace_x(command_x, 0.0)
-        if clamped:
-            print(f"[DEBUG] edge X calibration clamp -> {command_x:.3f}mm")
-
-    # 用真正下发的0.1mm/1°指令判断，避免下降预补偿把抓点推入边缘限制区。
-    wire = quantized(make_pick_target(command_x, command_y, yaw_deg))
-    if edge_yaw_limit is not None and not edge_yaw_limit.allows(wire.x_mm, wire.yaw_deg, yaw):
-        raise ValueError(
-            f"最终抓取目标不满足边缘Yaw限制：X={wire.x_mm:.1f}mm，"
-            f"舵机角={yaw.command_deg(wire.yaw_deg):.2f}deg"
-        )
 
     polygon = np.asarray(selected.polygon, dtype=float).tolist()
     footprints = [
@@ -760,14 +737,7 @@ def main() -> int:
             result = pipeline.process(frame)
             latest_result = result
             if result.ready:
-                try:
-                    latest_ready = make_frozen_target(
-                        result, yaw_calibration, drift_compensator, edge_yaw_limit=pipeline.edge_yaw_limit,
-                    )
-                except ValueError as exc:
-                    print(f"[BLOCK] {exc}；继续重新识别。")
-                    latest_ready = None
-                    pipeline.reset()
+                latest_ready = make_frozen_target(result, yaw_calibration, drift_compensator)
 
             state_text = "WAIT PHYSICAL START" if not state["started"] else "TOP DETECT / READY FOR P"
             vis = draw_pipeline_overlay(frame, result, state_text=state_text, started=bool(state["started"]))
@@ -801,15 +771,7 @@ def main() -> int:
                 continue
 
             # Freeze exactly the target visible when P is pressed.
-            try:
-                frozen = make_frozen_target(
-                    latest_result, yaw_calibration, drift_compensator, edge_yaw_limit=pipeline.edge_yaw_limit,
-                )
-            except ValueError as exc:
-                print(f"[BLOCK] {exc}；继续重新识别。")
-                latest_ready = None
-                pipeline.reset()
-                continue
+            frozen = make_frozen_target(latest_result, yaw_calibration, drift_compensator)
             pick_index += 1
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
             stem = f"pick_{pick_index:03d}_{stamp}"

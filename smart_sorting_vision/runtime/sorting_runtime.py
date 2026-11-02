@@ -1098,7 +1098,6 @@ class SortingRuntime:
             self._safe_reset(self.top_pipeline)
             return
         # 先采用协议实际发送的整度轴向角，尤其避免跨180°区间边界后TCP相反。
-        yaw_deg = self.yaw_servo_calibration.safe_wire_axis_deg(yaw_deg)
         yaw_deg = ((float(round(yaw_deg)) + 90.0) % 180.0) - 90.0
         try:
             if self.yaw_servo_calibration is None:
@@ -1132,14 +1131,6 @@ class SortingRuntime:
         # R06 defense-in-depth：Pipeline 已过滤一次，真正发送机械动作前
         # Runtime 再按正式机械工作区复核。注意这里检查的是加入下降预补偿后的
         # 最终PICK命令，避免为了补偿把机构推到工作区之外。
-        edge_limit = getattr(self.top_pipeline, "edge_yaw_limit", None)
-        if edge_limit is not None:
-            x_mm, clamped = edge_limit.clamp_workspace_x(
-                x_mm,
-                float(self.pick_x_limits_mm[1]) if self.pick_x_limits_mm is not None else 0.0,
-            )
-            if clamped:
-                print(f"[Runtime] edge X calibration clamp -> {x_mm:.3f}mm")
         if not self._pick_xy_inside_limits(x_mm, y_mm):
             self._fail(
                 "PICK_TARGET outside workspace: "
@@ -1171,23 +1162,6 @@ class SortingRuntime:
             self._fail(f"PICK_TARGET pack failed: {exc}")
             return
 
-        # 下降预补偿和协议量化之后再核对一次，避免最终指令跨入X边缘限制区。
-        # 不可用姿态只跳过本次候选，继续找物体；不进入永久ERROR。
-        edge_limit = getattr(self.top_pipeline, "edge_yaw_limit", None)
-        if edge_limit is not None and not edge_limit.allows(
-            self.current_pick_command.x_mm, self.current_pick_command.yaw_deg,
-            self.yaw_servo_calibration,
-        ):
-            print(
-                "[Runtime] 跳过边缘Yaw受限候选："
-                f"X={self.current_pick_command.x_mm:.1f}mm, "
-                f"servo={servo_yaw_deg:.2f}deg"
-            )
-            self.current_pick = None
-            self.current_pick_command = None
-            self._safe_reset(self.top_pipeline)
-            return
-
         print(
             "[Runtime] single-yaw selected "
             f"axis={self.current_pick_command.yaw_deg:+.1f}deg "
@@ -1202,7 +1176,7 @@ class SortingRuntime:
             except (TypeError, ValueError):
                 preopen_mm = None
 
-        if preopen_mm is not None and preopen_mm > 0.0:
+        if preopen_mm is not None and math.isfinite(preopen_mm) and 0.0 < preopen_mm <= 120.0:
             preopen_tx = SortingFrame(
                 mode=Mode.PICK_PREOPEN,
                 x_mm=preopen_mm,
@@ -1229,12 +1203,12 @@ class SortingRuntime:
             self._enter_state(RuntimeState.WAIT_PICK_PREOPEN_ACK)
             return
 
-        # 没有可靠动态预开口时保持原有固定预收缩流程，直接发送抓取目标。
+        # 下位机要求每件物体都带有效预开口；缺失时继续识别，不能回退固定夹紧。
+        print("[Runtime] 跳过缺少预开口的候选，继续顶部识别")
+        self.current_pick = None
+        self.current_pick_command = None
         self.current_preopen_command = None
-        print("[Runtime] dynamic preopen unavailable -> legacy fixed pre-clip")
-        if not self._send_pick_target():
-            return
-
+        self._safe_reset(self.top_pipeline)
 
     # =====================================================
     # 侧面识别

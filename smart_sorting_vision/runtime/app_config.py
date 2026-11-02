@@ -6,8 +6,6 @@ from typing import Any
 
 import yaml
 from vision.calibration.yaw_servo import YawServoCalibration
-from vision.grasp.outward_radial_compensation import OutwardRadialCompensator
-from vision.grasp.edge_yaw_limit import EdgeYawLimit
 
 
 class ConfigError(ValueError):
@@ -167,25 +165,6 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
         YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"calibration.yaw_servo 无效: {exc}") from exc
-
-    # 当前机构的机械 X/Y 与历史四点标定文件的输出顺序相反。
-    # 旧 YAML 没有这个字段时也必须启用交换，避免继续按旧顺序下发。
-    swap_xy = cfg["calibration"].get("pixel_to_robot_swap_xy", True)
-    if not isinstance(swap_xy, bool):
-        raise ConfigError("calibration.pixel_to_robot_swap_xy 必须为 true/false")
-    # 所有使用 camera.top 构造 PixelToRobotTransform 的入口共用这一标志，
-    # 避免主程序、调试脚本和校准验证脚本各自维护一份轴顺序。
-    cfg["camera"]["top"]["swap_robot_xy"] = swap_xy
-
-    try:
-        OutwardRadialCompensator.validate_config(cfg["vision"]["top"].get("outward_radial_compensation"))
-    except (ValueError, TypeError) as exc:
-        raise ConfigError(f"vision.top.outward_radial_compensation 无效：{exc}") from exc
-
-    try:
-        EdgeYawLimit.from_config(cfg["vision"]["top"].get("edge_yaw_limit"))
-    except (ValueError, TypeError) as exc:
-        raise ConfigError(f"vision.top.edge_yaw_limit 无效：{exc}") from exc
 
     top_tcp_comp = cfg["vision"]["top"].get("yaw_tcp_compensation", {})
     if bool(top_tcp_comp.get("enabled", False)):

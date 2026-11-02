@@ -66,10 +66,6 @@ class SmartSortingApp:
         print("[CONFIG] side camera:", self.config["camera"]["side"]["device"])
         print(f"[CONFIG] workspace X={x_limits} mm, Y={y_limits} mm")
         print(
-            "[CONFIG] pixel_to_robot_swap_xy=",
-            bool(self.config["camera"]["top"].get("swap_robot_xy", True)),
-        )
-        print(
             "[CONFIG] consensus "
             f"top={top_consensus['required']}/{top_consensus['window']} "
             f"side={side_consensus['required']}/{side_consensus['window']}"
@@ -294,9 +290,6 @@ class SmartSortingApp:
             border_margin=top_vision_cfg["border_margin_px"],
             min_safe_area=top_vision_cfg["min_safe_area_px"],
             min_clearance=top_vision_cfg["min_clearance_px"],
-            outward_radial_config=top_vision_cfg.get("outward_radial_compensation"),
-            edge_yaw_config=top_vision_cfg.get("edge_yaw_limit"),
-            top_intrinsics_path=self.config["calibration"]["top_intrinsics"],
             consensus_window=top_consensus["window"],
             consensus_required=top_consensus["required"],
             max_track_center_shift_px=top_consensus["max_track_center_shift_px"],
