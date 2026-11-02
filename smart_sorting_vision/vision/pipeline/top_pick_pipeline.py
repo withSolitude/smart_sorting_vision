@@ -26,6 +26,7 @@ from vision.grasp.orientation_planner import (
 )
 from vision.grasp.gripper_footprint import GripperFootprintModel
 from vision.grasp.claw_preopen_profile import ClawPreopenProfile
+from vision.grasp.edge_yaw_limit import EdgeYawLimit
 from vision.grasp.outward_radial_compensation import OutwardRadialCompensator
 from vision.grasp.grasp_pose_search import (
     axis_vectors,
@@ -171,6 +172,7 @@ class TopPickPipeline:
         calibration_path: str | Path,
         camera_config: dict | None = None,
         outward_radial_config: dict | None = None,
+        edge_yaw_config: dict | None = None,
         top_intrinsics_path: str | Path | None = None,
         conf: float = 0.35,
         imgsz: int = 832,
@@ -307,6 +309,20 @@ class TopPickPipeline:
             f"max_shift={self.radial_compensator.max_shift_px:.1f}px "
             f"center_roi={self.radial_compensator.center_roi_px}"
         )
+
+        # 边缘区（X 越过阈值、靠近电机）只允许用标定区间内的舵机角抓取；
+        # 与下位机 edge_motion_config.h 的中转边界共用同一个阈值。
+        self.edge_yaw_limit = EdgeYawLimit.from_config(edge_yaw_config)
+        if self.edge_yaw_limit.enabled:
+            rule = self.edge_yaw_limit
+            print(
+                "[EDGE YAW] limit ON "
+                f"x>{rule.x_threshold_mm:.1f}mm -> servo "
+                f"[{rule.servo_min_deg:.1f}, {rule.servo_max_deg:.1f}]deg "
+                f"preferred={rule.preferred_servo_deg:.1f}deg"
+            )
+        else:
+            print("[EDGE YAW] limit OFF")
 
         self.consensus = TopPickConsensus(
             window_size=
@@ -907,6 +923,23 @@ class TopPickPipeline:
                             break
             else:
                 trial_specs = [(0.0, 0.0, 0.0)]
+            # 边缘区独立尝试允许的真实舵机角，即使全局多姿态搜索关闭也能抓取。
+            # 这些额外姿态只对 x>阈值 的目标生效，区域外仍使用原规划结果。
+            edge_only_trials: set = set()
+            if self.edge_yaw_limit.enabled:
+                seen_trials = {
+                    (self._wire_yaw(base_yaw_deg + offset), longitudinal, closing)
+                    for offset, longitudinal, closing in trial_specs
+                }
+                for axis in self.edge_yaw_limit.candidate_axes(self.yaw_servo_calibration):
+                    wire = self._wire_yaw(axis)
+                    key = (wire, 0.0, 0.0)
+                    if key in seen_trials:
+                        continue
+                    seen_trials.add(key)
+                    spec = (axial_difference_deg(wire, base_yaw_deg), 0.0, 0.0)
+                    trial_specs.append(spec)
+                    edge_only_trials.add(spec)
             best_candidate: TopPickCandidate | None = None
             best_trial_record: dict | None = None
             safe_trial_records: list[dict] = []
@@ -1159,6 +1192,45 @@ class TopPickPipeline:
                     continue
 
                 x_mm, y_mm = selected
+
+                # 边缘区必须用允许的舵机角闭合。协议角在 _wire_yaw 里已量化，
+                # 这里用同一量化角反算真实舵机角再判断，绝不把协议角当舵机角。
+                workspace_max_x = (
+                    float(self.x_limits_mm[1]) if self.x_limits_mm is not None else 0.0
+                )
+                x_mm, workspace_clamped = self.edge_yaw_limit.clamp_workspace_x(
+                    float(x_mm), workspace_max_x,
+                )
+                if (
+                    self.edge_yaw_limit.enabled
+                    and self.y_limits_mm is not None
+                    and y_mm > 0.0
+                ):
+                    y_limit = float(self.y_limits_mm[1])
+                    if y_mm <= y_limit + self.edge_yaw_limit.workspace_clamp_mm:
+                        y_mm = y_limit
+                        workspace_clamped = True
+                edge_active = self.edge_yaw_limit.active(x_mm)
+                if (
+                    (yaw_offset_deg, longitudinal_offset_mm, closing_offset_mm)
+                    in edge_only_trials
+                    and not edge_active
+                ):
+                    continue
+                if not self.edge_yaw_limit.allows(
+                    x_mm, yaw_deg, self.yaw_servo_calibration
+                ):
+                    reject(
+                        "edge_yaw_outside_servo_range",
+                        px=candidate_px,
+                        yaw=yaw_deg,
+                        meta={
+                            "x_mm": float(x_mm),
+                            "workspace_clamped": bool(workspace_clamped),
+                            "servo_deg": self.yaw_servo_calibration.command_deg(yaw_deg),
+                        },
+                    )
+                    continue
 
                 safe_count += 1
 

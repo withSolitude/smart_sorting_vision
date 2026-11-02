@@ -6,6 +6,7 @@ from typing import Any
 
 import yaml
 from vision.calibration.yaw_servo import YawServoCalibration
+from vision.grasp.edge_yaw_limit import EdgeYawLimit
 from vision.grasp.outward_radial_compensation import OutwardRadialCompensator
 
 
@@ -186,6 +187,12 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
         raise ConfigError(
             f"vision.top.outward_radial_compensation 无效: {exc}"
         ) from exc
+
+    # 边缘区 Yaw 限角：参数非法必须在启动时暴露，不能等到抓取第一件才报错。
+    try:
+        EdgeYawLimit.from_config(cfg["vision"]["top"].get("edge_yaw_limit"))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"vision.top.edge_yaw_limit 无效: {exc}") from exc
 
     top_tcp_comp = cfg["vision"]["top"].get("yaw_tcp_compensation", {})
     if bool(top_tcp_comp.get("enabled", False)):
