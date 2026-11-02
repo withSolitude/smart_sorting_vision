@@ -26,6 +26,7 @@ from vision.grasp.orientation_planner import (
 )
 from vision.grasp.gripper_footprint import GripperFootprintModel
 from vision.grasp.claw_preopen_profile import ClawPreopenProfile
+from vision.grasp.outward_radial_compensation import OutwardRadialCompensator
 from vision.grasp.grasp_pose_search import (
     axis_vectors,
     build_search_offsets,
@@ -169,6 +170,8 @@ class TopPickPipeline:
         model_path: str | Path,
         calibration_path: str | Path,
         camera_config: dict | None = None,
+        outward_radial_config: dict | None = None,
+        top_intrinsics_path: str | Path | None = None,
         conf: float = 0.35,
         imgsz: int = 832,
         device=0,
@@ -287,6 +290,22 @@ class TopPickPipeline:
                 self.calibration_path,
                 camera_config=camera_config,
             )
+        )
+
+        # 顶部相机不是严格垂直俯视：物体靠近画面边缘时，分割 mask 会同时包含
+        # 顶面和朝向画面中心的侧面，质心因此被拉向中心，抓取点会偏离顶面中心。
+        # 这里以相机主点为原点做一次非负的向外补偿，把抓取点推回顶面中心。
+        self.radial_compensator = OutwardRadialCompensator.from_config(
+            outward_radial_config,
+            camera_config=camera_config,
+            intrinsics_path=top_intrinsics_path,
+        )
+        print(
+            "[RADIAL] outward compensation "
+            f"enabled={self.radial_compensator.enabled} "
+            f"gain={self.radial_compensator.gain:.4f} "
+            f"max_shift={self.radial_compensator.max_shift_px:.1f}px "
+            f"center_roi={self.radial_compensator.center_roi_px}"
         )
 
         self.consensus = TopPickConsensus(
@@ -943,6 +962,10 @@ class TopPickPipeline:
                     reject("candidate_robot_to_pixel_failed", yaw=yaw_deg)
                     continue
                 candidate_px = (float(candidate_px_f[0]), float(candidate_px_f[1]))
+                # 姿态与局部位移求完后只补偿一次，后续方向规划不再覆盖该点。
+                uncompensated_px = candidate_px
+                candidate_px = self.radial_compensator.apply(candidate_px)
+                radial_shift_px = math.dist(uncompensated_px, candidate_px)
 
                 # 中心仍必须落在目标本体内，不能为了避障把夹爪中心移到物体外面。
                 inside = cv2.pointPolygonTest(
@@ -962,6 +985,46 @@ class TopPickPipeline:
                         },
                     )
                     continue
+
+                # 补偿后的点必须仍落在安全区内，并重新换算机械坐标，
+                # 否则后面的夹指/碰撞/预开口检查用的还是补偿前的位姿。
+                if radial_shift_px > 0.0:
+                    px, py = int(round(candidate_px[0])), int(round(candidate_px[1]))
+                    if not (
+                        0 <= py < frame.shape[0]
+                        and 0 <= px < frame.shape[1]
+                        and grasp_result.safe_mask[py, px]
+                    ):
+                        reject(
+                            "radial_compensation_outside_safe_region",
+                            px=candidate_px,
+                            yaw=yaw_deg,
+                            meta={"radial_shift_px": float(radial_shift_px)},
+                        )
+                        continue
+                    try:
+                        candidate_center_robot = np.asarray(
+                            self.transform.pixel_to_robot(
+                                candidate_px[0],
+                                candidate_px[1],
+                                apply_tcp_offset=False,
+                            ),
+                            dtype=np.float64,
+                        )
+                    except (ValueError, RuntimeError):
+                        reject(
+                            "compensated_pixel_transform_failed",
+                            px=candidate_px,
+                            yaw=yaw_deg,
+                        )
+                        continue
+                    if not np.all(np.isfinite(candidate_center_robot)):
+                        reject(
+                            "compensated_xy_not_finite",
+                            px=candidate_px,
+                            yaw=yaw_deg,
+                        )
+                        continue
 
                 # 先按该 yaw 重新计算真实物体宽度；旋转夹爪后开口必须跟着变化。
                 # 初次用零开口只读取 width，然后再算动态 preopen 并做完整接触检查。

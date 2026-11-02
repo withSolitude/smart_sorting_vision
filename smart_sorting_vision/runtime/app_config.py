@@ -6,6 +6,7 @@ from typing import Any
 
 import yaml
 from vision.calibration.yaw_servo import YawServoCalibration
+from vision.grasp.outward_radial_compensation import OutwardRadialCompensator
 
 
 class ConfigError(ValueError):
@@ -174,6 +175,17 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
     if not isinstance(swap_xy, bool):
         raise ConfigError("calibration.pixel_to_robot_swap_xy 必须为 true/false")
     cfg["camera"]["top"]["swap_robot_xy"] = swap_xy
+
+    # 抓取点向外径向补偿：边缘目标的分割 mask 会带上侧面，质心被拉向画面中心，
+    # 这里只做参数校验，真正的补偿在 TopPickPipeline 里按候选点逐次应用。
+    try:
+        OutwardRadialCompensator.validate_config(
+            cfg["vision"]["top"].get("outward_radial_compensation")
+        )
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(
+            f"vision.top.outward_radial_compensation 无效: {exc}"
+        ) from exc
 
     top_tcp_comp = cfg["vision"]["top"].get("yaw_tcp_compensation", {})
     if bool(top_tcp_comp.get("enabled", False)):
