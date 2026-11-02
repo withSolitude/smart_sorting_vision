@@ -42,8 +42,8 @@ camera:
     buffer_size: 1  # V4L2 缓冲帧数；1 可降低识别延迟。
     warmup_frames: 10  # 打开相机后丢弃的预热帧数。
     reconnect_interval_s: 0.5  # 相机掉线后的重连间隔（秒）。
-    roi: [346, 0, 1233, 720]             # 最终实测侧面机械ROI，裁剪尺寸为887×720。
-    roi_polygon: [[346, 500], [419, 387], [447, 291], [493, 216], [504, 183], [533, 133], [586, 106], [665, 77], [677, 21], [708, 0], [930, 24], [1024, 65], [1131, 130], [1181, 189], [1208, 235], [1232, 364], [1226, 537], [1173, 640], [1110, 705], [1078, 719], [542, 719]]  # 已启用多边形掩膜，点集使用完整去畸变图坐标；设为 [] 可关闭。
+    roi: [0, 0, 1280, 720]             # 最终实测侧面机械ROI
+    roi_polygon: null  # 当前关闭多边形掩膜，使用整个矩形roi；填写点集后才启用多边形边界。
     controls:
       auto_exposure: 1  # V4L2曝光模式：1=手动模式（关闭自动曝光），3=光圈优先模式（自动曝光）。
       exposure_time_absolute: 185  # 手动曝光时间；自动曝光关闭时生效。
@@ -62,7 +62,7 @@ camera:
 # 使用工程根目录相对路径，禁止再写 /home/nvidia/...。
 model:
   top:
-    path: outputs/training/top_seg/v2/weights/best.engine  # 资源或模型路径；相对工程根目录解析。
+    path: outputs/training/top_seg/top_seg_v1_aug/weights/best.engine  # 资源或模型路径；相对工程根目录解析。
     conf: 0.35  # 模型置信度阈值。
     imgsz: 832  # 模型输入尺寸（像素）。
     device: 0  # 相机设备路径或推理设备编号。
@@ -73,10 +73,16 @@ model:
     confidence_threshold: 0.7  # 侧面形状/空背景分类的最低置信度。
     topk: 3  # 保留的最高概率类别数量。
 
+  side_seg:
+    path: outputs/training/side_seg/v1_seg_side/side_seg_v1/weights/best.engine  # 侧面 seg 模型；classifier 模式下不使用
+    imgsz: 768  # 训练时的输入尺寸，必须与训练一致
+    device: 0  # 推理设备编号
+    confidence_threshold: 0.5  # 判空阈值：低于此值视为没有实例
+    max_instances: 1  # 侧视只有一个物体，超过 1 没有意义
 calibration:
   top_intrinsics: data/calibration/top_camera/top_camera_intrinsics.npz  # 顶部相机内参文件路径。
   pixel_to_robot: data/calibration/top_camera/robot_mapping/pixel_to_robot.json  # 像素到机械 XY 的标定文件路径。
-  pixel_to_robot_swap_xy: false  # 当前标定文件已按真实[X,Y]顺序保存，不再交换两个机械轴。
+  pixel_to_robot_swap_xy: true  # 当前四点文件按旧轴顺序保存，运行时交换为下位机真实[X,Y]。
   side_background: data/calibration/side_camera/side_mechanical_roi_background.png  # 侧面颜色/二维码裁剪辅助使用的空背景；不再用于判断是否有物体。
   top_camera:
     image_dir: data/calibration/top_camera/images  # 标定图片目录。
@@ -89,14 +95,13 @@ calibration:
     warning_error_px: 0.8  # 标定误差警告阈值（像素）。
     max_view_error_px: 2.0  # 单张标定图最大允许重投影误差（像素）。
   yaw_servo:
-    # 顶部相机 Yaw 标定报告生成后，把报告中的三项拟合参数更新到这里。
-    # 验证脚本只读取此块，不再在代码中维护另一份旧标定值。
-    reference_axis_deg: -63.280987  # 参考舵机姿态下夹爪闭合轴在机械XY中的方向（度）。
-    reference_servo_deg: 0.232430  # 参考闭合轴对应的舵机命令（度）。
-    servo_deg_per_axis_deg: 1.04720792  # 夹爪物理轴每转1度对应舵机命令变化（度/度）。
-    safe_command_min_deg: -96.0  # 运行时Yaw舵机最小命令（度），超出时统一按-96°执行。
-    safe_command_max_deg: 96.0  # 运行时Yaw舵机最大命令（度），超出时统一按+96°执行。
-    safe_command_tolerance_deg: 6.0  # 保留兼容字段；当前范围外角度全部硬限幅到±96°。
+    # 2026-10-29 最新五点Yaw标定；q=q0+k*wrap180(axis-theta0)。
+    # 每个抓取闭合轴只使用参考轴附近唯一的180°物理区间。
+    reference_axis_deg: -63.85644350593594  # theta0，参考闭合轴方向（度）。
+    reference_servo_deg: 0.39494545820893734  # q0，参考舵机命令（度）。
+    servo_deg_per_axis_deg: 1.0775825104837484  # k，舵机角/闭合轴角。
+    safe_command_min_deg: -135.0  # 与当前下位机舵机限位一致（度）。
+    safe_command_max_deg: 135.0  # 与当前下位机舵机限位一致（度）。
   side_background_capture:
     settle_frames: 15  # 采集背景前等待的稳定帧数。
     frame_count: 30  # 用于生成背景的采样帧数。
@@ -117,26 +122,6 @@ vision:
     border_margin_px: 12  # 图像边缘安全余量（像素）。
     min_safe_area_px: 50  # 安全区域最小面积（像素）。
     min_clearance_px: 3.0  # 抓取点最小安全间隙（像素）。
-
-    # 仅限制靠近电机/相机一侧的抓取姿态；角度为下位机Yaw舵机命令角，不是PICK_TARGET轴向角。
-    edge_yaw_limit:
-      enabled: true  # 是否启用边缘抓取姿态约束；下位机中转路线另由edge_motion_config.h配置。
-      boundary_axis: y  # 危险边界所在轴：电机在图像下边沿 -> y。必须与下位机 Boundary_Axis_Y 一致。
-      x_threshold_mm: -40.0  # 沿 boundary_axis 的阈值：y 轴时表示 y > -40 算边缘区。
-      servo_min_deg: 40.0  # 边缘区允许的最小实际Yaw舵机角（度）。
-      servo_max_deg: 80.0  # 边缘区允许的最大实际Yaw舵机角（度）。
-      preferred_servo_deg: 60.0  # 接触条件相近时优先的平行姿态（度）。
-      sample_step_deg: 5.0  # 在允许舵机角范围内重新搜索的步长（度），之后仍检查协议量化值。
-      workspace_clamp_mm: 5.0  # 边缘标定小越界允许压回工作区上限（mm）；明显越界仍拒绝。
-      min_side_gap_mm: -1.0  # 边缘目标允许的最小单侧夹指间隙（mm）；只放宽边缘，抓点不移动。
-
-    # p_new = p + gain * (p - center)，仅向外补偿最终抓点；不改变原抓长边/方向算法。
-    outward_radial_compensation:
-      enabled: true  # 是否启用向外径向补偿；false恢复原抓取点。
-      gain: 0.05  # 位移 = 离主点距离 * gain；0 不补偿，禁止负值。
-      max_shift_px: 100.0  # 单次向外位移上限（像素）；gain=0.1 时约 1000px 触顶。
-      center_full_px: null  # null读取去畸变内参new_camera_matrix主点；也可填实测垂足[x,y]。
-      # 手填坐标属于完整去畸变图，程序自动减当前safe_roi原点；不能填ROI中心。
 
     # 动态抓取Yaw。这里的角度是“夹爪闭合轴在机械XY坐标系中的方向”，
     # 上位机不直接假设舵机安装零位。下位机再把该方向换算成真实舵机角度。
@@ -168,23 +153,20 @@ vision:
       max_opening_mm: null  # 夹爪最大允许开口（mm）。
 
       # 动态预收缩：视觉使用“当前夹取方向上的真实夹持宽度”计算预开口。
-      # command = grasp_width_mm + margin_mm；圆形/几何回退无法可靠估宽时，
-      # 不发送该命令，下位机自动使用旧固定 10° 预收缩。
+      # command = grasp_width_mm + margin_mm；没有可靠宽度时继续识别，不发抓取命令。
       dynamic_preopen:
         enabled: true  # 是否根据物体宽度计算夹爪预开口。
         configured: true  # 是否已经完成动态预开口标定。
         # 线性公式：angle = closed + (standby - closed) * opening / max_opening。
-        # 新夹爪开合舵机：-35°闭合，-95°待机张开；不是Yaw角。
-        closed_servo_deg: 0.7100046104195457  # 夹爪闭合舵机角度（度）。
-        standby_servo_deg: -89.28307976025819  # 夹爪待机张开舵机角度（度）。
+        # 使用最新实测预开口公式；此角度为夹爪开合舵机角度。
+        closed_servo_deg: 0.710004610  # 零开口拟合截距（度）；下位机也用于正式夹紧，须实机确认。
+        standby_servo_deg: -89.283079760  # 夹爪待机张开舵机角度（度）。
         # command 是两片硅胶内侧之间的目标净开口。
-        # 物体宽度 + 总余量；当前使用8mm（两侧合计）。
-        # 每侧余量 = margin/2，直接等于允许的"抓取中心偏移"容差：
-        # margin 8 只容 ±3.85mm，边缘目标会被 target_not_between_fingers 拒绝。
-        margin_mm: 10.0  # 物体宽度之外增加的安全余量（mm）；每侧 5mm，容差 ±4.85mm。
+        # 物体宽度 + 总余量；薄硅胶安装后先使用5mm（两侧合计）。
+        margin_mm: 5.0  # 物体宽度之外增加的安全余量（mm）。
         # 安全协议范围；STM32 与 PC 使用同一条线性公式。
-        min_command_mm: 13  # 预开口命令最小值（mm）。
-        max_command_mm: 77  # 预开口命令最大值（mm）。
+        min_command_mm: 13.0  # 预开口命令最小值（mm）。
+        max_command_mm: 77.0  # 预开口命令最大值（mm）。
 
     # Yaw-TCP 偏心补偿。
     # H 是在 CALIB_MOVE/待机 Yaw 姿态下建立的；旧代码240°会被驱动夹到+135°，
@@ -192,7 +174,7 @@ vision:
     # TCP 圆拟合来自 2026-09-12 的5点复测：r≈19.698mm，拟合RMSE≈0.423mm。
     # 当前进入真实物体空抓对心阶段，正式启用；如需回退，将 enabled 改回 false。
     yaw_tcp_compensation:
-      enabled: false  # 是否启用Yaw-TCP偏心补偿。
+      enabled: true  # 是否启用Yaw-TCP偏心补偿。
 
       reference_axis_deg: -56.788489  # TCP 标定参考闭合轴角度（度）。
       offset_axis0_mm: [0.23628793,15.44517776]  # 参考姿态下 TCP 偏移 [X, Y]（mm）。
@@ -202,8 +184,6 @@ vision:
 
       # 垂直于闭合轴，沿夹爪前后修正
       longitudinal_bias_mm: 0.0  # 沿夹爪前后方向的中心修正（mm）。
-
-      # 视觉与下位机只使用由 calibration.yaw_servo 唯一确定的物理姿态。
 
       visual_to_command_matrix:  # 视觉坐标到下发坐标的2x2矩阵。
         - [0.72533465, 0.01675850]
@@ -222,7 +202,7 @@ vision:
     # 才出现的位移，因此不放进 TopPickPipeline 的空抓对心坐标，
     # 只在正式 PICK_TARGET 下发前追加一次预偏移。
     descent_drift_compensation:
-      enabled: false  # 是否启用下压过程的横向漂移补偿。
+      enabled: true  # 是否启用下压过程的横向漂移补偿。
       # 实测 TCP 在下降时沿“闭合轴 + relative_angle_deg”方向漂移的距离(mm)。
       # 正值表示 +90° 方向，负值表示反方向。当前先填0.0，
       # 用单物体抓取脚本 --descent-drift-mm 快速试出数值后再写回来。
@@ -269,7 +249,7 @@ vision:
 
       # 同一物体多姿态抓取搜索
       grasp_search:
-        enabled: false  # 是否启用同一物体的多姿态抓取搜索。
+        enabled: true  # 是否启用同一物体的多姿态抓取搜索。
 
         yaw_offsets_deg:  # 同一物体尝试的Yaw偏移角度列表（度）。
           [0, -5, 5, -10, 10, -15, 15, -20, 20, -30, 30]
@@ -299,6 +279,9 @@ vision:
       max_grasp_spread_mm: 3.0  # 顶部多帧抓取点允许的最大散布（mm）。
       reset_after_misses: 3  # 连续漏检多少帧后清空顶部跟踪。
   side:
+    presence_mode: classifier  # classifier=分类器判空+背景差分裁剪 | seg=侧面 YOLO-seg 判空并直接给 mask
+    seg:
+      padding_ratio: 0.12  # seg 模式按 mask 外接框裁剪时四周留白比例
     recognition:
       color:
         enabled: true  # 是否启用颜色识别。

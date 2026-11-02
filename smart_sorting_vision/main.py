@@ -66,10 +66,6 @@ class SmartSortingApp:
         print("[CONFIG] side camera:", self.config["camera"]["side"]["device"])
         print(f"[CONFIG] workspace X={x_limits} mm, Y={y_limits} mm")
         print(
-            "[CONFIG] pixel_to_robot_swap_xy=",
-            bool(self.config["camera"]["top"].get("swap_robot_xy", True)),
-        )
-        print(
             "[CONFIG] consensus "
             f"top={top_consensus['required']}/{top_consensus['window']} "
             f"side={side_consensus['required']}/{side_consensus['window']}"
@@ -126,15 +122,9 @@ class SmartSortingApp:
         )
         self.top_pipeline.reset()
 
-        if self.side_pipeline.shape_classifier is not None:
-            side_stats = self.side_pipeline.shape_classifier.warmup(
-                runs=side_runs,
-            )
-        else:
-            side_stats = {
-                "first_ms": 0.0,
-                "steady_avg_ms": 0.0,
-            }
+        side_stats = self.side_pipeline.warmup(
+            runs=side_runs,
+        )
         self.side_pipeline.reset()
 
         print(
@@ -294,9 +284,6 @@ class SmartSortingApp:
             border_margin=top_vision_cfg["border_margin_px"],
             min_safe_area=top_vision_cfg["min_safe_area_px"],
             min_clearance=top_vision_cfg["min_clearance_px"],
-            outward_radial_config=top_vision_cfg.get("outward_radial_compensation"),
-            edge_yaw_config=top_vision_cfg.get("edge_yaw_limit"),
-            top_intrinsics_path=self.config["calibration"]["top_intrinsics"],
             consensus_window=top_consensus["window"],
             consensus_required=top_consensus["required"],
             max_track_center_shift_px=top_consensus["max_track_center_shift_px"],
@@ -387,8 +374,23 @@ class SmartSortingApp:
             )
         )
 
+        side_presence_mode = str(
+            side_vision_cfg.get("presence_mode", "classifier")
+        ).strip().lower()
+        side_seg_cfg = dict(self.config.get("model", {}).get("side_seg", {}) or {})
+        side_seg_padding = float(
+            (side_vision_cfg.get("seg") or {}).get("padding_ratio", 0.12)
+        )
+
         self.side_pipeline = SideSortPipeline(
-            background_path=self.config["calibration"]["side_background"],
+            background_path=self.config["calibration"].get("side_background"),
+            presence_mode=side_presence_mode,
+            seg_model_path=side_seg_cfg.get("path"),
+            seg_device=side_seg_cfg.get("device", 0),
+            seg_imgsz=int(side_seg_cfg.get("imgsz", 768)),
+            seg_confidence=float(side_seg_cfg.get("confidence_threshold", 0.5)),
+            seg_max_instances=int(side_seg_cfg.get("max_instances", 1)),
+            seg_padding_ratio=side_seg_padding,
             shape_model_path=side_model_cfg["path"],
             shape_device=side_model_cfg["device"],
             shape_imgsz=side_model_cfg["imgsz"],
