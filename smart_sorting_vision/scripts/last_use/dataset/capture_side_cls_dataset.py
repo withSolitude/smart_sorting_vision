@@ -38,7 +38,7 @@ data/datasets/side_cls/
 
 不需要在代码里写死形状和颜色。
 
-采集链与正式侧面识别保持一致：
+采集链：
 
     runtime_config.yaml
         ↓
@@ -46,22 +46,27 @@ data/datasets/side_cls/
         ↓
     SideCamera.read()
         ↓
-    当前机械 ROI
-        ↓
-    SideObjectExtractor + 固定空背景
-        ↓
-    物体 crop
+    当前机械 ROI（整幅，不裁剪）
         ↓
     保存 image_000001.jpg ...
+
+为什么不再做背景差分
+--------------------
+侧面"有没有物体"改由 YOLO-seg 判断，并同时给出 mask 供颜色/二维码裁剪。
+采集端再差分一次只会重复劳动，而且差分失败时会把整张图判成"无物体"，
+反而漏采。现在保存的每张图都可用于 seg 标注。
+
+空托盘（负样本）不在这里采，用：
+    python scripts/dataset/side_seg/capture_side_empty.py
 
 运行：
 
     cd ~/smart_sorting_vision
     source .venv/bin/activate
-    python scripts/dataset/side_cls/capture_side_cls_dataset.py
+    python -m scripts.last_use.dataset.capture_side_cls_dataset
 
 窗口按键：
-    SPACE / S : 保存当前物体 crop
+    SPACE / S : 保存当前整幅 ROI
     H         : 打印帮助
     Q / ESC   : 退出
 """
@@ -105,7 +110,7 @@ JPEG_QUALITY = 95
 FILE_DIGITS = 6
 
 MAIN_WINDOW = "Side Dataset Capture"
-CROP_WINDOW = "Side Object Crop"
+# CROP_WINDOW 已移除：不再显示裁剪预览
 
 IMAGE_SUFFIXES = {
     ".jpg",
@@ -521,7 +526,6 @@ def _print_help(
     shape: str,
     color: str,
     next_index: int,
-    background_path: Path,
 ) -> None:
     print()
     print("=" * 72)
@@ -544,7 +548,7 @@ def _print_help(
         f"Save dir   : {save_dir}"
     )
     print(
-        f"Background : {background_path}"
+        "Mode       : 整幅 ROI（不做背景差分）"
     )
     print(
         f"Next image : "
@@ -552,7 +556,7 @@ def _print_help(
     )
     print()
     print(
-        "SPACE / S : 保存当前检测到的物体 crop"
+        "SPACE / S : 保存当前整幅 ROI 画面"
     )
     print(
         "H         : 打印本帮助"
@@ -569,6 +573,12 @@ def _print_help(
 # ============================================================================
 
 def main() -> None:
+    """采集侧视整幅 ROI 画面。
+
+    不再做背景差分：新方案用 YOLO-seg 判断"有没有物体"并给出 mask，
+    所以这里只负责**原样保存整幅 ROI**，由标注/训练流程去处理轮廓。
+    空托盘样本请用 scripts/dataset/side_seg/capture_side_empty.py。
+    """
     (
         save_dir,
         split_name,
@@ -576,109 +586,24 @@ def main() -> None:
         color_name,
     ) = _choose_save_directory()
 
-    save_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+    save_dir.mkdir(parents=True, exist_ok=True)
 
-    image_index = _next_image_index(
-        save_dir
-    )
-
+    image_index = _next_image_index(save_dir)
     saved_count = 0
-
-    # ------------------------------------------------------------------------
-    # 使用正式运行配置
-    # ------------------------------------------------------------------------
 
     cfg = _load_runtime_config()
 
     try:
-        side_camera_cfg = (
-            cfg["camera"]["side"]
-        )
-
+        side_camera_cfg = cfg["camera"]["side"]
     except KeyError as exc:
-        raise RuntimeError(
-            "runtime_config.yaml "
-            "缺少 camera.side"
-        ) from exc
-
-    side_vision_cfg = (
-        cfg
-        .get(
-            "vision",
-            {},
-        )
-        .get(
-            "side",
-            {},
-        )
-        or {}
-    )
-
-    background_value = (
-        cfg
-        .get(
-            "calibration",
-            {},
-        )
-        .get(
-            "side_background"
-        )
-    )
-
-    if not background_value:
-        raise RuntimeError(
-            "runtime_config.yaml "
-            "缺少 calibration.side_background"
-        )
-
-    background_path = (
-        _resolve_project_path(
-            background_value
-        )
-    )
-
-    if not background_path.exists():
-        raise FileNotFoundError(
-            "\n侧面固定背景不存在：\n"
-            f"  {background_path}\n\n"
-            "请先采集与当前侧面 ROI "
-            "完全对应的空背景。"
-        )
+        raise RuntimeError("runtime_config.yaml 缺少 camera.side") from exc
 
     _ensure_project_import_path()
 
-    from vision.cameras.side_camera import (
-        SideCamera,
-    )
+    from vision.cameras.side_camera import SideCamera
 
-    from vision.processors.side_object_extractor import (
-        SideObjectExtractor,
-    )
-
-    # 关键：
-    # 采集脚本使用正式 runtime_config 中的侧面相机参数，
-    # 不再依赖 side_camera.py 里的旧默认值。
-    SideCamera.configure(
-        side_camera_cfg
-    )
-
-    padding_ratio = float(
-        side_vision_cfg.get(
-            "padding_ratio",
-            0.15,
-        )
-    )
-
-    extractor = SideObjectExtractor(
-        padding_ratio=padding_ratio
-    )
-
-    background = extractor.load_background(
-        background_path
-    )
+    # 采集脚本使用正式 runtime_config 中的侧面相机参数。
+    SideCamera.configure(side_camera_cfg)
 
     camera = SideCamera()
 
@@ -688,239 +613,79 @@ def main() -> None:
         shape=shape_name,
         color=color_name,
         next_index=image_index,
-        background_path=background_path,
     )
 
     try:
         camera.open()
 
-        print(
-            "[OK] Side camera opened: "
-            f"{camera.device}"
-        )
-
+        print(f"[OK] Side camera opened: {camera.device}")
         print(
             "[CONFIG] ROI = "
-            f"[{SideCamera.ROI_X1}, "
-            f"{SideCamera.ROI_Y1}, "
-            f"{SideCamera.ROI_X2}, "
-            f"{SideCamera.ROI_Y2}]"
+            f"[{SideCamera.ROI_X1}, {SideCamera.ROI_Y1}, "
+            f"{SideCamera.ROI_X2}, {SideCamera.ROI_Y2}]"
         )
-
         print(
             "[CONFIG] ROI size = "
-            f"{SideCamera.ROI_WIDTH}x"
-            f"{SideCamera.ROI_HEIGHT}"
+            f"{SideCamera.ROI_WIDTH}x{SideCamera.ROI_HEIGHT}"
         )
+        print("[MODE] 保存整幅 ROI，不做背景差分/不裁剪")
 
-        print(
-            "[CONFIG] padding_ratio = "
-            f"{padding_ratio}"
-        )
-
-        print(
-            "[BACKGROUND] "
-            f"{background_path}"
-        )
-
-        # 再额外丢弃少量帧，
-        # 保证采集界面开始时图像已经稳定。
-        current_frame = None
-
+        # 丢弃少量帧，保证界面开始时图像已经稳定。
         for _ in range(10):
-            current_frame = (
-                camera.read()
-            )
-
-        if current_frame is None:
-            raise RuntimeError(
-                "无法读取侧面相机画面"
-            )
-
-        # 这个检查很重要：
-        # 修改 ROI 后必须重新采空背景。
-        if (
-            current_frame.shape
-            != background.shape
-        ):
-            raise RuntimeError(
-                "\n当前侧面 ROI 与固定背景尺寸不一致："
-                f"\n  current    = "
-                f"{current_frame.shape}"
-                f"\n  background = "
-                f"{background.shape}"
-                "\n\n修改 SideCamera ROI 后，"
-                "必须重新采集侧面固定背景。"
-            )
+            camera.read()
 
         while True:
-            mechanical_roi = (
-                camera.read()
-            )
-
-            result = extractor.extract(
-                mechanical_roi
-            )
-
-            crop = None
-
-            if (
-                result.found
-                and result.crop is not None
-                and result.crop.size > 0
-            ):
-                crop = result.crop
+            roi = camera.read()
+            if roi is None:
+                continue
 
             display = _draw_status(
-                mechanical_roi,
+                roi,
                 split=split_name,
                 shape=shape_name,
                 color=color_name,
                 next_index=image_index,
                 saved_count=saved_count,
-                found=bool(
-                    result.found
-                ),
-                reason=str(
-                    result.reason
-                ),
+                found=True,
+                reason="full-roi",
             )
 
-            # 将实际 crop 区域画在机械 ROI 上。
-            crop_bbox = getattr(
-                result,
-                "crop_bbox",
-                None,
-            )
+            cv2.imshow(MAIN_WINDOW, display)
 
-            if crop_bbox is not None:
-                x1, y1, x2, y2 = (
-                    map(
-                        int,
-                        crop_bbox,
-                    )
-                )
+            key = cv2.waitKey(1) & 0xFF
 
-                cv2.rectangle(
-                    display,
-                    (x1, y1),
-                    (
-                        max(
-                            x1,
-                            x2 - 1,
-                        ),
-                        max(
-                            y1,
-                            y2 - 1,
-                        ),
-                    ),
-                    (
-                        0,
-                        255,
-                        0,
-                    ),
-                    2,
-                )
-
-            cv2.imshow(
-                MAIN_WINDOW,
-                display,
-            )
-
-            if crop is not None:
-                cv2.imshow(
-                    CROP_WINDOW,
-                    crop,
-                )
-
-            key = (
-                cv2.waitKey(1)
-                & 0xFF
-            )
-
-            # --------------------------------------------------------------
-            # Quit
-            # --------------------------------------------------------------
-
-            if key in (
-                ord("q"),
-                ord("Q"),
-                27,
-            ):
+            if key in (ord("q"), ord("Q"), 27):
                 break
 
-            # --------------------------------------------------------------
-            # Help
-            # --------------------------------------------------------------
-
-            if key in (
-                ord("h"),
-                ord("H"),
-            ):
+            if key in (ord("h"), ord("H")):
                 _print_help(
                     save_dir=save_dir,
                     split=split_name,
                     shape=shape_name,
                     color=color_name,
                     next_index=image_index,
-                    background_path=background_path,
                 )
-
                 continue
 
-            # --------------------------------------------------------------
-            # Save
-            # --------------------------------------------------------------
-
-            if key in (
-                32,
-                ord("s"),
-                ord("S"),
-            ):
-                if crop is None:
-                    print(
-                        "[SAVE] 当前没有可靠检测到物体，"
-                        "未保存。"
-                    )
-
-                    continue
-
-                filename = (
-                    f"image_"
-                    f"{image_index:0{FILE_DIGITS}d}"
-                    f".jpg"
-                )
-
-                save_path = (
-                    save_dir / filename
-                )
+            if key in (32, ord("s"), ord("S")):
+                filename = f"image_{image_index:0{FILE_DIGITS}d}.jpg"
+                save_path = save_dir / filename
 
                 if save_path.exists():
                     print(
-                        "[WARN] 文件已经存在，"
-                        "自动寻找下一个编号："
+                        "[WARN] 文件已经存在，自动寻找下一个编号："
                         f"{save_path}"
                     )
-
-                    image_index = (
-                        _next_image_index(
-                            save_dir
-                        )
-                    )
-
+                    image_index = _next_image_index(save_dir)
                     continue
 
-                _imwrite_unicode(
-                    save_path,
-                    crop,
-                )
+                _imwrite_unicode(save_path, roi)
 
-                h, w = crop.shape[:2]
-
+                h, w = roi.shape[:2]
                 print(
                     "[SAVE] "
                     f"{save_path.relative_to(ROOT)} "
-                    f"crop={w}x{h}"
+                    f"roi={w}x{h}"
                 )
 
                 image_index += 1
@@ -929,7 +694,6 @@ def main() -> None:
     finally:
         try:
             camera.release()
-
         except Exception:
             pass
 
@@ -937,10 +701,7 @@ def main() -> None:
 
     print()
     print("=" * 72)
-    print(
-        f"[DONE] 本次保存 "
-        f"{saved_count} 张。"
-    )
+    print(f"[DONE] 本次保存 {saved_count} 张。")
     print(
         "[NEXT] 当前目录下次将从 "
         f"image_{_next_image_index(save_dir):0{FILE_DIGITS}d}.jpg "
