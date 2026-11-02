@@ -538,7 +538,7 @@ private:
 
     // 位置外环PID。初值以P为主，D直接使用-now_omega抑制过冲。
     float DM4310_Pos_Kp =
-        2.5f;
+        2.0f;
 
     float DM4310_Pos_Ki =
         0.0f;

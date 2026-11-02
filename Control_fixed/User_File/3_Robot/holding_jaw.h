@@ -335,13 +335,13 @@ private:
     // ========================================================
 
     float Tray_X_mm =
-        0.0f;
+        -15.0f;
 
     float Tray_Y_mm =
         0.0f;
 
     float Tray_Yaw_Angle =
-        90.0f * PI / 180.0f;
+        70.0f * PI / 180.0f;
 
 
     // ========================================================
@@ -358,13 +358,13 @@ private:
         0.0f;
 
     float Recognition_Y_mm =
-        0.0f;
+        -70.0f;
 
     float Recognition_Yaw_Angle =
         20.0f * PI / 180.0f;
 
     float Recognition_Lift_Angle =
-        28.0f * PI / 180.0f;
+        34.0f * PI / 180.0f;
 
     float Recognition_Claw_Angle =
         ClawPreopen::kStandbyAngleDeg * PI / 180.0f;
@@ -413,7 +413,7 @@ private:
 
 
     float Lift_Servo_Motor_Angle_Disable =
-        28.0f * PI / 180.0f;
+        34.0f * PI / 180.0f;
 
     float Claw_Servo_Motor_Angle_Disable =
         ClawPreopen::kStandbyAngleDeg * PI / 180.0f;
@@ -497,7 +497,7 @@ private:
     // --------------------------------------------------------
 
     float Lift_Servo_Motor_Angle_Lift =
-        28.0f * PI / 180.0f;
+        34.0f * PI / 180.0f;
 
 
     // --------------------------------------------------------
@@ -540,7 +540,7 @@ private:
     // --------------------------------------------------------
 
     uint16_t Grap_TOF_Trigger_Distance_mm =
-        5;
+        3;
 
 
     // --------------------------------------------------------
@@ -729,6 +729,7 @@ private:
     bool XY_At_mm(float X_mm, float Y_mm) const;
     bool Motion_Configuration_Valid() const;
     bool Move_XY_Yaw_Via_Edge(float X_mm, float Y_mm, float Yaw_Rad);
+    bool Move_XY_Yaw_Direct(float X_mm, float Y_mm, float Yaw_Rad);
     void Complete_Outputs();
     void Abort_Grap_Fault(Enum_Grap_Error Reason);
     void Service_Fault_Servo_Stop();

@@ -18,7 +18,9 @@ constexpr bool Mechanical_Calibration_Confirmed = true; // 仅主机回归测试
 constexpr bool Mechanical_Calibration_Confirmed = true; // 实机标定后改 true
 #endif
 
-// +45° 表示机构 U 轴相对视觉 +X 逆时针旋转；顺时针请改 -45°。
+// 0.0 = 标准 CoreXY（A = X+Y，B = X-Y），实机验证可用，不要再改成 45。
+// 历史教训：曾改成 45.0 后整机 X/Y 运动方向错乱，视觉侧又加 axis swap 去补，
+// 最后整批回滚，把标定文件也带偏了。改这个值必须重新标定并重跑抓取验证。
 constexpr double Frame_Rotation_Deg = 0.0;
 constexpr double Pi = 3.14159265358979323846;
 

@@ -257,11 +257,8 @@ void Task1ms_TIM7_Callback()
         tof_distance =
             robot.Holding_Jaw.TOF050F.Get_Distance_mm();
 
-
         tof_online =
             robot.Holding_Jaw.TOF050F.Get_Online();
-
-
     }
 
     static int alive_mod1000 = 0;
@@ -313,10 +310,15 @@ void Task1ms_TIM7_Callback()
     // TIM_1ms_CAN_PeriodElapsedCallback();
 
     // DM_Motor.TIM_Send_PeriodElapsedCallback();
-    a = robot.Holding_Jaw.XY_Motion.Get_Power_On_Origin_Captured();
-    b = robot.Holding_Jaw.XY_Motion.Get_Position_Valid();
-    c = robot.Holding_Jaw.XY_Motion.Get_Fault();
-    d = robot.Holding_Jaw.XY_Motion.Get_Stop_Confirmed();
+    // a = robot.Holding_Jaw.XY_Motion.Get_Power_On_Origin_Captured();
+    // b = robot.Holding_Jaw.XY_Motion.Get_Position_Valid();
+    // c = robot.Holding_Jaw.XY_Motion.Get_Fault();
+    // d = robot.Holding_Jaw.XY_Motion.Get_Stop_Confirmed();
+
+    a = robot.Sorting_Handshake.Get_Stop_Ack_Pending();
+    b = robot.Holding_Jaw.XY_Motion.Get_Stop_Confirmed();
+    c = robot.Holding_Jaw.Get_Stop_Ready();
+    d = robot.Sorting_Storage.Get_Disable_Ready();
 }
 
 /**
