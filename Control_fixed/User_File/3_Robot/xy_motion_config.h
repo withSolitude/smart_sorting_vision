@@ -18,9 +18,9 @@ constexpr bool Mechanical_Calibration_Confirmed = true; // 仅主机回归测试
 constexpr bool Mechanical_Calibration_Confirmed = true; // 实机标定后改 true
 #endif
 
-// 机构的实际X/Y滑台相对CoreXY电机坐标旋转+45°。
-// 这样A≈√2·Y、B≈√2·X；X轴运动只改变B电机，Y轴运动只改变A电机。
-constexpr double Frame_Rotation_Deg = 45.0;
+// 当前下位机的 X/Y 是工作平面坐标，分别平行于图片的水平边和竖直边。
+// CoreXY 两台电机的合成关系由 XY_To_Motor_mm 处理，这里不再额外旋转工作平面。
+constexpr double Frame_Rotation_Deg = 0.0;
 constexpr double Pi = 3.14159265358979323846;
 
 // CoreXY: A=U+V, B=U-V。正的电机坐标对应协议 CW(方向0)。
