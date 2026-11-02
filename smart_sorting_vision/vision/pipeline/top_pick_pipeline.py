@@ -25,6 +25,8 @@ from vision.grasp.orientation_planner import (
     plan_parallel_edge_grasp_options,
 )
 from vision.grasp.gripper_footprint import GripperFootprintModel
+from vision.grasp.outward_radial_compensation import OutwardRadialCompensator
+from vision.grasp.edge_yaw_limit import EdgeYawLimit
 from vision.grasp.claw_preopen_profile import ClawPreopenProfile
 from vision.grasp.grasp_pose_search import (
     axis_vectors,
@@ -96,6 +98,9 @@ class TopPickCandidate:
     search_safe_count: int
 
     score: float
+    # 补偿前的最终候选点，供预览对比；正式XY和grasp_pixel都使用补偿后的点。
+    uncompensated_grasp_pixel: tuple[float, float] | None = None
+    radial_shift_px: float = 0.0
 
 
 @dataclass
@@ -126,6 +131,8 @@ class TopPickPipelineResult:
     inference_ms: float
 
     candidates: list[TopPickCandidate]
+    # 原始YOLO分割结果，供调试画面区分“模型未检出”和“抓取规划无安全候选”。
+    raw_objects: list[dict] | None = None
 
 
 class TopPickPipeline:
@@ -169,6 +176,9 @@ class TopPickPipeline:
         model_path: str | Path,
         calibration_path: str | Path,
         camera_config: dict | None = None,
+        top_intrinsics_path: str | Path | None = None,
+        outward_radial_config: dict | None = None,
+        edge_yaw_config: dict | None = None,
         conf: float = 0.35,
         imgsz: int = 832,
         device=0,
@@ -288,6 +298,17 @@ class TopPickPipeline:
                 camera_config=camera_config,
             )
         )
+
+        self.radial_compensator = OutwardRadialCompensator.from_config(
+            outward_radial_config, camera_config=camera_config,
+            intrinsics_path=top_intrinsics_path,
+        )
+        self.edge_yaw_limit = EdgeYawLimit.from_config(edge_yaw_config)
+        if self.edge_yaw_limit.enabled:
+            rule = self.edge_yaw_limit
+            print(f"[EDGE YAW] {rule.x_threshold_mm:g}<X<=0mm: servo="
+                  f"{rule.servo_min_deg:g}..{rule.servo_max_deg:g}deg, "
+                  f"preferred={rule.preferred_servo_deg:g}deg")
 
         self.consensus = TopPickConsensus(
             window_size=
@@ -574,10 +595,11 @@ class TopPickPipeline:
             raise ValueError("new claw requires a measured width; no legacy fixed preopen")
         return self.claw_preopen_profile.command_for_width(width_mm)
 
-    @staticmethod
-    def _wire_yaw(axial_yaw_deg: float) -> float:
+    def _wire_yaw(self, axial_yaw_deg: float) -> float:
         """先按协议的1°分辨率量化，再规划实际物理姿态，避免窗口边界错侧。"""
         axial = normalize_axial_deg(axial_yaw_deg)
+        if self.yaw_servo_calibration is not None:
+            axial = self.yaw_servo_calibration.safe_wire_axis_deg(axial)
         return normalize_axial_deg(round(axial / YAW_SCALE_DEG) * YAW_SCALE_DEG)
 
     def _physical_yaw(self, axial_yaw_deg: float) -> float:
@@ -888,6 +910,28 @@ class TopPickPipeline:
                             break
             else:
                 trial_specs = [(0.0, 0.0, 0.0)]
+                # 即使关闭全局多姿态搜索，也要检查同一轮廓的其它真实平行边。
+                # 否则边角目标只有主方向会被测试，合法的另一组夹持方向会丢失。
+                for family_yaw_deg in orientation_family_yaws[1:]:
+                    trial_specs.append((
+                        axial_difference_deg(family_yaw_deg, base_yaw_deg),
+                        0.0,
+                        0.0,
+                    ))
+            # 边缘区独立尝试允许的真实舵机角，即使全局多姿态搜索关闭也能抓取。
+            # 额外姿态只供 x>阈值 的目标使用，区域外仍保留原规划结果。
+            edge_only_trials = set()
+            if self.edge_yaw_limit.enabled:
+                seen = {(self._wire_yaw(base_yaw_deg + offset), longitudinal, closing)
+                        for offset, longitudinal, closing in trial_specs}
+                for axis in self.edge_yaw_limit.candidate_axes(self.yaw_servo_calibration):
+                    wire = self._wire_yaw(axis)
+                    key = (wire, 0.0, 0.0)
+                    if key not in seen:
+                        seen.add(key)
+                        spec = (axial_difference_deg(wire, base_yaw_deg), 0.0, 0.0)
+                        trial_specs.append(spec)
+                        edge_only_trials.add(spec)
             best_candidate: TopPickCandidate | None = None
             best_trial_record: dict | None = None
             safe_trial_records: list[dict] = []
@@ -943,6 +987,10 @@ class TopPickPipeline:
                     reject("candidate_robot_to_pixel_failed", yaw=yaw_deg)
                     continue
                 candidate_px = (float(candidate_px_f[0]), float(candidate_px_f[1]))
+                # 姿态与局部位移求完后只补偿一次，后续方向规划不再覆盖该点。
+                uncompensated_px = candidate_px
+                candidate_px = self.radial_compensator.apply(candidate_px)
+                radial_shift_px = math.dist(uncompensated_px, candidate_px)
 
                 # 中心仍必须落在目标本体内，不能为了避障把夹爪中心移到物体外面。
                 inside = cv2.pointPolygonTest(
@@ -956,6 +1004,8 @@ class TopPickPipeline:
                         px=candidate_px,
                         yaw=yaw_deg,
                         meta={
+                            "uncompensated_pixel": uncompensated_px,
+                            "radial_shift_px": float(radial_shift_px),
                             "yaw_offset_deg": float(yaw_offset_deg),
                             "longitudinal_offset_mm": float(longitudinal_offset_mm),
                             "closing_offset_mm": float(closing_offset_mm),
@@ -963,7 +1013,70 @@ class TopPickPipeline:
                     )
                     continue
 
-                # 先按该 yaw 重新计算真实物体宽度；旋转夹爪后开口必须跟着变化。
+                if radial_shift_px > 0.0:
+                    px, py = int(round(candidate_px[0])), int(round(candidate_px[1]))
+                    if not (0 <= py < frame.shape[0] and 0 <= px < frame.shape[1]
+                            and grasp_result.safe_mask[py, px]):
+                        reject("radial_compensation_outside_safe_region", px=candidate_px, yaw=yaw_deg)
+                        continue
+                    try:
+                        candidate_center_robot = np.asarray(self.transform.pixel_to_robot(
+                            *candidate_px, apply_tcp_offset=False,
+                        ), dtype=np.float64)
+                    except (ValueError, RuntimeError):
+                        reject("compensated_pixel_transform_failed", px=candidate_px, yaw=yaw_deg)
+                        continue
+                    if not np.all(np.isfinite(candidate_center_robot)):
+                        reject("compensated_xy_not_finite", px=candidate_px, yaw=yaw_deg)
+                        continue
+
+                # 先求最终机械X，再用标定后的真实舵机角判断边缘区约束。
+                try:
+                    x_mm, y_mm = self.transform.pixel_to_robot(
+                        candidate_px[0], candidate_px[1], apply_tcp_offset=True,
+                    )
+                except Exception:
+                    reject("candidate_pixel_transform_failed", px=candidate_px, yaw=yaw_deg)
+                    continue
+                if not (np.isfinite(x_mm) and np.isfinite(y_mm)):
+                    reject("candidate_xy_not_finite", px=candidate_px, yaw=yaw_deg)
+                    continue
+                workspace_max_x = (
+                    float(self.x_limits_mm[1]) if self.x_limits_mm is not None else 0.0
+                )
+                x_mm, workspace_clamped = self.edge_yaw_limit.clamp_workspace_x(
+                    float(x_mm), workspace_max_x,
+                )
+                if self.edge_yaw_limit.enabled and y_mm > 0.0:
+                    y_limit = float(self.y_limits_mm[1]) if self.y_limits_mm is not None else 0.0
+                    if y_mm <= y_limit + self.edge_yaw_limit.workspace_clamp_mm:
+                        y_mm = y_limit
+                        workspace_clamped = True
+                selected = self._compensate_yaw_xy(float(x_mm), float(y_mm), physical_yaw_deg)
+                if selected is None:
+                    reject("yaw_tcp_or_workspace_unavailable", px=candidate_px, yaw=yaw_deg,
+                           meta={"x_mm": float(x_mm), "y_mm": float(y_mm),
+                                 "workspace_clamped": bool(workspace_clamped)})
+                    continue
+                x_mm, y_mm = selected
+                edge_active = self.edge_yaw_limit.active(x_mm)
+                workspace_edge_active = edge_active
+                if self.edge_yaw_limit.enabled and self.y_limits_mm is not None:
+                    workspace_edge_active = workspace_edge_active or (
+                        y_mm >= float(self.y_limits_mm[1]) - self.edge_yaw_limit.workspace_clamp_mm
+                    )
+                engagement_min_side_gap_mm = (
+                    self.edge_yaw_limit.min_side_gap_mm
+                    if workspace_edge_active else self.grasp_search_min_side_gap_mm
+                )
+                if (yaw_offset_deg, longitudinal_offset_mm, closing_offset_mm) in edge_only_trials and not edge_active:
+                    continue
+                if not self.edge_yaw_limit.allows(x_mm, yaw_deg, self.yaw_servo_calibration):
+                    reject("edge_yaw_outside_servo_range", px=candidate_px, yaw=yaw_deg,
+                           meta={"x_mm": x_mm, "servo_deg": self.yaw_servo_calibration.command_deg(yaw_deg)})
+                    continue
+
+                # 按该候选重新估宽、算开口并做夹指检查；不能只把原角度强行夹到40~80。
                 # 初次用零开口只读取 width，然后再算动态 preopen 并做完整接触检查。
                 width_probe = evaluate_target_engagement(
                     target_robot,
@@ -1005,9 +1118,34 @@ class TopPickPipeline:
                     engagement_opening,
                     finger_length_mm=self.gripper_footprint.finger_length_mm,
                     finger_longitudinal_offset_mm=self.gripper_footprint.finger_longitudinal_offset_mm,
-                    min_side_gap_mm=self.grasp_search_min_side_gap_mm,
+                    min_side_gap_mm=engagement_min_side_gap_mm,
                     min_longitudinal_overlap_mm=self.grasp_search_min_target_overlap_mm,
                 )
+                if not engagement.fits_between_fingers:
+                    # 保持补偿后的抓点和Yaw，先用预开口余量弥补中心偏移造成的单侧间隙不足。
+                    required_gap = max(0.0, float(self.grasp_search_min_side_gap_mm))
+                    opening_extra = 2.0 * max(
+                        0.0, required_gap - float(engagement.min_side_gap_mm),
+                    )
+                    expanded_opening = min(
+                        float(self.preopen_command_max_mm),
+                        float(engagement_opening) + opening_extra,
+                    )
+                    if expanded_opening > float(engagement_opening) + 1e-6:
+                        expanded = evaluate_target_engagement(
+                            target_robot,
+                            candidate_center_robot,
+                            physical_yaw_deg,
+                            expanded_opening,
+                            finger_length_mm=self.gripper_footprint.finger_length_mm,
+                            finger_longitudinal_offset_mm=self.gripper_footprint.finger_longitudinal_offset_mm,
+                            min_side_gap_mm=self.grasp_search_min_side_gap_mm,
+                            min_longitudinal_overlap_mm=self.grasp_search_min_target_overlap_mm,
+                        )
+                        if expanded.fits_between_fingers:
+                            preopen_mm = float(expanded_opening)
+                            engagement_opening = float(expanded_opening)
+                            engagement = expanded
                 if not engagement.fits_between_fingers:
                     reject(
                         "target_not_between_fingers",
@@ -1016,6 +1154,10 @@ class TopPickPipeline:
                         opening=preopen_mm,
                         meta={
                             "min_side_gap_mm": float(engagement.min_side_gap_mm),
+                            "left_gap_mm": float(engagement.left_gap_mm),
+                            "right_gap_mm": float(engagement.right_gap_mm),
+                            "opening_mm": float(engagement_opening),
+                            "width_mm": float(trial_width_mm),
                             "yaw_offset_deg": float(yaw_offset_deg),
                             "longitudinal_offset_mm": float(longitudinal_offset_mm),
                             "closing_offset_mm": float(closing_offset_mm),
@@ -1071,32 +1213,6 @@ class TopPickPipeline:
                     )
                     continue
 
-                try:
-                    x_mm, y_mm = self.transform.pixel_to_robot(
-                        candidate_px[0],
-                        candidate_px[1],
-                        apply_tcp_offset=True,
-                    )
-                except Exception:
-                    reject("candidate_pixel_transform_failed", px=candidate_px, yaw=yaw_deg)
-                    continue
-
-                if not (np.isfinite(x_mm) and np.isfinite(y_mm)):
-                    reject("candidate_xy_not_finite", px=candidate_px, yaw=yaw_deg)
-                    continue
-
-                # TCP 与碰撞模型共用已确定的物理角；协议仍只发送 [-90,90) 轴向角。
-                selected = self._compensate_yaw_xy(
-                    float(x_mm),
-                    float(y_mm),
-                    physical_yaw_deg,
-                )
-                if selected is None:
-                    reject("yaw_tcp_or_workspace_unavailable", px=candidate_px, yaw=yaw_deg)
-                    continue
-
-                x_mm, y_mm = selected
-
                 safe_count += 1
 
                 center_offset_mm = math.hypot(
@@ -1130,6 +1246,10 @@ class TopPickPipeline:
                     - self.grasp_search_yaw_penalty_per_deg * yaw_deviation_from_family
                     - self.grasp_search_center_penalty_per_mm * center_offset_mm
                 )
+                if edge_active:
+                    # 同样满足接触和开口条件时，轻度优先靠近用户实测平行姿态60°。
+                    score -= 0.05 * abs(self.yaw_servo_calibration.command_deg(yaw_deg)
+                                        - self.edge_yaw_limit.preferred_servo_deg)
 
                 # 用当前物理宽度修正用于显示/兼容的像素宽度估计。
                 if orientation_family and nearest_family_index < len(orientation_family):
@@ -1210,6 +1330,8 @@ class TopPickPipeline:
                     search_trial_count=0,  # 结束搜索后统一写入
                     search_safe_count=0,
                     score=float(score),
+                    uncompensated_grasp_pixel=uncompensated_px if self.radial_compensator.enabled else None,
+                    radial_shift_px=float(radial_shift_px),
                 )
 
                 trial_record = {
@@ -1437,6 +1559,12 @@ class TopPickPipeline:
             ):
                 output_ready = False
                 output_reason = "yaw_window_boundary_unstable"
+            edge_limit = getattr(self, "edge_yaw_limit", None)
+            if output_ready and edge_limit is not None and not edge_limit.allows(
+                stable.x_mm, output_yaw_deg, self.yaw_servo_calibration,
+            ):
+                output_ready = False
+                output_reason = "edge_yaw_consensus_outside_servo_range"
 
         return TopPickPipelineResult(
             ready=
@@ -1479,4 +1607,6 @@ class TopPickPipeline:
                 float(inference_ms),
             candidates=
                 candidates,
+            raw_objects=
+                objects,
         )

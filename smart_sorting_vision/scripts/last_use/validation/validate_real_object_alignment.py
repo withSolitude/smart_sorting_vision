@@ -24,6 +24,12 @@ from vision.calibration.yaw_servo import YawServoCalibration
 from vision.grasp.orientation_planner import polygon_long_axis_image_deg
 
 
+# Must match the final firmware Yaw calibration in ita_robot.h.
+YAW_REF_AXIS_DEG = 42.105382
+YAW_REF_SERVO_DEG = -1.338941
+YAW_SERVO_PER_AXIS = -1.055363
+YAW_SERVO_MIN_DEG = -60.0
+YAW_SERVO_MAX_DEG = 135.0
 
 
 class UserStopRequested(RuntimeError):
@@ -33,6 +39,16 @@ class UserStopRequested(RuntimeError):
 def normalize_axial_deg(angle_deg: float) -> float:
     value = (float(angle_deg) + 90.0) % 180.0 - 90.0
     return 0.0 if abs(value) < 1e-12 else value
+
+
+def axis_to_servo_deg(target_axis_deg: float) -> float:
+    axis = normalize_axial_deg(target_axis_deg)
+    q = YAW_REF_SERVO_DEG + YAW_SERVO_PER_AXIS * (axis - YAW_REF_AXIS_DEG)
+    if not (YAW_SERVO_MIN_DEG <= q <= YAW_SERVO_MAX_DEG):
+        raise ValueError(
+            f"Yaw unique branch outside calibrated servo range: axis={axis:+.2f} deg, q={q:+.2f} deg"
+        )
+    return float(q)
 
 
 def handle_safety_frame(frame: SortingFrame) -> None:
@@ -142,15 +158,15 @@ def send_calib_yaw_and_wait(
         time.sleep(0.002)
 
 
-def build_compensator(top_cfg: dict, yaw: YawServoCalibration) -> YawTcpCompensator:
+def build_compensator(top_cfg: dict) -> YawTcpCompensator:
     comp = top_cfg.get("yaw_tcp_compensation", {})
     offset = comp["offset_axis0_mm"]
     return YawTcpCompensator(
         reference_axis_deg=float(comp["reference_axis_deg"]),
         offset_axis0_x_mm=float(offset[0]),
         offset_axis0_y_mm=float(offset[1]),
-        min_axis_deg=yaw.physical_min_deg,
-        max_axis_deg=yaw.physical_max_deg,
+        min_axis_deg=float(comp.get("min_axis_deg", -87.0)),
+        max_axis_deg=float(comp.get("max_axis_deg", 89.0)),
         visual_to_command_matrix=comp.get(
             "visual_to_command_matrix", [[1.0, 0.0], [0.0, 1.0]]
         ),
@@ -165,8 +181,8 @@ def build_pipeline(cfg: dict, comp: YawTcpCompensator) -> TopPickPipeline:
     preopen = orient.get("dynamic_preopen", {}) or {}
     x_limits = cfg["mechanics"]["workspace_mm"]["x"]
     y_limits = cfg["mechanics"]["workspace_mm"]["y"]
+    yaw_servo = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
     return TopPickPipeline(
-        yaw_servo_calibration=YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"]),
         model_path=top_model_cfg["path"],
         calibration_path=cfg["calibration"]["pixel_to_robot"],
         camera_config=cfg["camera"]["top"],
@@ -177,6 +193,9 @@ def build_pipeline(cfg: dict, comp: YawTcpCompensator) -> TopPickPipeline:
         border_margin=top_vision_cfg["border_margin_px"],
         min_safe_area=top_vision_cfg["min_safe_area_px"],
         min_clearance=top_vision_cfg["min_clearance_px"],
+        outward_radial_config=top_vision_cfg.get("outward_radial_compensation"),
+        edge_yaw_config=top_vision_cfg.get("edge_yaw_limit"),
+        top_intrinsics_path=cfg["calibration"]["top_intrinsics"],
         consensus_window=consensus["window"],
         consensus_required=consensus["required"],
         max_track_center_shift_px=consensus["max_track_center_shift_px"],
@@ -206,6 +225,7 @@ def build_pipeline(cfg: dict, comp: YawTcpCompensator) -> TopPickPipeline:
         x_limits_mm=x_limits,
         y_limits_mm=y_limits,
         yaw_tcp_compensator=comp,
+        yaw_servo_calibration=yaw_servo,
     )
 
 
@@ -241,7 +261,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     cfg = load_runtime_config(ROOT, Path(args.config))
-    yaw_calibration = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
     top_cfg = cfg["vision"]["top"]
     comp_cfg = top_cfg.get("yaw_tcp_compensation", {})
     if not bool(comp_cfg.get("enabled", False)):
@@ -249,7 +268,7 @@ def main() -> int:
             "vision.top.yaw_tcp_compensation.enabled is false. Use the supplied config patch or enable it explicitly."
         )
 
-    comp = build_compensator(top_cfg, yaw_calibration)
+    comp = build_compensator(top_cfg)
 
     TopCamera.configure(
         cfg["camera"]["top"],
@@ -357,7 +376,7 @@ def main() -> int:
                     target_yaw = normalize_axial_deg(args.force_yaw if args.force_yaw is not None else detected_yaw)
                     gx, gy = map(int, result.grasp_pixel)
                     raw_x, raw_y = pipeline.transform.pixel_to_robot(gx, gy, apply_tcp_offset=True)
-                    applied = comp.apply(raw_x, raw_y, yaw_calibration.physical_axis_deg(target_yaw))
+                    applied = comp.apply(raw_x, raw_y, target_yaw)
                     center_pixel = (
                         float(best_candidate.center_pixel[0]),
                         float(best_candidate.center_pixel[1]),
@@ -489,7 +508,7 @@ def main() -> int:
                 x = float(frozen["command_x_mm"])
                 y = float(frozen["command_y_mm"])
                 yaw = float(frozen["target_yaw_deg"])
-                q = yaw_calibration.command_deg(yaw)
+                q = axis_to_servo_deg(yaw)
                 print(f"[MOVE] approach-only -> X={x:.2f}, Y={y:.2f}, axis={yaw:+.2f}, servo={q:+.2f}")
                 send_calib_move_and_wait(
                     link, x, y,

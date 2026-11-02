@@ -387,7 +387,7 @@ def _candidate_axes(
             float(transform.robot_angle_from_image_angle(u_ref, v_ref, axis_image))
             + float(yaw_alignment_offset_deg)
         )
-        # The lower MCU now executes one unique physical Yaw branch and the gripper TCP
+        # The lower MCU now executes one unique physical Yaw pose and the gripper TCP
         # has a large eccentricity.  Therefore theta and theta+180 deg are NOT
         # physically interchangeable for motion planning, even though they describe
         # the same undirected closing axis.  Use ordinary physical-angle distance

@@ -21,8 +21,8 @@ from runtime.app_config import load_runtime_config
 from vision.cameras.top_camera import TopCamera
 from vision.pipeline.top_pick_pipeline import TopPickPipeline
 from vision.calibration.yaw_tcp_compensation import YawTcpCompensator
-from vision.calibration.yaw_servo import YawServoCalibration
 from vision.calibration.descent_drift_compensation import DescentDriftCompensator
+from vision.calibration.yaw_servo import YawServoCalibration
 
 
 class UserStopRequested(RuntimeError):
@@ -34,7 +34,7 @@ def normalize_axial_deg(angle_deg: float) -> float:
     return 0.0 if abs(value) < 1e-12 else value
 
 
-def build_compensator(top_cfg: dict, yaw: YawServoCalibration) -> YawTcpCompensator | None:
+def build_compensator(top_cfg: dict) -> YawTcpCompensator | None:
     comp = top_cfg.get("yaw_tcp_compensation", {})
     if not bool(comp.get("enabled", False)):
         return None
@@ -43,8 +43,8 @@ def build_compensator(top_cfg: dict, yaw: YawServoCalibration) -> YawTcpCompensa
         reference_axis_deg=float(comp["reference_axis_deg"]),
         offset_axis0_x_mm=float(offset[0]),
         offset_axis0_y_mm=float(offset[1]),
-        min_axis_deg=yaw.physical_min_deg,
-        max_axis_deg=yaw.physical_max_deg,
+        min_axis_deg=float(comp.get("min_axis_deg", -87.0)),
+        max_axis_deg=float(comp.get("max_axis_deg", 89.0)),
         visual_to_command_matrix=comp.get(
             "visual_to_command_matrix", [[1.0, 0.0], [0.0, 1.0]]
         ),
@@ -93,12 +93,11 @@ def build_pipeline(cfg: dict) -> TopPickPipeline:
     orient = top_vision_cfg.get("grasp_orientation", {})
     x_limits = cfg["mechanics"]["workspace_mm"]["x"]
     y_limits = cfg["mechanics"]["workspace_mm"]["y"]
-    yaw = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
-    comp = build_compensator(top_vision_cfg, yaw)
+    comp = build_compensator(top_vision_cfg)
     preopen = orient.get("dynamic_preopen", {}) or {}
+    yaw_servo = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
 
     return TopPickPipeline(
-        yaw_servo_calibration=yaw,
         model_path=top_model_cfg["path"],
         calibration_path=cfg["calibration"]["pixel_to_robot"],
         camera_config=cfg["camera"]["top"],
@@ -109,6 +108,9 @@ def build_pipeline(cfg: dict) -> TopPickPipeline:
         border_margin=top_vision_cfg["border_margin_px"],
         min_safe_area=top_vision_cfg["min_safe_area_px"],
         min_clearance=top_vision_cfg["min_clearance_px"],
+        outward_radial_config=top_vision_cfg.get("outward_radial_compensation"),
+        edge_yaw_config=top_vision_cfg.get("edge_yaw_limit"),
+        top_intrinsics_path=cfg["calibration"]["top_intrinsics"],
         consensus_window=consensus["window"],
         consensus_required=consensus["required"],
         max_track_center_shift_px=consensus["max_track_center_shift_px"],
@@ -138,6 +140,7 @@ def build_pipeline(cfg: dict) -> TopPickPipeline:
         x_limits_mm=x_limits,
         y_limits_mm=y_limits,
         yaw_tcp_compensator=comp,
+        yaw_servo_calibration=yaw_servo,
     )
 
 
@@ -202,10 +205,20 @@ def execute_pick_first_stage(
     *,
     ack_timeout_s: float,
     ready_timeout_s: float,
+    edge_yaw_limit=None,
+    yaw_calibration: YawServoCalibration | None = None,
 ) -> dict:
     x = float(target["x_mm"])
     y = float(target["y_mm"])
     yaw = normalize_axial_deg(float(target["yaw_deg"]))
+    if edge_yaw_limit is not None:
+        x, clamped = edge_yaw_limit.clamp_workspace_x(x, 0.0)
+        if clamped:
+            print(f"[DEBUG] edge X calibration clamp -> {x:.3f}mm")
+    # 所有动作（包括预开口）之前复核最终线上指令；旧调用不传限制时保持兼容。
+    frame = SortingProtocol.unpack(SortingProtocol.pack(make_pick_target(x, y, yaw)))
+    if edge_yaw_limit is not None and not edge_yaw_limit.allows(frame.x_mm, frame.yaw_deg, yaw_calibration):
+        raise ValueError("最终抓取目标不满足边缘Yaw限制，请重新选择物体或抓取方向")
 
     result = {
         "ack": False,
@@ -219,7 +232,6 @@ def execute_pick_first_stage(
         raise ValueError("No measured preopen command; real pick blocked")
     result["preopen_mm"] = latch_preopen(link, target["preopen_mm"], ack_timeout_s)
     result["preopen_ack"] = True
-    frame = make_pick_target(x, y, yaw)
     raw = link.send_frame(frame)
     print(
         f"[TX] PICK_TARGET X={x:.2f} Y={y:.2f} Yaw={yaw:+.2f} | "
@@ -306,7 +318,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     cfg = load_runtime_config(ROOT, Path(args.config))
-    yaw_calibration = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
 
     TopCamera.configure(
         cfg["camera"]["top"],
@@ -405,15 +416,11 @@ def main() -> int:
                     yaw_value = normalize_axial_deg(float(result.yaw_deg))
                     base_x = float(result.x_mm)
                     base_y = float(result.y_mm)
-                    wire = SortingProtocol.unpack(SortingProtocol.pack(make_pick_target(base_x, base_y, yaw_value)))
-                    yaw_value = wire.yaw_deg
-                    physical_yaw = yaw_calibration.physical_axis_deg(yaw_value)
-                    yaw_calibration.command_deg(yaw_value)
                     drift_info = None
                     pick_x = base_x
                     pick_y = base_y
                     if drift_compensator is not None:
-                        drift_info = drift_compensator.apply(base_x, base_y, physical_yaw)
+                        drift_info = drift_compensator.apply(base_x, base_y, yaw_value)
                         pick_x = float(drift_info.x_mm)
                         pick_y = float(drift_info.y_mm)
 
@@ -423,7 +430,6 @@ def main() -> int:
                         "alignment_x_mm": base_x,
                         "alignment_y_mm": base_y,
                         "yaw_deg": yaw_value,
-                        "physical_yaw_deg": physical_yaw,
                         "preopen_mm": getattr(result, "preopen_mm", None),
                         "descent_precomp_dx_mm": (0.0 if drift_info is None else float(drift_info.command_delta_x_mm)),
                         "descent_precomp_dy_mm": (0.0 if drift_info is None else float(drift_info.command_delta_y_mm)),
@@ -524,12 +530,21 @@ def main() -> int:
 
                 frozen["sent_at"] = datetime.now().isoformat(timespec="seconds")
                 report["target"] = dict(frozen)
-                pick_result = execute_pick_first_stage(
-                    link,
-                    frozen,
-                    ack_timeout_s=args.ack_timeout,
-                    ready_timeout_s=args.ready_timeout,
-                )
+                try:
+                    pick_result = execute_pick_first_stage(
+                        link,
+                        frozen,
+                        ack_timeout_s=args.ack_timeout,
+                        ready_timeout_s=args.ready_timeout,
+                        edge_yaw_limit=pipeline.edge_yaw_limit,
+                        yaw_calibration=pipeline.yaw_servo_calibration,
+                    )
+                except ValueError as exc:
+                    print(f"[BLOCK] {exc}；继续重新识别。")
+                    pipeline.reset()
+                    frozen = None
+                    frozen_frame = None
+                    continue
                 pick_result["finished_at"] = datetime.now().isoformat(timespec="seconds")
                 report["result"] = pick_result
                 report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -20,7 +20,6 @@ from vision.calibration.yaw_servo import YawServoCalibration
 
 
 def build_pipeline(cfg: dict, *, debug_rejections: bool) -> TopPickPipeline:
-    yaw = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
     top_model = cfg["model"]["top"]
     top_cfg = cfg["vision"]["top"]
     consensus = top_cfg["consensus"]
@@ -29,6 +28,7 @@ def build_pipeline(cfg: dict, *, debug_rejections: bool) -> TopPickPipeline:
     gc = top_cfg.get("gripper_collision", {}) or {}
     search = gc.get("grasp_search", {}) or {}
     body = gc.get("body", {}) or {}
+    yaw_servo = YawServoCalibration.from_config(cfg["calibration"]["yaw_servo"])
 
     mechanics = cfg.get("mechanics", {}) or {}
     x_limits = mechanics["workspace_mm"]["x"]
@@ -43,15 +43,14 @@ def build_pipeline(cfg: dict, *, debug_rejections: bool) -> TopPickPipeline:
             reference_axis_deg=float(tcp_cfg["reference_axis_deg"]),
             offset_axis0_x_mm=float(d0[0]),
             offset_axis0_y_mm=float(d0[1]),
-            min_axis_deg=yaw.physical_min_deg,
-            max_axis_deg=yaw.physical_max_deg,
+            min_axis_deg=float(tcp_cfg.get("min_axis_deg", -87.0)),
+            max_axis_deg=float(tcp_cfg.get("max_axis_deg", 89.0)),
             visual_to_command_matrix=tcp_cfg.get(
                 "visual_to_command_matrix", [[1.0, 0.0], [0.0, 1.0]]
             ),
         )
 
     return TopPickPipeline(
-        yaw_servo_calibration=yaw,
         model_path=top_model["path"],
         calibration_path=cfg["calibration"]["pixel_to_robot"],
         camera_config=cfg["camera"]["top"],
@@ -62,6 +61,9 @@ def build_pipeline(cfg: dict, *, debug_rejections: bool) -> TopPickPipeline:
         border_margin=top_cfg["border_margin_px"],
         min_safe_area=top_cfg["min_safe_area_px"],
         min_clearance=top_cfg["min_clearance_px"],
+        outward_radial_config=top_cfg.get("outward_radial_compensation"),
+        edge_yaw_config=top_cfg.get("edge_yaw_limit"),
+        top_intrinsics_path=cfg["calibration"]["top_intrinsics"],
         consensus_window=consensus["window"],
         consensus_required=consensus["required"],
         max_track_center_shift_px=consensus["max_track_center_shift_px"],
@@ -121,6 +123,7 @@ def build_pipeline(cfg: dict, *, debug_rejections: bool) -> TopPickPipeline:
         x_limits_mm=x_limits,
         y_limits_mm=y_limits,
         yaw_tcp_compensator=yaw_comp,
+        yaw_servo_calibration=yaw_servo,
     )
 
 

@@ -1,15 +1,15 @@
-"""采集顶部 YOLO 分割数据；统一从 last_debug 入口运行。
+"""顶部数据集采集入口。
 
-启动前先加载正式 YAML，确保采集和运行使用同一套内参、ROI、曝光和分辨率。
+目录菜单直接扫描实际数据集目录，只显示当前层级的直接子目录：
+train/val/test -> 场景目录 -> 颜色/形状等下一级目录。
 """
 try:
     from ._delegate import run
-    from .common import load_context
 except ImportError:  # 允许直接执行此文件
     from scripts.last_debug._delegate import run
-    from scripts.last_debug.common import load_context
 
 
 if __name__ == "__main__":
-    load_context()
-    run("scripts/dataset/top_seg/capture_top_dataset.py")
+    # 复用已经按目标目录逐层选择的采集实现；它自己读取正式 YAML，
+    # 因此不会在 last_debug 入口维护第二套相机参数。
+    run("scripts/last_use/dataset/capture_top_seg_dataset.py")

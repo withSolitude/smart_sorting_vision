@@ -84,7 +84,7 @@ class PixelToRobotTransform:
             data = json.load(f)
 
         if swap_xy is None:
-            # 运行配置优先；旧标定文件没有该字段时由 YAML 明确决定。
+            # YAML 运行配置优先；没有该字段时兼容旧标定文件中的可选标志。
             swap_xy = bool(
                 camera_config.get("swap_robot_xy", data.get("swap_xy", False))
                 if camera_config is not None else data.get("swap_xy", False)
@@ -197,7 +197,7 @@ class PixelToRobotTransform:
         if apply_tcp_offset:
             pts -= [self.tcp_offset_x_mm, self.tcp_offset_y_mm]
         if self.swap_xy:
-            # H 保存的是旧轴顺序；反变换前先换回 H 的坐标顺序。
+            # H保存的是反向轴顺序；逆变换前先把真实(X,Y)换回H的(Y,X)。
             pts = pts[:, :, ::-1]
         full_pixels = cv2.perspectiveTransform(pts, np.linalg.inv(self.H)).reshape(-1, 2)
         return full_pixels - self._input_origin

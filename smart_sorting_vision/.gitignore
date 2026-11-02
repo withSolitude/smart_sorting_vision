@@ -1,5 +1,5 @@
-# Python虚拟环境及重建备份（如 .venv_backup_before_rebuild）
-.venv*/
+# Python虚拟环境
+.venv/
 
 # Python缓存
 __pycache__/
@@ -27,3 +27,7 @@ preopen_yaml_backups/
 
 # 日志
 *.log
+
+.venv*/
+
+.venv*/
