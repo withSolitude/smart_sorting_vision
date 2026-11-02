@@ -1675,17 +1675,40 @@ void Class_Holding_Jaw::Set_Grap_Move_Status(
 }
 
 
-// 共用非阻塞路线：边缘内先保持Yaw退到x=-40内侧，再在边界外联动XY/Yaw。
-// 中转X向内多留“XY到位容差+0.01mm”，防止命令-40但实测-39.8时在危险带转Yaw。
-// 目标靠近边界时，先在(内侧中转X,目标Y)等XY停稳和Yaw结束，最后只移X。
-// 40~80°是上位机对“抓取目标”的筛选范围；固定托盘90°、待机110°仍按原值执行，
-// 但也必须先在边界外完成转向。这里不把这些固定姿态强行夹成抓取角。
+// 共用非阻塞路线：边缘内先保持Yaw退到边界内侧，再在边界外联动XY/Yaw。
+// 守哪条边由 Edge_Motion_Config::Boundary_Axis_Y 决定：
+//   false = 电机在 x=0 一侧（旧设计，退避沿 X 走）
+//   true  = 电机在图像下边沿，即 y=0 一侧（当前实机，退避沿 Y 走）
+// 被守的轴统一叫"边界轴"(b)，另一轴叫"行进轴"(o)，两种配置共用同一套步骤：
+//   0) 当前在危险带 -> 只改边界轴退到内侧，行进轴保持不变
+//   1) 等退避到位
+//   2) 保持边界轴，把行进轴移到目标
+//   3) 确认仍在安全侧后才发 Yaw
+//   4) 等 XY 到位且舵机动作完成
+//   5) 目标本身在危险带时，最后只改边界轴进入
+// 40~80°是上位机对"抓取目标"的筛选范围；固定托盘、待机姿态仍按原值执行，
+// 但也必须先在边界外完成转向。
 bool Class_Holding_Jaw::Move_XY_Yaw_Via_Edge(float X_mm, float Y_mm, float Yaw_Rad)
 {
-    const float boundary = Edge_Motion_Config::Turn_Boundary_X_mm;
+    struct Point2 { float x; float y; };
+    constexpr bool axis_y = Edge_Motion_Config::Boundary_Axis_Y;
+    const auto boundary_of = [axis_y](float x, float y) { return axis_y ? y : x; };
+    const auto other_of = [axis_y](float x, float y) { return axis_y ? x : y; };
+    const auto pack = [axis_y](float b, float o) {
+        return axis_y ? Point2{o, b} : Point2{b, o};
+    };
+    const auto clamp_other = [axis_y](float v) {
+        return axis_y
+            ? std::fmin(XY_Config::X_Max_mm, std::fmax(XY_Config::X_Min_mm, v))
+            : std::fmin(XY_Config::Y_Max_mm, std::fmax(XY_Config::Y_Min_mm, v));
+    };
+
+    const float boundary = Edge_Motion_Config::Turn_Boundary_mm;
     const float inside_boundary = boundary - static_cast<float>(XY_Config::Position_Tolerance_mm) -
         Edge_Motion_Config::Turn_Extra_Clearance_mm;
-    const float turn_x = X_mm > inside_boundary ? inside_boundary : X_mm;
+    const float target_b = boundary_of(X_mm, Y_mm);
+    const float target_o = other_of(X_mm, Y_mm);
+    const float turn_b = target_b > inside_boundary ? inside_boundary : target_b;
     HAL_StatusTypeDef xy_status = HAL_BUSY;
 
     if (Edge_Move_Step == 0U)
@@ -1698,14 +1721,15 @@ bool Class_Holding_Jaw::Move_XY_Yaw_Via_Edge(float X_mm, float Y_mm, float Yaw_R
             Edge_Move_Step = 7U;
             return true;
         }
-        if (XY_Motion.Get_X_mm() > boundary)
+        if (boundary_of(XY_Motion.Get_X_mm(), XY_Motion.Get_Y_mm()) > boundary)
         {
-            // HAL_BUSY时保持原步骤重试，真正提交时记录当前Y，而不是旧抓取目标Y。
-            // 工作区边界的实测值可能多出0.01mm；夹回合法范围，避免把反馈误差当非法目标。
-            Edge_Retreat_Y_mm = std::fmin(XY_Config::Y_Max_mm,
-                std::fmax(XY_Config::Y_Min_mm, XY_Motion.Get_Y_mm()));
+            // HAL_BUSY时保持原步骤重试；真正提交时记录"行进轴"的当前实测值。
+            // 反馈可能带 0.01mm 级误差，夹回合法范围，避免把噪声当非法目标。
+            Edge_Retreat_Y_mm = clamp_other(
+                other_of(XY_Motion.Get_X_mm(), XY_Motion.Get_Y_mm()));
+            const Point2 p = pack(inside_boundary, Edge_Retreat_Y_mm);
             xy_status = XY_Motion.Move_To_mm(
-                inside_boundary, Edge_Retreat_Y_mm, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
+                p.x, p.y, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
             if (xy_status == HAL_OK) Edge_Move_Step = 1U;
             else if (xy_status != HAL_BUSY) Abort_XY_Fault();
             return false;
@@ -1714,21 +1738,23 @@ bool Class_Holding_Jaw::Move_XY_Yaw_Via_Edge(float X_mm, float Y_mm, float Yaw_R
     }
     if (Edge_Move_Step == 1U)
     {
-        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(inside_boundary, Edge_Retreat_Y_mm) ||
-            XY_Motion.Get_X_mm() > boundary)
+        const Point2 p = pack(inside_boundary, Edge_Retreat_Y_mm);
+        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(p.x, p.y) ||
+            boundary_of(XY_Motion.Get_X_mm(), XY_Motion.Get_Y_mm()) > boundary)
             return false;
         Edge_Move_Step = 2U;
     }
     if (Edge_Move_Step == 2U)
     {
-        // 旧XY命令可能在HAL_BUSY重试期间结束于边缘内，提交联动前再次核对实测X。
-        if (XY_Motion.Get_X_mm() > boundary)
+        // 旧XY命令可能在HAL_BUSY重试期间结束于危险带，提交联动前再次核对实测值。
+        if (boundary_of(XY_Motion.Get_X_mm(), XY_Motion.Get_Y_mm()) > boundary)
         {
             Edge_Move_Step = 0U;
             return false;
         }
+        const Point2 p = pack(turn_b, target_o);
         xy_status = XY_Motion.Move_To_mm(
-            turn_x, Y_mm, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
+            p.x, p.y, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
         if (xy_status != HAL_OK)
         {
             if (xy_status != HAL_BUSY) Abort_XY_Fault();
@@ -1739,7 +1765,7 @@ bool Class_Holding_Jaw::Move_XY_Yaw_Via_Edge(float X_mm, float Y_mm, float Yaw_R
     if (Edge_Move_Step == 3U)
     {
         // UART也可能忙着重试：真正发Yaw之前仍以当前反馈确认已离开危险带。
-        if (XY_Motion.Get_X_mm() > boundary)
+        if (boundary_of(XY_Motion.Get_X_mm(), XY_Motion.Get_Y_mm()) > boundary)
         {
             Edge_Move_Step = 0U;
             return false;
@@ -1754,14 +1780,15 @@ bool Class_Holding_Jaw::Move_XY_Yaw_Via_Edge(float X_mm, float Y_mm, float Yaw_R
     }
     if (Edge_Move_Step == 4U)
     {
-        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(turn_x, Y_mm) ||
+        const Point2 p = pack(turn_b, target_o);
+        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(p.x, p.y) ||
             (uint32_t)(HAL_GetTick() - Edge_Yaw_Command_Tick) < Servo_Move_Time_ms)
             return false;
-        Edge_Move_Step = X_mm > inside_boundary ? 5U : 7U;
+        Edge_Move_Step = target_b > inside_boundary ? 5U : 7U;
     }
     if (Edge_Move_Step == 5U)
     {
-        // 最后一段只改变X，进入危险带期间不再发送任何Yaw转动命令。
+        // 最后一段只改变边界轴，进入危险带期间不再发送任何Yaw转动命令。
         xy_status = XY_Motion.Move_To_mm(
             X_mm, Y_mm, X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
         if (xy_status != HAL_OK)
@@ -1946,9 +1973,14 @@ bool Class_Holding_Jaw::Motion_Configuration_Valid() const
         std::isfinite(Y_Move_Speed_mm_s) && Y_Move_Speed_mm_s > 0.0f &&
         in_workspace(Tray_X_mm, Tray_Y_mm) && in_workspace(Recognition_X_mm, Recognition_Y_mm) &&
         in_workspace(Disable_X_mm, Disable_Y_mm) &&
-        Edge_Motion_Config::Turn_Boundary_X_mm - XY_Config::Position_Tolerance_mm -
-            Edge_Motion_Config::Turn_Extra_Clearance_mm >= XY_Config::X_Min_mm &&
-        Edge_Motion_Config::Turn_Boundary_X_mm <= XY_Config::X_Max_mm &&
+        // 中转边界必须真的落在它所在轴的合法行程内（轴的选取见 edge_motion_config.h）。
+        (Edge_Motion_Config::Boundary_Axis_Y
+            ? (Edge_Motion_Config::Turn_Boundary_mm - XY_Config::Position_Tolerance_mm -
+                   Edge_Motion_Config::Turn_Extra_Clearance_mm >= XY_Config::Y_Min_mm &&
+               Edge_Motion_Config::Turn_Boundary_mm <= XY_Config::Y_Max_mm)
+            : (Edge_Motion_Config::Turn_Boundary_mm - XY_Config::Position_Tolerance_mm -
+                   Edge_Motion_Config::Turn_Extra_Clearance_mm >= XY_Config::X_Min_mm &&
+               Edge_Motion_Config::Turn_Boundary_mm <= XY_Config::X_Max_mm)) &&
         angle_valid(Tray_Yaw_Angle) &&
         angle_valid(Recognition_Yaw_Angle) && angle_valid(Recognition_Lift_Angle) &&
         angle_valid(Recognition_Claw_Angle) && angle_valid(Yaw_Servo_Motor_Angle_Disable) &&

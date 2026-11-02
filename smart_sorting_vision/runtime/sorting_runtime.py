@@ -1134,12 +1134,29 @@ class SortingRuntime:
         # 下降预补偿可能把已在边界内的 X 又推回边缘危险带，这里再夹一次。
         edge_limit = getattr(self.top_pipeline, "edge_yaw_limit", None)
         if edge_limit is not None:
-            x_mm, edge_clamped = edge_limit.clamp_workspace_x(
-                float(x_mm),
-                float(self.pick_x_limits_mm[1]) if self.pick_x_limits_mm is not None else 0.0,
-            )
+            edge_b = edge_limit.guarded(float(x_mm), float(y_mm))
+            if edge_limit.boundary_is_y:
+                boundary_max = (
+                    float(self.pick_y_limits_mm[1])
+                    if self.pick_y_limits_mm is not None
+                    else 0.0
+                )
+            else:
+                boundary_max = (
+                    float(self.pick_x_limits_mm[1])
+                    if self.pick_x_limits_mm is not None
+                    else 0.0
+                )
+            edge_b, edge_clamped = edge_limit.clamp_workspace_x(edge_b, boundary_max)
+            if edge_limit.boundary_is_y:
+                y_mm = edge_b
+            else:
+                x_mm = edge_b
             if edge_clamped:
-                print(f"[Runtime] edge X calibration clamp -> {x_mm:.3f}mm")
+                print(
+                    f"[Runtime] edge {edge_limit.boundary_axis.upper()} "
+                    f"calibration clamp -> {edge_b:.3f}mm"
+                )
         if not self._pick_xy_inside_limits(x_mm, y_mm):
             self._fail(
                 "PICK_TARGET outside workspace: "
@@ -1175,14 +1192,18 @@ class SortingRuntime:
         # 协议把轴向角量化到 1°，可能把舵机角挤出 40~80°，也可能把 X 推过阈值。
         # 不可用姿态只跳过本次候选继续找物体，不进入永久 ERROR。
         if edge_limit is not None and self.yaw_servo_calibration is not None:
-            if not edge_limit.allows(
+            final_b = edge_limit.guarded(
                 self.current_pick_command.x_mm,
+                self.current_pick_command.y_mm,
+            )
+            if not edge_limit.allows(
+                final_b,
                 self.current_pick_command.yaw_deg,
                 self.yaw_servo_calibration,
             ):
                 print(
                     "[Runtime] 跳过边缘Yaw受限候选："
-                    f"X={self.current_pick_command.x_mm:.1f}mm, "
+                    f"{edge_limit.boundary_axis.upper()}={final_b:.1f}mm, "
                     f"servo={servo_yaw_deg:.2f}deg"
                 )
                 self.current_pick = None

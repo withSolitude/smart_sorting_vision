@@ -1195,22 +1195,24 @@ class TopPickPipeline:
 
                 # 边缘区必须用允许的舵机角闭合。协议角在 _wire_yaw 里已量化，
                 # 这里用同一量化角反算真实舵机角再判断，绝不把协议角当舵机角。
-                workspace_max_x = (
-                    float(self.x_limits_mm[1]) if self.x_limits_mm is not None else 0.0
+                # 边界轴由 edge_yaw_limit.boundary_axis 决定（与下位机一致）。
+                edge_b = self.edge_yaw_limit.guarded(float(x_mm), float(y_mm))
+                if self.edge_yaw_limit.boundary_is_y:
+                    boundary_max = (
+                        float(self.y_limits_mm[1]) if self.y_limits_mm is not None else 0.0
+                    )
+                else:
+                    boundary_max = (
+                        float(self.x_limits_mm[1]) if self.x_limits_mm is not None else 0.0
+                    )
+                edge_b, workspace_clamped = self.edge_yaw_limit.clamp_workspace_x(
+                    edge_b, boundary_max,
                 )
-                x_mm, workspace_clamped = self.edge_yaw_limit.clamp_workspace_x(
-                    float(x_mm), workspace_max_x,
-                )
-                if (
-                    self.edge_yaw_limit.enabled
-                    and self.y_limits_mm is not None
-                    and y_mm > 0.0
-                ):
-                    y_limit = float(self.y_limits_mm[1])
-                    if y_mm <= y_limit + self.edge_yaw_limit.workspace_clamp_mm:
-                        y_mm = y_limit
-                        workspace_clamped = True
-                edge_active = self.edge_yaw_limit.active(x_mm)
+                if self.edge_yaw_limit.boundary_is_y:
+                    y_mm = edge_b
+                else:
+                    x_mm = edge_b
+                edge_active = self.edge_yaw_limit.active(edge_b)
                 if (
                     (yaw_offset_deg, longitudinal_offset_mm, closing_offset_mm)
                     in edge_only_trials
@@ -1218,7 +1220,7 @@ class TopPickPipeline:
                 ):
                     continue
                 if not self.edge_yaw_limit.allows(
-                    x_mm, yaw_deg, self.yaw_servo_calibration
+                    edge_b, yaw_deg, self.yaw_servo_calibration
                 ):
                     reject(
                         "edge_yaw_outside_servo_range",

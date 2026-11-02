@@ -1,4 +1,10 @@
-"""靠近 X=0 一侧时，按真实舵机命令角筛选抓取姿态。"""
+"""靠近电机一侧时，按真实舵机命令角筛选抓取姿态。
+
+危险边界在哪条轴上由 ``boundary_axis`` 决定，必须与下位机
+``Edge_Motion_Config::Boundary_Axis_Y`` 保持一致：
+    "y" = 电机在 y=0 一侧（图像下边沿，现场实测）
+    "x" = 电机在 x=0 一侧（旧设计）
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
@@ -18,12 +24,19 @@ class EdgeYawLimit:
     sample_step_deg: float = 5.0
     workspace_clamp_mm: float = 5.0
     min_side_gap_mm: float = -1.0
+    # 危险边界所在的轴：电机在 y=0 一侧（图像下边沿）时为 "y"。
+    # 放在最后，保持既有按位置构造（EdgeYawLimit(True, -40, 80, ...)）不失效。
+    boundary_axis: str = "x"
 
     def __post_init__(self) -> None:
         if not isinstance(self.enabled, bool):
             raise ValueError("edge_yaw_limit.enabled 必须为 true/false")
+        if str(self.boundary_axis).lower() not in ("x", "y"):
+            raise ValueError("edge_yaw_limit.boundary_axis 必须为 'x' 或 'y'")
         for field in fields(self):
-            if field.name != "enabled" and not math.isfinite(float(getattr(self, field.name))):
+            if field.name in ("enabled", "boundary_axis"):
+                continue
+            if not math.isfinite(float(getattr(self, field.name))):
                 raise ValueError(f"edge_yaw_limit.{field.name} 必须为有限数值")
         if not self.servo_min_deg <= self.preferred_servo_deg <= self.servo_max_deg:
             raise ValueError("边缘舵机角必须满足 servo_min_deg <= preferred_servo_deg <= servo_max_deg")
@@ -46,18 +59,41 @@ class EdgeYawLimit:
         enabled = config.get("enabled", False)
         if not isinstance(enabled, bool):
             raise ValueError("edge_yaw_limit.enabled 必须为 true/false")
-        required_names = names - {"workspace_clamp_mm", "min_side_gap_mm"}
+        required_names = names - {
+            "workspace_clamp_mm",
+            "min_side_gap_mm",
+            "boundary_axis",
+        }
         if enabled and required_names - set(config):
             raise ValueError(f"启用边缘Yaw限制需要填写：{', '.join(sorted(required_names - set(config)))}")
-        values = {key: (value if key == "enabled" else float(value)) for key, value in config.items()}
+        values = {
+            key: (value if key in ("enabled", "boundary_axis") else float(value))
+            for key, value in config.items()
+        }
         return cls(**values)
 
-    def active(self, x_mm: float) -> bool:
-        x = float(x_mm)
+    @property
+    def boundary_is_y(self) -> bool:
+        return str(self.boundary_axis).lower() == "y"
+
+    def guarded(self, x_mm: float, y_mm: float) -> float:
+        """返回"边界轴"上的坐标值。
+
+        ``active`` / ``allows`` / ``clamp_workspace_x`` 都作用在这个值上，
+        调用方不需要各自判断轴，避免上位机与下位机把边界记在不同轴上。
+        """
+        value = float(y_mm) if self.boundary_is_y else float(x_mm)
+        if not math.isfinite(value):
+            raise ValueError("用于边缘Yaw判断的边界轴坐标必须为有限数值")
+        return value
+
+    def active(self, boundary_mm: float) -> bool:
+        """boundary_mm 是边界轴上的坐标（见 guarded）。"""
+        x = float(boundary_mm)
         if not math.isfinite(x):
-            raise ValueError("用于边缘Yaw判断的最终X必须为有限数值")
-        # 机械X范围是负向的：边缘区明确表示 threshold < X <= 0，
-        # 例如 threshold=-40 时就是 -40<X<=0；X<=-40 不限角。
+            raise ValueError("用于边缘Yaw判断的边界轴坐标必须为有限数值")
+        # 机械坐标是负向的：边缘区明确表示 threshold < 边界轴坐标 <= 0，
+        # 例如 threshold=-40 时就是 -40 < 坐标 <= 0；<= -40 不限角。
         return self.enabled and self.x_threshold_mm < x <= 0.0
 
     def clamp_workspace_x(self, x_mm: float, workspace_max_mm: float = 0.0) -> tuple[float, bool]:
