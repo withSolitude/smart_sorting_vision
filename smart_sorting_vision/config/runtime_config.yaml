@@ -62,7 +62,7 @@ camera:
 # 使用工程根目录相对路径，禁止再写 /home/nvidia/...。
 model:
   top:
-    path: outputs/training/top_seg/top_seg_v1_aug/weights/best.engine  # 资源或模型路径；相对工程根目录解析。
+    path: outputs/training/top_seg/v2/weights/best.engine  # 资源或模型路径；相对工程根目录解析。
     conf: 0.35  # 模型置信度阈值。
     imgsz: 832  # 模型输入尺寸（像素）。
     device: 0  # 相机设备路径或推理设备编号。
@@ -133,8 +133,8 @@ vision:
     # p_new = p + gain * (p - center)，仅向外补偿最终抓点；不改变原抓长边/方向算法。
     outward_radial_compensation:
       enabled: true  # 是否启用向外径向补偿；false恢复原抓取点。
-      gain: 0.02  # 非负系数：离中心400像素时向外补8像素；0不补偿，禁止负值。
-      max_shift_px: 20.0  # 单次向外位移上限（像素）；0表示位移为0。
+      gain: 0.1  # 位移 = 离主点距离 * gain；0 不补偿，禁止负值。
+      max_shift_px: 100.0  # 单次向外位移上限（像素）；gain=0.1 时约 1000px 触顶。
       center_full_px: null  # null读取去畸变内参new_camera_matrix主点；也可填实测垂足[x,y]。
       # 手填坐标属于完整去畸变图，程序自动减当前safe_roi原点；不能填ROI中心。
 
@@ -181,7 +181,7 @@ vision:
         # 物体宽度 + 总余量；当前使用8mm（两侧合计）。
         # 每侧余量 = margin/2，直接等于允许的"抓取中心偏移"容差：
         # margin 8 只容 ±3.85mm，边缘目标会被 target_not_between_fingers 拒绝。
-        margin_mm: 14.0  # 物体宽度之外增加的安全余量（mm）；每侧 7mm。
+        margin_mm: 10.0  # 物体宽度之外增加的安全余量（mm）；每侧 5mm，容差 ±4.85mm。
         # 安全协议范围；STM32 与 PC 使用同一条线性公式。
         min_command_mm: 13  # 预开口命令最小值（mm）。
         max_command_mm: 77  # 预开口命令最大值（mm）。

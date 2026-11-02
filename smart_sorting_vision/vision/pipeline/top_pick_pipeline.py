@@ -48,10 +48,6 @@ class TopPickCandidate:
 
     center_pixel: tuple[float, float]
     grasp_pixel: tuple[int, int]
-    # 向外径向补偿前的原始抓取点，以及本次被推开的像素距离。
-    # 调试时对照"橙点/绿点"和机械实际落点用；未补偿时等于 grasp_pixel / 0。
-    radial_base_pixel: tuple[float, float] | None = None
-    radial_shift_px: float = 0.0
 
     x_mm: float
     y_mm: float
@@ -102,6 +98,13 @@ class TopPickCandidate:
     search_safe_count: int
 
     score: float
+
+    # 向外径向补偿前的原始抓取点，以及本次被推开的像素距离。
+    # 必须放在所有无默认值字段之后，否则 dataclass 会报
+    # "non-default argument follows default argument"。
+    # 未启用补偿时 radial_shift_px 为 0、radial_base_pixel 等于 grasp_pixel。
+    radial_base_pixel: tuple[float, float] | None = None
+    radial_shift_px: float = 0.0
 
 
 @dataclass
