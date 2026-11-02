@@ -133,7 +133,7 @@ vision:
     # p_new = p + gain * (p - center)，仅向外补偿最终抓点；不改变原抓长边/方向算法。
     outward_radial_compensation:
       enabled: true  # 是否启用向外径向补偿；false恢复原抓取点。
-      gain: 0.1  # 位移 = 离主点距离 * gain；0 不补偿，禁止负值。
+      gain: 0.05  # 位移 = 离主点距离 * gain；0 不补偿，禁止负值。
       max_shift_px: 100.0  # 单次向外位移上限（像素）；gain=0.1 时约 1000px 触顶。
       center_full_px: null  # null读取去畸变内参new_camera_matrix主点；也可填实测垂足[x,y]。
       # 手填坐标属于完整去畸变图，程序自动减当前safe_roi原点；不能填ROI中心。
