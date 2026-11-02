@@ -182,6 +182,9 @@ def build_pipeline(cfg: dict) -> tuple[TopPickPipeline, YawServoCalibration]:
     pipeline = TopPickPipeline(
         model_path=top_model_cfg["path"],
         calibration_path=cfg["calibration"]["pixel_to_robot"],
+        outward_radial_config=cfg["vision"]["top"].get("outward_radial_compensation"),
+        edge_yaw_config=cfg["vision"]["top"].get("edge_yaw_limit"),
+        top_intrinsics_path=cfg["calibration"]["top_intrinsics"],
         camera_config=cfg["camera"]["top"],
         conf=top_model_cfg["conf"],
         imgsz=top_model_cfg["imgsz"],
