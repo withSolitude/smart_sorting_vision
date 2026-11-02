@@ -168,7 +168,9 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"calibration.yaw_servo 无效: {exc}") from exc
 
-    swap_xy = cfg["calibration"].get("pixel_to_robot_swap_xy", False)
+    # 当前机构的机械 X/Y 与历史四点标定文件的输出顺序相反。
+    # 旧 YAML 没有这个字段时也必须启用交换，避免继续按旧顺序下发。
+    swap_xy = cfg["calibration"].get("pixel_to_robot_swap_xy", True)
     if not isinstance(swap_xy, bool):
         raise ConfigError("calibration.pixel_to_robot_swap_xy 必须为 true/false")
     # 所有使用 camera.top 构造 PixelToRobotTransform 的入口共用这一标志，
