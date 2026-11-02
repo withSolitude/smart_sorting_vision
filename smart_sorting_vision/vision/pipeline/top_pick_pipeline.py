@@ -48,6 +48,10 @@ class TopPickCandidate:
 
     center_pixel: tuple[float, float]
     grasp_pixel: tuple[int, int]
+    # 向外径向补偿前的原始抓取点，以及本次被推开的像素距离。
+    # 调试时对照"橙点/绿点"和机械实际落点用；未补偿时等于 grasp_pixel / 0。
+    radial_base_pixel: tuple[float, float] | None = None
+    radial_shift_px: float = 0.0
 
     x_mm: float
     y_mm: float
@@ -1293,6 +1297,11 @@ class TopPickPipeline:
                     polygon=target_polygon,
                     center_pixel=center_pixel,
                     grasp_pixel=(int(round(candidate_px[0])), int(round(candidate_px[1]))),
+                    radial_base_pixel=(
+                        float(uncompensated_px[0]),
+                        float(uncompensated_px[1]),
+                    ),
+                    radial_shift_px=float(radial_shift_px),
                     x_mm=float(x_mm),
                     y_mm=float(y_mm),
                     yaw_deg=float(yaw_deg),
