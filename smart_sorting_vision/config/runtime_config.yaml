@@ -458,7 +458,10 @@ runtime:
   max_items: 0  # 固定件数结束上限；0 表示不启用。
 
   # 正式比赛不允许把 unknown 直接分配到储物盒。
-  reject_unknown: true  # 是否拒绝颜色或形状 unknown 的结果。
+  reject_unknown: true
+  # 侧面识别超时时，物体已夹在爪里：优先丢进一个空储物盒（unknown 类），
+  # 只有连空盒都没有时才回退到 RETRY_PICK。
+  side_timeout_fallback_sort: true  # 是否拒绝颜色或形状 unknown 的结果。
 
   warmup:
     enabled: true  # 是否在启动阶段预热推理模型。

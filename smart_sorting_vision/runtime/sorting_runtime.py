@@ -95,6 +95,7 @@ class SortingRuntime:
         empty_finish_hold_s: float = 1.5,
         max_items: int = 0,
         reject_unknown: bool = True,
+        side_timeout_fallback_sort: bool = True,
         on_finished=None,
         on_session_start=None,
         loop_sleep_idle_s: float = 0.010,
@@ -118,6 +119,9 @@ class SortingRuntime:
         self.empty_finish_hold_s = float(empty_finish_hold_s)
         self.max_items = max(0, int(max_items))
         self.reject_unknown = bool(reject_unknown)
+        # 侧面识别超时时，物体还夹在爪里：优先丢进一个空盒，
+        # 绝不带着物体直接回顶部重抓。
+        self.side_timeout_fallback_sort = bool(side_timeout_fallback_sort)
         self.on_finished = on_finished
         self.on_session_start = on_session_start
 
@@ -656,6 +660,10 @@ class SortingRuntime:
             self.storage_manager.cancel(self.current_reservation_id)
             self.current_reservation_id = None
 
+        # 物体此时还夹在爪里。先尝试丢进一个空盒，避免带着物体回顶部重抓。
+        if self._try_fallback_sort(reason=reason):
+            return
+
         self.current_object = None
         self.current_box = None
         self.current_sort_command = None
@@ -677,6 +685,53 @@ class SortingRuntime:
             return
 
         self._enter_state(RuntimeState.WAIT_RETRY_PICK_READY)
+
+    def _try_fallback_sort(self, *, reason: str) -> bool:
+        """侧面识别失败但物体已经夹住：丢进一个空储物盒，而不是放弃。
+
+        返回 True 表示已经切到 WAIT_SORT_ACK，调用方不要再走 RETRY_PICK。
+        没有空盒或发送失败时返回 False，调用方回退到原来的 RETRY_PICK。
+        """
+        if not self.side_timeout_fallback_sort:
+            return False
+
+        # 识别失败时颜色/形状都未知，用一个统一的占位 ObjectInfo，
+        # 这样后续所有"认不出来"的物体都会归到同一个盒子。
+        obj = ObjectInfo(color="unknown", shape="unknown", qr_present=False)
+        reservation = self.storage_manager.reserve(obj)
+        if not reservation.success or reservation.reservation_id is None:
+            print(
+                f"[RECOVERY] fallback sort unavailable ({reservation.reason}); "
+                "fall back to RETRY_PICK"
+            )
+            return False
+
+        self.current_object = obj
+        self.current_box = reservation.box_id
+        self.current_reservation_id = reservation.reservation_id
+
+        tx = SortingFrame(
+            mode=Mode.SORT_RESULT,
+            x_mm=0.0,
+            y_mm=0.0,
+            box_id=self.current_box,
+        )
+        self.current_sort_command = tx
+
+        if not self._send_command(tx, label="SORT_RESULT(fallback)", retry=False):
+            self.storage_manager.cancel(self.current_reservation_id)
+            self.current_reservation_id = None
+            self.current_box = None
+            self.current_object = None
+            self.current_sort_command = None
+            return False
+
+        print(
+            f"[RECOVERY] side unknown ({reason}) -> fallback SORT "
+            f"box={self.current_box} reservation={self.current_reservation_id}"
+        )
+        self._enter_state(RuntimeState.WAIT_SORT_ACK)
+        return True
 
     def _finish_competition(self, reason: str) -> None:
         print(
@@ -1131,32 +1186,6 @@ class SortingRuntime:
         # R06 defense-in-depth：Pipeline 已过滤一次，真正发送机械动作前
         # Runtime 再按正式机械工作区复核。注意这里检查的是加入下降预补偿后的
         # 最终PICK命令，避免为了补偿把机构推到工作区之外。
-        # 下降预补偿可能把已在边界内的 X 又推回边缘危险带，这里再夹一次。
-        edge_limit = getattr(self.top_pipeline, "edge_yaw_limit", None)
-        if edge_limit is not None:
-            edge_b = edge_limit.guarded(float(x_mm), float(y_mm))
-            if edge_limit.boundary_is_y:
-                boundary_max = (
-                    float(self.pick_y_limits_mm[1])
-                    if self.pick_y_limits_mm is not None
-                    else 0.0
-                )
-            else:
-                boundary_max = (
-                    float(self.pick_x_limits_mm[1])
-                    if self.pick_x_limits_mm is not None
-                    else 0.0
-                )
-            edge_b, edge_clamped = edge_limit.clamp_workspace_x(edge_b, boundary_max)
-            if edge_limit.boundary_is_y:
-                y_mm = edge_b
-            else:
-                x_mm = edge_b
-            if edge_clamped:
-                print(
-                    f"[Runtime] edge {edge_limit.boundary_axis.upper()} "
-                    f"calibration clamp -> {edge_b:.3f}mm"
-                )
         if not self._pick_xy_inside_limits(x_mm, y_mm):
             self._fail(
                 "PICK_TARGET outside workspace: "
@@ -1187,30 +1216,6 @@ class SortingRuntime:
         except Exception as exc:
             self._fail(f"PICK_TARGET pack failed: {exc}")
             return
-
-        # 下降预补偿与协议量化之后才是 MCU 真正收到的 X/Yaw，再核对一次边缘限角：
-        # 协议把轴向角量化到 1°，可能把舵机角挤出 40~80°，也可能把 X 推过阈值。
-        # 不可用姿态只跳过本次候选继续找物体，不进入永久 ERROR。
-        if edge_limit is not None and self.yaw_servo_calibration is not None:
-            final_b = edge_limit.guarded(
-                self.current_pick_command.x_mm,
-                self.current_pick_command.y_mm,
-            )
-            if not edge_limit.allows(
-                final_b,
-                self.current_pick_command.yaw_deg,
-                self.yaw_servo_calibration,
-            ):
-                print(
-                    "[Runtime] 跳过边缘Yaw受限候选："
-                    f"{edge_limit.boundary_axis.upper()}={final_b:.1f}mm, "
-                    f"servo={servo_yaw_deg:.2f}deg"
-                )
-                self.current_pick = None
-                self.current_pick_command = None
-                self.current_preopen_command = None
-                self._safe_reset(self.top_pipeline)
-                return
 
         print(
             "[Runtime] single-yaw selected "
