@@ -276,10 +276,13 @@ class SideSortPipeline:
             consensus_window
         )
 
+        # 只有 classifier 模式才有背景差分；seg 模式完全不需要背景图。
         self.background = (
             self.extractor.load_background(
                 self.background_path
             )
+            if self.extractor is not None
+            else None
         )
 
     def reset(
@@ -297,6 +300,8 @@ class SideSortPipeline:
             )
 
         if (
+            self.background is not None
+            and
             frame.shape
             !=
             self.background.shape
