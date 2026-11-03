@@ -6,6 +6,8 @@ from typing import Any
 
 import yaml
 from vision.calibration.yaw_servo import YawServoCalibration
+from vision.grasp.edge_yaw_limit import EdgeYawLimit
+from vision.grasp.outward_radial_compensation import OutwardRadialCompensator
 
 
 class ConfigError(ValueError):
@@ -141,7 +143,7 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
             raise ConfigError(
                 "presence_mode=seg 时必须配置 model.side_seg.path（侧面 seg 模型路径）"
             )
-        # seg 模式不再需要固定背景；这两块可以随后删除。
+        # seg 模式不需要固定背景，这两块可以随后删除。
     else:
         background_capture = cfg["calibration"].get("side_background_capture")
         if not isinstance(background_capture, dict):
@@ -190,12 +192,31 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"calibration.yaw_servo 无效: {exc}") from exc
 
-    # 当前四点标定文件保存的轴顺序为旧机构的 [Y, X]；
-    # 统一在像素到机械坐标入口交换为下位机实际使用的 [X, Y]。
+    # 当前机构的机械 X/Y 与历史四点标定文件的输出顺序相反：
+    # pixel_to_robot.json 里保存的是 [Y, X]，而 PICK_TARGET 需要 [X, Y]。
+    # 这里把标志注入 camera.top，使主程序、调试脚本、标定验证脚本
+    # 共用同一份轴顺序，避免各自维护。
     swap_xy = cfg["calibration"].get("pixel_to_robot_swap_xy", False)
     if not isinstance(swap_xy, bool):
         raise ConfigError("calibration.pixel_to_robot_swap_xy 必须为 true/false")
     cfg["camera"]["top"]["swap_robot_xy"] = swap_xy
+
+    # 抓取点向外径向补偿：边缘目标的分割 mask 会带上侧面，质心被拉向画面中心，
+    # 这里只做参数校验，真正的补偿在 TopPickPipeline 里按候选点逐次应用。
+    try:
+        OutwardRadialCompensator.validate_config(
+            cfg["vision"]["top"].get("outward_radial_compensation")
+        )
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(
+            f"vision.top.outward_radial_compensation 无效: {exc}"
+        ) from exc
+
+    # 边缘区 Yaw 限角：参数非法必须在启动时暴露，不能等到抓取第一件才报错。
+    try:
+        EdgeYawLimit.from_config(cfg["vision"]["top"].get("edge_yaw_limit"))
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(f"vision.top.edge_yaw_limit 无效: {exc}") from exc
 
     top_tcp_comp = cfg["vision"]["top"].get("yaw_tcp_compensation", {})
     if bool(top_tcp_comp.get("enabled", False)):

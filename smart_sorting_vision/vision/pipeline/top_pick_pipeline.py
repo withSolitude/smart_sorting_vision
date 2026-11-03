@@ -234,6 +234,7 @@ class TopPickPipeline:
         gripper_body_length_mm: float = 20.0,
         gripper_body_longitudinal_offset_mm: float = -25.0,
         gripper_debug_log_rejections: bool = False,
+        timing_enabled: bool = False,
         grasp_search_enabled: bool = True,
         grasp_search_yaw_offsets_deg=(0.0, -5.0, 5.0, -10.0, 10.0, -15.0, 15.0),
         grasp_search_longitudinal_offsets_mm=(0.0, -2.0, 2.0, -4.0, 4.0),
@@ -410,6 +411,8 @@ class TopPickPipeline:
         self.last_gripper_search_alternatives: list[dict] = []
 
         self.grasp_search_enabled = bool(grasp_search_enabled)
+        # 每帧打印 [TIMING] infer/search/total，用来定位"顶部定位慢"到底慢在推理还是候选搜索。
+        self.timing_enabled = bool(timing_enabled)
         self.grasp_search_hard_min_clearance_mm = max(0.0, float(grasp_search_hard_min_clearance_mm))
         self.grasp_search_preferred_clearance_mm = max(
             self.grasp_search_hard_min_clearance_mm,
@@ -1570,6 +1573,19 @@ class TopPickPipeline:
                 frame,
                 objects,
                 fast_only=False,
+            )
+
+        search_ms = (
+            (time.perf_counter() - start) * 1000.0 - inference_ms
+        )
+
+        if self.timing_enabled:
+            print(
+                "[TIMING] "
+                f"infer={inference_ms:.1f}ms "
+                f"search={search_ms:.1f}ms "
+                f"total={inference_ms + search_ms:.1f}ms "
+                f"objs={len(objects)} cands={len(candidates)}"
             )
 
         stable = (
