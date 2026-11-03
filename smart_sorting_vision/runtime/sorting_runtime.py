@@ -119,8 +119,8 @@ class SortingRuntime:
         self.empty_finish_hold_s = float(empty_finish_hold_s)
         self.max_items = max(0, int(max_items))
         self.reject_unknown = bool(reject_unknown)
-        # 侧面识别超时时，物体还夹在爪里：优先丢进一个空盒，
-        # 绝不带着物体直接回顶部重抓。
+        # 侧面识别超时时，物体停在识别台上（未分类）：优先丢进一个空盒，
+        # 不要让它一直占着识别台，也不要直接跳过这一件。
         self.side_timeout_fallback_sort = bool(side_timeout_fallback_sort)
         self.on_finished = on_finished
         self.on_session_start = on_session_start
@@ -660,7 +660,8 @@ class SortingRuntime:
             self.storage_manager.cancel(self.current_reservation_id)
             self.current_reservation_id = None
 
-        # 物体此时还夹在爪里。先尝试丢进一个空盒，避免带着物体回顶部重抓。
+        # 物体此时还留在识别台上（模型没认出来）。先尝试丢进一个空盒，
+        # 否则重抓时它会一直占着识别台。
         if self._try_fallback_sort(reason=reason):
             return
 
@@ -687,7 +688,10 @@ class SortingRuntime:
         self._enter_state(RuntimeState.WAIT_RETRY_PICK_READY)
 
     def _try_fallback_sort(self, *, reason: str) -> bool:
-        """侧面识别失败但物体已经夹住：丢进一个空储物盒，而不是放弃。
+        """侧面识别失败（物体在识别台上、未分类）：丢进一个空储物盒。
+
+        识别不出颜色/形状时，物体仍然是一件真实货物，必须处理掉；
+        直接 RETRY_PICK 会把它留在识别台上反复干扰后续识别。
 
         返回 True 表示已经切到 WAIT_SORT_ACK，调用方不要再走 RETRY_PICK。
         没有空盒或发送失败时返回 False，调用方回退到原来的 RETRY_PICK。
@@ -727,8 +731,9 @@ class SortingRuntime:
             return False
 
         print(
-            f"[RECOVERY] side unknown ({reason}) -> fallback SORT "
-            f"box={self.current_box} reservation={self.current_reservation_id}"
+            f"[RECOVERY] side unrecognised ({reason}) -> fallback SORT "
+            f"box={self.current_box} reservation={self.current_reservation_id} "
+            "(object taken off the recognition tray)"
         )
         self._enter_state(RuntimeState.WAIT_SORT_ACK)
         return True
