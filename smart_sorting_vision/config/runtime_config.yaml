@@ -294,9 +294,9 @@ vision:
 
         yaw_penalty_per_deg: 0.12  # 搜索评分中的角度惩罚系数。
         center_penalty_per_mm: 0.25  # 搜索评分中的中心偏移惩罚系数。
-  # 离原点越远扣分越多（分/mm）。先抓靠近识别托盘一侧的物体，
-  # 缩短拿着高件横穿其它物体的距离。0 = 不启用。
-  origin_penalty_per_mm: 0.03
+        # 离原点越远扣分越多（分/mm）。先抓靠近识别托盘一侧的物体，
+        # 缩短拿着高件横穿其它物体的距离。0 = 不启用。
+        origin_penalty_per_mm: 0.03
 
         max_trials_per_object: 200  # 每个目标最多搜索的候选数量。
 
