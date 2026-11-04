@@ -288,6 +288,14 @@ public:
     }
 
 
+    // 位级调试码：低 4 位状态号，高 4 位 Grap_Output_Step。
+    uint8_t Get_Debug_Code() const
+    {
+        return static_cast<uint8_t>(
+            (static_cast<uint8_t>(Grap_Move_Status) & 0x0FU) |
+            static_cast<uint8_t>((Grap_Output_Step & 0x0FU) << 4));
+    }
+
 private:
 
     // ========================================================

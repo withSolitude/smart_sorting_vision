@@ -346,6 +346,20 @@ public:
         return Send_Frame(
             Sorting_Vision_Mode_MCU_HEARTBEAT_ACK
         );
+
+    // 调试用：心跳里带上实时 XY 与抓取状态码（state | step<<4）。
+    inline HAL_StatusTypeDef
+    Send_Heartbeat_Ack_Debug(
+        const float X_mm,
+        const float Y_mm,
+        const uint8_t State_Code)
+    {
+        return Send_Frame(
+            Sorting_Vision_Mode_MCU_HEARTBEAT_ACK,
+            X_mm,
+            Y_mm,
+            State_Code);
+    }
     }
 
 

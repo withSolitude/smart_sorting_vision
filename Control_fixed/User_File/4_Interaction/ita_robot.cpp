@@ -697,6 +697,11 @@ void Class_Robot::Handle_Stop_Request()
 void Class_Robot::
 TIM_10ms_Calculate_PeriodElapsedCallback()
 {
+
+    // 把实时 XY 与抓取状态写进心跳包，供现场定位卡点。
+    Sorting_Handshake.Debug_X_mm = Holding_Jaw.XY_Motion.Get_X_mm();
+    Sorting_Handshake.Debug_Y_mm = Holding_Jaw.XY_Motion.Get_Y_mm();
+    Sorting_Handshake.Debug_State = Holding_Jaw.Get_Debug_Code();
     Sorting_Storage
     .TIM_10ms_PeriodElapsedCallback();
 

@@ -356,7 +356,10 @@ Handle_Frame(
         case Sorting_Vision_Mode_HEARTBEAT:
         {
             Communication->
-                Send_Heartbeat_Ack();
+                Send_Heartbeat_Ack_Debug(
+                    Debug_X_mm,
+                    Debug_Y_mm,
+                    Debug_State);
 
             break;
         }

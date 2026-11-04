@@ -162,6 +162,11 @@ class Class_Sorting_Handshake
 {
 public:
 
+    // 上层每个周期写入，心跳回复时带出去，仅为调试。
+    volatile float Debug_X_mm = 0.0f;
+    volatile float Debug_Y_mm = 0.0f;
+    volatile uint8_t Debug_State = 0U;
+
     void Init(
         Class_Sorting_Vision_UART *__Communication
     );
