@@ -163,18 +163,6 @@ void Class_Holding_Jaw::Init()
 void Class_Holding_Jaw::
 TIM_1ms_PeriodElapsedCallback()
 {
-
-    // 执行状态看门狗：任何状态停留超过 20s 就报错，
-    // 避免某个到位条件永远成立不了时无限等待。
-    if (Grap_Move_Status != Enum_Grap_Move_Disable &&
-        Grap_Move_Status != Enum_Grap_Move_Fault &&
-        Grap_Move_Status != Enum_Grap_Move_Finish &&
-        (uint32_t)(HAL_GetTick() - Grap_State_Start_Tick) >= 20000U)
-    {
-        Grap_Error = Enum_Grap_Error_Actuator_Timeout;
-        Grap_Failed = true;
-        Set_Grap_Move_Status(Enum_Grap_Move_Fault);
-    }
     XY_Motion.TIM_1ms_PeriodElapsedCallback();
 
     if (Grap_Move_Status != Enum_Grap_Move_Disable &&
@@ -716,20 +704,9 @@ void Class_Holding_Jaw::Grap_Move()
 
             if (Grap_Move_Count >= 10)
             {
-                // 物体贴在右边沿时，先进入退让状态，退完再去托盘。
-                if (Edge_Motion_Config::Right_Edge_Detour_Enabled &&
-                    XY_Motion.Get_X_mm() > Edge_Motion_Config::Right_Edge_Keepout_X_mm)
-                {
-                    Set_Grap_Move_Status(
-                        Enum_Grap_Move_X_Retreat
-                    );
-                }
-                else
-                {
-                    Set_Grap_Move_Status(
-                        Enum_Grap_Move_X_Y_Tray
-                    );
-                }
+                Set_Grap_Move_Status(
+                    Enum_Grap_Move_X_Y_Tray
+                );
             }
 
 
@@ -742,25 +719,6 @@ void Class_Holding_Jaw::Grap_Move()
         //
         // X/Y/Yaw移动到识别托盘
         // ====================================================
-
-        case Enum_Grap_Move_X_Retreat:
-        {
-            if (!Grap_Output_Flag)
-            {
-                break;
-            }
-
-            // 退让完成后再进去托盘那一步。
-            if (XY_Motion.Get_Motion_Finished())
-            {
-                Set_Grap_Move_Status(
-                    Enum_Grap_Move_X_Y_Tray
-                );
-            }
-
-            break;
-        }
-
 
         case Enum_Grap_Move_X_Y_Tray:
         {
@@ -778,7 +736,7 @@ void Class_Holding_Jaw::Grap_Move()
                 (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
-            if (XY_Motion.Get_Motion_Finished() &&
+            if (XY_Move_Finished() &&
                 Grap_Move_Count >= 1)
             {
                 Set_Grap_Move_Status(
@@ -815,7 +773,7 @@ void Class_Holding_Jaw::Grap_Move()
                 (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
-            if (Grap_Move_Count >= 8)
+            if (Grap_Move_Count >= 5)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Release
@@ -1255,169 +1213,14 @@ void Class_Holding_Jaw::Outputs()
         // X/Y/Yaw去识别托盘
         // ====================================================
 
-        case Enum_Grap_Move_X_Retreat:
-        {
-            // 右边沿退让（独立一步，不和托盘段搅在一起）：
-            // 从当前 Y 横向退到 x = Right_Edge_Detour_X_mm。
-            if (Grap_Output_Flag)
-            {
-                break;
-            }
-
-            // 快照只做一次，但移动命令必须真正下发成功才算“已发起”。
-            if (!Detour_Target_Valid)
-            {
-                Detour_Target_Y_mm = XY_Motion.Get_Y_mm();
-                Detour_Target_Valid = true;
-            }
-
-            if (!Tray_Leg_Issued)
-            {
-                const HAL_StatusTypeDef st = XY_Motion.Move_To_mm(
-                    Edge_Motion_Config::Right_Edge_Detour_X_mm,
-                    Detour_Target_Y_mm,
-                    X_Move_Speed_mm_s,
-                    Y_Move_Speed_mm_s);
-                if (st == HAL_OK)
-                {
-                    Tray_Leg_Issued = true;
-                    Tray_Leg_Seen_Moving = false;
-                }
-                else if (st != HAL_BUSY)
-                {
-                    Abort_XY_Fault();
-                }
-                break;
-            }
-
-            if (!Tray_Leg_Seen_Moving)
-            {
-                if (!XY_Motion.Get_Motion_Finished())
-                {
-                    Tray_Leg_Seen_Moving = true;
-                }
-                break;
-            }
-
-            if (!XY_Motion.Get_Motion_Finished())
-            {
-                break;
-            }
-
-            Detour_Target_Valid = false;
-            Tray_Leg_Issued = false;
-            Tray_Leg_Seen_Moving = false;
-            Complete_Outputs();
-            break;
-        }
-
         case Enum_Grap_Move_X_Y_Tray:
         {
-            // "抓完 → 去识别托盘放件"。
-            // 不走 Move_XY_Yaw_Direct（它内部有 Yaw 等待状态机，可能一直返回 false）。
-            // 两段各自显式发起，到位只看驱动器的 Motion_Finished。
-            if (Grap_Output_Flag)
-            {
-                break;
-            }
-
-            // Yaw 与移动并行：这一段运动中每次进来都尝试一次，成功后就不再发。
-            // 这样既不会像一次性发送那样"没发出去就丢了"，也不会阻塞移动。
-            if (std::fabs(Yaw_Servo_Motor_Target_Angle - Tray_Yaw_Angle) >= 0.0001f)
-            {
-                if (Yaw_Servo_Motor.Control_Angle(Tray_Yaw_Angle, Servo_Move_Time_ms) == HAL_OK)
-                {
-                    Yaw_Servo_Motor_Target_Angle = Tray_Yaw_Angle;
-                }
-            }
-
-            // ---- 第一段：右边沿退让（物体贴在 x>-30 时先横向退到 x=-40）
-            if (Grap_Output_Step == 0 &&
-                Edge_Motion_Config::Right_Edge_Detour_Enabled &&
-                XY_Motion.Get_X_mm() > Edge_Motion_Config::Right_Edge_Keepout_X_mm)
-            {
-                if (!Detour_Target_Valid)
-                {
-                    Detour_Target_Y_mm = XY_Motion.Get_Y_mm();
-                    Detour_Target_Valid = true;
-                }
-
-                if (!Tray_Leg_Issued)
-                {
-                    const HAL_StatusTypeDef st = XY_Motion.Move_To_mm(
-                        Edge_Motion_Config::Right_Edge_Detour_X_mm,
-                        Detour_Target_Y_mm,
-                        X_Move_Speed_mm_s,
-                        Y_Move_Speed_mm_s);
-                    if (st == HAL_OK)
-                    {
-                        Tray_Leg_Issued = true;
-                        Tray_Leg_Seen_Moving = false;
-                    }
-                    else if (st != HAL_BUSY)
-                    {
-                        Abort_XY_Fault();   // 真失败就报，不能静默等
-                    }
-                    break;
-                }
-
-                // 必须真的看到"运动中"，才接受之后的"已完成"
-                if (!Tray_Leg_Seen_Moving)
-                {
-                    if (!XY_Motion.Get_Motion_Finished())
-                    {
-                        Tray_Leg_Seen_Moving = true;
-                    }
-                    break;
-                }
-
-                if (!XY_Motion.Get_Motion_Finished())
-                {
-                    break;
-                }
-
-                Grap_Output_Step = 1;
-                Tray_Leg_Issued = false;
-                Tray_Leg_Seen_Moving = false;
-                break;
-            }
-
-            // ---- 第二段：去托盘
-            if (!Tray_Leg_Issued)
-            {
-                const HAL_StatusTypeDef st = XY_Motion.Move_To_mm(
-                    Tray_X_mm, Tray_Y_mm,
-                    X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
-                if (st == HAL_OK)
-                {
-                    Tray_Leg_Issued = true;
-                    Tray_Leg_Seen_Moving = false;
-                }
-                else if (st != HAL_BUSY)
-                {
-                    Abort_XY_Fault();
-                }
-                break;
-            }
-
-            if (!Tray_Leg_Seen_Moving)
-            {
-                if (!XY_Motion.Get_Motion_Finished())
-                {
-                    Tray_Leg_Seen_Moving = true;
-                }
-                break;
-            }
-
-            if (!XY_Motion.Get_Motion_Finished())
-            {
-                break;
-            }
-
-            Tray_Leg_Issued = false;
-            Tray_Leg_Seen_Moving = false;
-            Grap_Output_Step = 0;
-            Complete_Outputs();
+            // 这里是"抓完 → 去识别托盘放件"，进入本状态前 Lift 已经抬到
+            // Lift_Servo_Motor_Angle_Lift，夹爪在托盘面以上，不需要再为转 Yaw
+            // 绕到 y=-40 的中转点：直接一条斜线过去，到位后再转 Yaw。
+            if (!Grap_Output_Flag && Move_XY_Yaw_Direct(
+                    Tray_X_mm, Tray_Y_mm, Tray_Yaw_Angle))
+                Complete_Outputs();
             break;
         }
 
@@ -1836,11 +1639,6 @@ void Class_Holding_Jaw::Set_Grap_Move_Status(
 {
     Grap_State_Start_Tick = HAL_GetTick();
     Edge_Move_Step = 0U;
-
-    // 每次切状态都让退让目标重新快照。
-    Detour_Target_Valid = false;
-    Tray_Leg_Issued = false;
-    Tray_Leg_Seen_Moving = false;
     Grap_Move_Status =
         New_Status;
 
@@ -2206,7 +2004,6 @@ XY_Move_Finished() const
     switch (Grap_Move_Status)
     {
         case Enum_Grap_Move_X_Y_Start: return XY_At_mm(Grap_Target_X_mm, Grap_Target_Y_mm);
-        case Enum_Grap_Move_X_Retreat: return XY_Motion.Get_Motion_Finished();
         case Enum_Grap_Move_X_Y_Tray: return XY_At_mm(Tray_X_mm, Tray_Y_mm);
         case Enum_Grap_Move_Recognition_Position: return XY_At_mm(Recognition_X_mm, Recognition_Y_mm);
         case Enum_Grap_Move_Return: return XY_At_mm(Disable_X_mm, Disable_Y_mm);

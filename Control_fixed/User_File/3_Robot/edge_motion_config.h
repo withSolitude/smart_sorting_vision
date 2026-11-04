@@ -23,15 +23,7 @@ constexpr float Turn_Extra_Clearance_mm = 0.01f;
 //        所以"危险带内不转 Yaw"这个安全不变量仍然成立。
 // 代价：斜线在 y 从 0 走到边界的那一段，X 已经开始移动。若夹爪在 y≈0 附近
 //       横移会碰到电机/龙门梁，请保持 false 或先把 Turn_Boundary_mm 收紧。
-constexpr bool Merge_Start_With_Travel = true;
-
-// 图片右边沿（x 接近 0）到识别托盘的连接处是竖直面，而夹爪抬升余量有限：
-// 夹着高件贴着右边沿往 y=0 走，下面只要有一个稍高的物体就会卡死。
-// 所以物体本身落在 x > Right_Edge_Keepout_X_mm 时，放件前先横向退到
-// Right_Edge_Detour_X_mm，再从那里直接去识别托盘。
-constexpr bool Right_Edge_Detour_Enabled = true;
-constexpr float Right_Edge_Keepout_X_mm = -30.0f;
-constexpr float Right_Edge_Detour_X_mm = -40.0f; // 再向内留少量数值余量，叠加XY到位容差。
+constexpr bool Merge_Start_With_Travel = true; // 再向内留少量数值余量，叠加XY到位容差。
 
 // 兼容旧名：只表示"边界数值"，不再表示边界一定在 X 轴上。
 constexpr float Turn_Boundary_X_mm = Turn_Boundary_mm;
