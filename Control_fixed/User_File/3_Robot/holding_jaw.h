@@ -709,6 +709,9 @@ private:
 
     // 夹爪单独的动作时间：预收缩/夹紧/放松不需要和 Yaw/升降一样慢。
     // 原来这三处硬编码 500ms，是"XY 到点后到夹爪预收缩"这段延迟的主要来源。
+    // 预收缩提前：XY 移动到离目标这么近时就开始合爪，
+    // 到位时爪子已经基本收好。留太小会和旁边物体干涉。
+    static constexpr float Early_PreClip_Radius_mm = 40.0f;
     static constexpr uint32_t Claw_PreClip_Time_ms = 300U;
     static constexpr uint32_t Claw_Clip_Time_ms = 320U;
     static constexpr uint32_t Claw_Release_Time_ms = 200U;
@@ -741,6 +744,10 @@ private:
     bool Tray_Leg_Issued = false;
     bool Tray_Leg_Seen_Moving = false;
     uint32_t Edge_Yaw_Command_Tick = 0U;
+
+    // 提前预收缩的标记与时刻（用于把等待时间从发命令那一刻算）。
+    bool Pre_Clip_Early_Sent = false;
+    uint32_t Pre_Clip_Early_Tick = 0U;
 
 
     // ========================================================

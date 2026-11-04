@@ -564,6 +564,26 @@ void Class_Holding_Jaw::Grap_Move()
                 (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
+            // 离目标还剩 Early_PreClip_Radius_mm 时就开始合爪，
+            // 到位时爪子已经收好一大半，Pre_Clip 段只剩尾巴。
+            if (!Pre_Clip_Early_Sent && !XY_Motion.Get_Motion_Finished())
+            {
+                const float dx = Grap_Target_X_mm - XY_Motion.Get_X_mm();
+                const float dy = Grap_Target_Y_mm - XY_Motion.Get_Y_mm();
+                if (dx * dx + dy * dy <=
+                    Early_PreClip_Radius_mm * Early_PreClip_Radius_mm)
+                {
+                    Claw_Servo_Motor_Target_Angle = Grap_Target_Pre_Clip_Angle;
+                    if (Claw_Servo_Motor.Control_Angle(
+                            Claw_Servo_Motor_Target_Angle,
+                            Claw_PreClip_Time_ms) == HAL_OK)
+                    {
+                        Pre_Clip_Early_Sent = true;
+                        Pre_Clip_Early_Tick = HAL_GetTick();
+                    }
+                }
+            }
+
             if (XY_Move_Finished() &&
                 Grap_Move_Count >= 1)
             {
@@ -595,8 +615,12 @@ void Class_Holding_Jaw::Grap_Move()
             }
 
 
+            // 提前发过的从提前时刻算，否则从本状态命令完成时刻算。
+            const uint32_t pre_clip_base_tick = Pre_Clip_Early_Sent
+                ? Pre_Clip_Early_Tick
+                : Grap_Output_Complete_Tick;
             Grap_Move_Count = static_cast<uint16_t>(
-                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
+                (uint32_t)(HAL_GetTick() - pre_clip_base_tick) / 100U + 1U);
 
 
             if (Grap_Move_Count >= 4)
@@ -1124,6 +1148,14 @@ void Class_Holding_Jaw::Outputs()
         {
             if (Grap_Output_Flag)
             {
+                break;
+            }
+
+
+            // 已经在运动中提前下发过就不重发，直接标记完成。
+            if (Pre_Clip_Early_Sent)
+            {
+                Complete_Outputs();
                 break;
             }
 
@@ -1723,6 +1755,13 @@ void Class_Holding_Jaw::Set_Grap_Move_Status(
 
     // 每次切状态都让退让目标/腿标志重新开始。
     Detour_Target_Valid = false;
+
+    // 每次开始新一次抓取移动时清掉提前预收缩标记。
+    if (New_Status == Enum_Grap_Move_X_Y_Start)
+    {
+        Pre_Clip_Early_Sent = false;
+        Pre_Clip_Early_Tick = 0U;
+    }
     Tray_Leg_Issued = false;
     Tray_Leg_Seen_Moving = false;
     Grap_Move_Status =
