@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import numpy as np
+import time
 
 from vision.processors.side_object_extractor import (
     SideObjectExtractor,
@@ -276,6 +276,7 @@ class SideSortPipeline:
             consensus_window
         )
 
+        self._last_raw_diag_s = 0.0
         # 只有 classifier 模式才有背景差分；seg 模式完全不需要背景图。
         self.background = (
             self.extractor.load_background(
@@ -512,6 +513,24 @@ class SideSortPipeline:
             crop_mask,
             shape_result=shape_probe,
         )
+
+
+        # 诊断：打印本帧原始结果。
+        # consensus 里只要 color 或 shape 是 unknown 就会把这一帧丢弃，
+        # 所以这两个字段分开打印才能分清到底是哪一步出问题。
+        if self.timing_enabled or True:
+            now_raw = time.monotonic()
+            if now_raw - self._last_raw_diag_s >= 1.0:
+                self._last_raw_diag_s = now_raw
+                print(
+                    "[SIDE RAW] "
+                    f"color={raw_result.get('color')} "
+                    f"cconf={float(raw_result.get('color_confidence', 0.0)):.3f} "
+                    f"shape={raw_result.get('shape')} "
+                    f"sconf={float(raw_result.get('shape_confidence', 0.0)):.3f} "
+                    f"qr={int(bool(raw_result.get('qr_present', False)))} "
+                    f"crop={crop.shape[1]}x{crop.shape[0]}"
+                )
 
         stable_state = (
             self.consensus.update(
