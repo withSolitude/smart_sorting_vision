@@ -739,6 +739,16 @@ private:
     float Detour_Target_Y_mm = 0.0f;
     bool Detour_Target_Valid = false;
 
+    // Outputs() 的发送节拍：分析每 1ms 跑，但命令只按这个间隔往
+    // 舵机总线上发。两者分开是为了不把总线灍死：1kHz 重试会让
+    // Control_Angle 一直返回 HAL_BUSY，状态机就永远等不到命令成功。
+    static constexpr uint32_t Outputs_Period_ms = 10U;
+    uint32_t Outputs_Tick = 0U;
+
+    // 看门狗：任何状态停留超过这个时间就报错进 Return，
+    // 不再像上两次那样永久卡死。
+    static constexpr uint32_t Grap_State_Timeout_ms = 20000U;
+
     uint32_t Pre_Clip_Early_Tick = 0U;
     bool Pre_Clip_Early_Sent = false;
     uint32_t Grap_Output_Complete_Tick = 0U;

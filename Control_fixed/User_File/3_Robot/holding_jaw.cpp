@@ -189,8 +189,34 @@ TIM_1ms_PeriodElapsedCallback()
     // 不改变任何机械动作时长，只是把到位后的量化误差从 10ms 压到 1ms。
     // ========================================================
 
-    Outputs();
+    // Grap_Move() 每 1ms 判定一次，到位/计时到立刻推进；
+    // Outputs() 按 Outputs_Period_ms 发包，避免把舵机总线刷爆。
     Grap_Move();
+
+    // 看门狗：状态停留过久说明某个到位条件永远成立不了，
+    // 报错并进 Return，至少不会像上两次那样永久卡住。
+    if (Grap_Move_Status != Enum_Grap_Move_Disable &&
+        Grap_Move_Status != Enum_Grap_Move_Fault &&
+        Grap_Move_Status != Enum_Grap_Move_Finish &&
+        (uint32_t)(HAL_GetTick() - Grap_State_Start_Tick) >= Grap_State_Timeout_ms)
+    {
+        // 打印卡住的状态号 + 实测坐标，下次出现直接能定位。
+        printf(
+            "[GRAB] timeout state=%d x=%.1f y=%.1f step=%u\n",
+            (int)Grap_Move_Status,
+            XY_Motion.Get_X_mm(),
+            XY_Motion.Get_Y_mm(),
+            (unsigned)Edge_Move_Step);
+        Grap_Error = Enum_Grap_Error_Actuator_Timeout;
+        Grap_Failed = true;
+        Set_Grap_Move_Status(Enum_Grap_Move_Fault);
+    }
+
+    if ((uint32_t)(HAL_GetTick() - Outputs_Tick) >= Outputs_Period_ms)
+    {
+        Outputs_Tick = HAL_GetTick();
+        Outputs();
+    }
 
     // ========================================================
     // 只有Descend状态运行
