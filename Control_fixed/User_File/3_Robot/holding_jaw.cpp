@@ -815,7 +815,7 @@ void Class_Holding_Jaw::Grap_Move()
                 (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
-            if (Grap_Move_Count >= 5)
+            if (Grap_Move_Count >= 8)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Release

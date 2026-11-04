@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import time
 import numpy as np
 
 from vision.processors.side_object_extractor import (
@@ -276,6 +277,8 @@ class SideSortPipeline:
             consensus_window
         )
 
+        # 判空诊断打印的限速时间戳（每秒最多一条）。
+        self._last_empty_diag_s = 0.0
         # 只有 classifier 模式才有背景差分；seg 模式完全不需要背景图。
         self.background = (
             self.extractor.load_background(
@@ -366,6 +369,22 @@ class SideSortPipeline:
             shape_probe = self.shape_classifier.classify(frame)
             object_present = bool(shape_probe.get("object_present", False))
             if not object_present:
+
+                # 诊断：判空时打印模型的 topk，用于判断
+                # 到底是“真的没物体”还是“分类器被弄慎了”。限速一秒一条。
+                now = time.monotonic()
+                if now - self._last_empty_diag_s >= 1.0:
+                    self._last_empty_diag_s = now
+                    topk_text = \
+                        ", ".join(
+                            f"{item.get('shape')}={float(item.get('confidence', 0.0)):.3f}"
+                            for item in (shape_probe.get('topk') or [])[:3]
+                        )
+                    print(
+                        f"[SIDE DIAG] no_object shape={shape_probe.get('shape')} "
+                        f"conf={float(shape_probe.get('confidence', 0.0)):.3f} "
+                        f"reason={shape_probe.get('reason')} topk=[{topk_text}]"
+                    )
                 self.consensus.reset()
                 probe_reason = str(shape_probe.get("reason", "unknown"))
                 # 只有模型明确判为 no_object 才立即触发回待机；低置信度

@@ -580,7 +580,7 @@ private:
     // --------------------------------------------------------
 
     float Lift_Descend_Speed =
-        80.0f *
+        55.0f *
         PI / 180.0f;
 
 
@@ -736,7 +736,7 @@ private:
     // 也没有 TOF 闭环，可以明显比"抓取时"快。抓取那一路仍然走
     // Lift_Descend_Speed(80°/s) 的 20ms 跟随，两者互不影响。
     static constexpr uint32_t Lift_Pick_Move_Time_ms = 420U;   // 抓完抬升（74°，约 925ms 行程里的前段）
-    static constexpr uint32_t Lift_Tray_Descend_Time_ms = 300U; // 托盘下降（54°，还托着物体）
+    static constexpr uint32_t Lift_Tray_Descend_Time_ms = 500U; // 托盘下降（54°，还托着物体）
     static constexpr uint32_t Lift_Tray_Lift_Time_ms = 180U;    // 托盘抬升（54°，夹爪已空）
     static constexpr uint32_t Servo_Stop_Settle_ms = 15U;
     uint32_t Grap_Output_Complete_Tick = 0U;
