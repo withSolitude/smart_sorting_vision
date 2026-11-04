@@ -135,8 +135,6 @@ public:
 
     void TIM_100ms_PeriodElapsedCallback();
 
-    // 抓取状态机的快速推进：XY 到位、舵机时间到都不再等下一个 100ms 节拍。
-    void TIM_10ms_PeriodElapsedCallback();
 
 
     // ========================================================
@@ -566,8 +564,10 @@ private:
     // 必须为正值；运动方向由抬升位置和下降终点自动确定。
     // --------------------------------------------------------
 
+    // 抓取下降速度：TOF 闭环，距离<=3mm 连续 2 个采样就停。
+    // 80°/s 时 74° 要 925ms；100°/s 约 740ms。再快接触冲击会明显变大。
     float Lift_Descend_Speed =
-        80.0f *
+        100.0f *
         PI / 180.0f;
 
 
@@ -716,6 +716,24 @@ private:
     static constexpr uint32_t Lift_Tray_Descend_Time_ms = 300U; // 托盘下降（54°，还托着物体）
     static constexpr uint32_t Lift_Tray_Lift_Time_ms = 180U;    // 托盘抬升（54°，夹爪已空）
     static constexpr uint32_t Servo_Stop_Settle_ms = 15U;
+
+    // 抓取各阶段的最短等待（ms，从"命令发完"算起），分辨率 1ms。
+    // 值 = 舵机命令时长 + 余量；余量按该段是否夹着物体调整。
+    static constexpr uint32_t Pre_Clip_Hold_ms = 340U;      // 命令 300
+    static constexpr uint32_t Clip_Hold_ms = 380U;          // 命令 320
+    static constexpr uint32_t Lift_Hold_ms = 700U;          // 命令 420，夹着物体留大余量
+    static constexpr uint32_t Tray_Descend_Hold_ms = 420U;  // 命令 300
+    static constexpr uint32_t Release_Hold_ms = 300U;       // 命令 200
+    static constexpr uint32_t Tray_Lift_Hold_ms = 350U;     // 命令 180，夹爪已空
+    static constexpr uint32_t Recognition_Hold_ms = 100U;   // XY 到位已由 XY_Move_Finished 把关
+    static constexpr uint32_t Return_Hold_ms = 100U;
+
+    // 提前预收缩：离抓取点这么近就开始合爪，到位时基本已经收好，
+    // Pre_Clip 段就只剩一点点尾巴。留太小会和旁边物体干涉，40mm 约 250ms。
+    static constexpr float Early_PreClip_Radius_mm = 40.0f;
+
+    uint32_t Pre_Clip_Early_Tick = 0U;
+    bool Pre_Clip_Early_Sent = false;
     uint32_t Grap_Output_Complete_Tick = 0U;
     uint32_t Return_Lift_Command_Tick = 0U;
     uint32_t Grap_Lift_Limit_Command_Tick = 0U;
@@ -753,3 +771,4 @@ private:
 
 
 #endif // DM02_TEST_HOLDING_JAW_H
+

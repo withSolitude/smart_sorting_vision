@@ -180,6 +180,17 @@ TIM_1ms_PeriodElapsedCallback()
     }
 
     // ========================================================
+    // 抓取状态机就在 1ms 节拍上推进
+    //
+    // Outputs() 每个分支都由 Grap_Output_Flag 把关，命令成功后不会重复下发；
+    // Grap_Move() 里的等待全部按 HAL_GetTick() 现算，所以提到 1ms
+    // 不改变任何机械动作时长，只是把到位后的量化误差从 10ms 压到 1ms。
+    // ========================================================
+
+    Outputs();
+    Grap_Move();
+
+    // ========================================================
     // 只有Descend状态运行
     //
     // 识别托盘下降不走这里。
@@ -445,18 +456,6 @@ TIM_1ms_PeriodElapsedCallback()
 // ============================================================
 
 void Class_Holding_Jaw::
-TIM_10ms_PeriodElapsedCallback()
-{
-    // 只做"状态推进 + 必要的重发"：
-    // Outputs() 内部每个状态都有 Grap_Output_Flag 把关，成功后不会重复发；
-    // Grap_Move() 里的等待都是按 HAL_GetTick() 现算的，所以提高调用频率
-    // 不会缩短机械动作，只是不再被 100ms 节拍量化。
-    Outputs();
-    Grap_Move();
-}
-
-
-void Class_Holding_Jaw::
 TIM_100ms_PeriodElapsedCallback()
 {
     // ========================================================
@@ -560,12 +559,30 @@ void Class_Holding_Jaw::Grap_Move()
             }
 
 
-            Grap_Move_Count = static_cast<uint16_t>(
-                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
-            if (XY_Move_Finished() &&
-                Grap_Move_Count >= 1)
+            // 提前预收缩：离抓取点还剩 Early_PreClip_Radius_mm 时就开始合爪，
+            // 到位时爪子基本已经收好，Pre_Clip 段只剩一点点尾巴。
+            if (!Pre_Clip_Early_Sent &&
+                !XY_Motion.Get_Motion_Finished())
+            {
+                const float dx = Grap_Target_X_mm - XY_Motion.Get_X_mm();
+                const float dy = Grap_Target_Y_mm - XY_Motion.Get_Y_mm();
+                if (dx * dx + dy * dy <=
+                    Early_PreClip_Radius_mm * Early_PreClip_Radius_mm)
+                {
+                    Claw_Servo_Motor_Target_Angle = Grap_Target_Pre_Clip_Angle;
+                    if (Claw_Servo_Motor.Control_Angle(
+                            Claw_Servo_Motor_Target_Angle,
+                            Claw_PreClip_Time_ms) == HAL_OK)
+                    {
+                        Pre_Clip_Early_Sent = true;
+                        Pre_Clip_Early_Tick = HAL_GetTick();
+                    }
+                }
+            }
+
+            if (XY_Move_Finished())
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Pre_Clip
@@ -595,11 +612,13 @@ void Class_Holding_Jaw::Grap_Move()
             }
 
 
-            Grap_Move_Count = static_cast<uint16_t>(
-                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
+            // 提前发过的从提前时刻算，否则从本状态命令完成时刻算。
+            const uint32_t wait_ms = Pre_Clip_Early_Sent
+                ? (uint32_t)(HAL_GetTick() - Pre_Clip_Early_Tick)
+                : (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick);
 
 
-            if (Grap_Move_Count >= 4)
+            if (wait_ms >= Pre_Clip_Hold_ms)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Descend
@@ -664,11 +683,11 @@ void Class_Holding_Jaw::Grap_Move()
             }
 
 
-            Grap_Move_Count = static_cast<uint16_t>(
-                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
+            const uint32_t wait_ms =
+                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick);
 
 
-            if (Grap_Move_Count >= 4)
+            if (wait_ms >= Clip_Hold_ms)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Lift
@@ -698,11 +717,11 @@ void Class_Holding_Jaw::Grap_Move()
             }
 
 
-            Grap_Move_Count = static_cast<uint16_t>(
-                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
+            const uint32_t wait_ms =
+                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick);
 
 
-            if (Grap_Move_Count >= 10)
+            if (wait_ms >= Lift_Hold_ms)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_X_Y_Tray
@@ -732,12 +751,9 @@ void Class_Holding_Jaw::Grap_Move()
             }
 
 
-            Grap_Move_Count = static_cast<uint16_t>(
-                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
-            if (XY_Move_Finished() &&
-                Grap_Move_Count >= 1)
+            if (XY_Move_Finished())
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Tray_Descend
@@ -769,11 +785,11 @@ void Class_Holding_Jaw::Grap_Move()
             }
 
 
-            Grap_Move_Count = static_cast<uint16_t>(
-                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
+            const uint32_t wait_ms =
+                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick);
 
 
-            if (Grap_Move_Count >= 5)
+            if (wait_ms >= Tray_Descend_Hold_ms)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Release
@@ -803,11 +819,11 @@ void Class_Holding_Jaw::Grap_Move()
             }
 
 
-            Grap_Move_Count = static_cast<uint16_t>(
-                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
+            const uint32_t wait_ms =
+                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick);
 
 
-            if (Grap_Move_Count >= 4)
+            if (wait_ms >= Release_Hold_ms)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Tray_Lift
@@ -837,11 +853,11 @@ void Class_Holding_Jaw::Grap_Move()
             }
 
 
-            Grap_Move_Count = static_cast<uint16_t>(
-                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
+            const uint32_t wait_ms =
+                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick);
 
 
-            if (Grap_Move_Count >= 5)
+            if (wait_ms >= Tray_Lift_Hold_ms)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Recognition_Position
@@ -875,12 +891,12 @@ void Class_Holding_Jaw::Grap_Move()
             }
 
 
-            Grap_Move_Count = static_cast<uint16_t>(
-                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
+            const uint32_t wait_ms =
+                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick);
 
 
             if (XY_Move_Finished() &&
-                Grap_Move_Count >= 3)
+                wait_ms >= Recognition_Hold_ms)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Finish
@@ -908,12 +924,12 @@ void Class_Holding_Jaw::Grap_Move()
             }
 
 
-            Grap_Move_Count = static_cast<uint16_t>(
-                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
+            const uint32_t wait_ms =
+                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick);
 
 
             if (XY_Move_Finished() &&
-                Grap_Move_Count >= 3)
+                wait_ms >= Return_Hold_ms)
             {
                 Calibration_Yaw_Override = false;
                 Set_Grap_Move_Status(
@@ -1098,6 +1114,14 @@ void Class_Holding_Jaw::Outputs()
         {
             if (Grap_Output_Flag)
             {
+                break;
+            }
+
+
+            // 提前预收缩已经下发过：这里直接标记完成，等待由 Pre_Clip_Early_Tick 计。
+            if (Pre_Clip_Early_Sent)
+            {
+                Complete_Outputs();
                 break;
             }
 
@@ -1663,6 +1687,13 @@ void Class_Holding_Jaw::Set_Grap_Move_Status(
 {
     Grap_State_Start_Tick = HAL_GetTick();
     Edge_Move_Step = 0U;
+
+    // 每次开始新一次抓取移动时清掉提前预收缩的标记。
+    if (New_Status == Enum_Grap_Move_X_Y_Start)
+    {
+        Pre_Clip_Early_Sent = false;
+        Pre_Clip_Early_Tick = 0U;
+    }
     Grap_Move_Status =
         New_Status;
 
@@ -2218,3 +2249,4 @@ void Class_Holding_Jaw::Stop_XY_Collision_Homing()
 {
     XY_Motion.Stop_Collision_Homing();
 }
+
