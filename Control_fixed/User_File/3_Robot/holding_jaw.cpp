@@ -1978,8 +1978,12 @@ bool Class_Holding_Jaw::Move_XY_Yaw_Direct(float X_mm, float Y_mm, float Yaw_Rad
 
     if (Edge_Move_Step == 2U)
     {
-        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(X_mm, Y_mm) ||
-            (uint32_t)(HAL_GetTick() - Edge_Yaw_Command_Tick) < Servo_Move_Time_ms)
+        // 只等 XY 到位，不再等 Yaw 那一段命令时长。
+        // Yaw 与移动是同时下发的，舵机自己在跑；而这条路径的三个调用者
+        // （去识别托盘、去相机前、回待机）之后下一步动的都是升降或夹爪，
+        // 和 Yaw 是不同的轴，不需要等它转完，可以重叠起来。
+        // 原来这里卡 Servo_Move_Time_ms，等于每次放件前白等最多 200ms。
+        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(X_mm, Y_mm))
             return false;
         Edge_Move_Step = 7U;
     }
