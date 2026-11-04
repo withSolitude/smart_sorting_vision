@@ -736,7 +736,7 @@ void Class_Holding_Jaw::Grap_Move()
                 (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
-            if (XY_Move_Finished() &&
+            if (XY_Motion.Get_Motion_Finished() &&
                 Grap_Move_Count >= 1)
             {
                 Set_Grap_Move_Status(
@@ -1215,42 +1215,76 @@ void Class_Holding_Jaw::Outputs()
 
         case Enum_Grap_Move_X_Y_Tray:
         {
-            // 这里是"抓完 → 去识别托盘放件"，进入本状态前 Lift 已经抬到
-            // Lift_Servo_Motor_Angle_Lift，夹爪在托盘面以上，不需要再为转 Yaw
-            // 绕到 y=-40 的中转点：直接一条斜线过去，到位后再转 Yaw。
+            // "抓完 → 去识别托盘放件"。
+            // 不走 Move_XY_Yaw_Direct：那条路径内部还有一层 Yaw 等待状态机，
+            // Yaw 命令没被总线接受时会一直返回 false，表现成停在原地不动。
+            // 这里两段各自显式发起，到位只看驱动器的 Motion_Finished。
             if (Grap_Output_Flag)
             {
                 break;
             }
 
-            // 右边沿退让：物体本身贴在 x>-30 时，先横向退到 x=-40，
-            // 再从这里直接去托盘。避免夹着高件沿着右边沿那段竖直面往下走，
-            // 和下方较高的物体卡住。
+            // ---- 第一段：右边沿退让（物体贴在 x>-30 时先横向退到 x=-40）
             if (Grap_Output_Step == 0 &&
                 Edge_Motion_Config::Right_Edge_Detour_Enabled &&
                 XY_Motion.Get_X_mm() > Edge_Motion_Config::Right_Edge_Keepout_X_mm)
             {
-                const float detour_x = Edge_Motion_Config::Right_Edge_Detour_X_mm;
-                // 只快照一次：之后这条腿的目标固定，不会跟着实际位置漂移。
                 if (!Detour_Target_Valid)
                 {
                     Detour_Target_Y_mm = XY_Motion.Get_Y_mm();
                     Detour_Target_Valid = true;
                 }
-                const float detour_y = Detour_Target_Y_mm;
-                if (Move_XY_Yaw_Direct(detour_x, detour_y, Tray_Yaw_Angle))
+
+                if (!Tray_Leg_Issued)
                 {
-                    Grap_Output_Step = 1;
-                    Edge_Move_Step = 0;   // 第二段要重新从 step 0 起
+                    if (XY_Motion.Move_To_mm(
+                            Edge_Motion_Config::Right_Edge_Detour_X_mm,
+                            Detour_Target_Y_mm,
+                            X_Move_Speed_mm_s,
+                            Y_Move_Speed_mm_s) == HAL_OK)
+                    {
+                        Tray_Leg_Issued = true;
+                    }
+                    break;
+                }
+
+                if (!XY_Motion.Get_Motion_Finished())
+                {
+                    break;
+                }
+
+                // 横移完成，转 Yaw 只发一次，不阻塞后续动作。
+                (void)Yaw_Servo_Motor.Control_Angle(Tray_Yaw_Angle, Servo_Move_Time_ms);
+                Yaw_Servo_Motor_Target_Angle = Tray_Yaw_Angle;
+
+                Grap_Output_Step = 1;
+                Tray_Leg_Issued = false;
+                break;
+            }
+
+            // ---- 第二段：去托盘
+            if (!Tray_Leg_Issued)
+            {
+                if (XY_Motion.Move_To_mm(
+                        Tray_X_mm, Tray_Y_mm,
+                        X_Move_Speed_mm_s, Y_Move_Speed_mm_s) == HAL_OK)
+                {
+                    Tray_Leg_Issued = true;
                 }
                 break;
             }
 
-            if (Move_XY_Yaw_Direct(Tray_X_mm, Tray_Y_mm, Tray_Yaw_Angle))
+            if (!XY_Motion.Get_Motion_Finished())
             {
-                Grap_Output_Step = 0;
-                Complete_Outputs();
+                break;
             }
+
+            (void)Yaw_Servo_Motor.Control_Angle(Tray_Yaw_Angle, Servo_Move_Time_ms);
+            Yaw_Servo_Motor_Target_Angle = Tray_Yaw_Angle;
+
+            Tray_Leg_Issued = false;
+            Grap_Output_Step = 0;
+            Complete_Outputs();
             break;
         }
 
@@ -1672,6 +1706,7 @@ void Class_Holding_Jaw::Set_Grap_Move_Status(
 
     // 每次切状态都让退让目标重新快照。
     Detour_Target_Valid = false;
+    Tray_Leg_Issued = false;
     Grap_Move_Status =
         New_Status;
 

@@ -705,6 +705,7 @@ private:
     // 右边沿退让第一段的固定目标 Y。进入该段时只快照一次：
     // 若每个 tick 都用 XY_Motion.Get_Y_mm() 当目标，目标会跟着实际位置跑，
     // Move_XY_Yaw_Direct 里的到位判定永远不成立 —— 机器就会停在 x=-40 不动。
+    bool Tray_Leg_Issued = false;
     float Detour_Target_Y_mm = 0.0f;
     bool Detour_Target_Valid = false;
 
