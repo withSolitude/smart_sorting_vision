@@ -67,14 +67,20 @@ model:
     imgsz: 832  # 模型输入尺寸（像素）。
     device: 0  # 相机设备路径或推理设备编号。
   side:
-    path: outputs/training/side_cls/school_test/weights/best.engine  # 必须替换为“完整侧面ROI+no_object空背景”分类模型；相对工程根目录解析。
+    # classifier 方案使用的 13 类模型（含"空托盘"）；整幅侧视 ROI 输入。
+    # 换模型只改这里，imgsz 必须跟着改成该模型的训练尺寸。
+    path: outputs/training/side_cls/new/weights/best.engine
     imgsz: 224  # 模型输入尺寸（像素）。
     device: 0  # 相机设备路径或推理设备编号。
-    confidence_threshold: 0.7  # 侧面形状/空背景分类的最低置信度。
+    # 低于该值一律视为"还没看清"，上层会继续等后续帧而不会立刻判空。
+    # 0.7 太严：空托盘置信度落在 0.5~0.7 时会卡在 pending 直到超时；0.6 比较平衡。
+    confidence_threshold: 0.6  # 侧面形状/空背景分类的最低置信度。
     topk: 3  # 保留的最高概率类别数量。
 
   side_seg:
-    path: outputs/training/side_seg/v1_seg_side/side_seg_v1-2/weights/best.engine  # 侧面 seg 模型；classifier 模式下不使用
+    # seg 方案使用的模型；classifier 模式下完全不加载。
+    # 注意：side_seg_v2_896 是用 imgsz 896 训练的，切换过去时下面的 imgsz 也要改 896。
+    path: outputs/training/side_seg/v1_seg_side/side_seg_v1-2/weights/best.engine
     imgsz: 768  # 训练时的输入尺寸，必须与训练一致
     device: 0  # 推理设备编号
     confidence_threshold: 0.5  # 判空阈值：低于此值视为没有实例
@@ -309,7 +315,21 @@ vision:
       max_grasp_spread_mm: 3.0  # 顶部多帧抓取点允许的最大散布（mm）。
       reset_after_misses: 3  # 连续漏检多少帧后清空顶部跟踪。
   side:
-    presence_mode: seg  # classifier=分类器判空+背景差分裁剪 | seg=侧面 YOLO-seg 判空并直接给 mask
+    # ============================================================
+    # 侧视识别方案开关：只改下面这一行即可切换，两套模型都在 model 段里配好了
+    #
+    #   classifier = 13 类 YOLO-cls，整幅侧视 ROI 直接送入，空托盘是一个类别。
+    #                判空靠模型自己说"空托盘"，不再用背景差分判有无。
+    #                imgsz 224，推理快；分类准确率高（实测 0.967）。
+    #                -> 用 model.side.path，imgsz 必须与训练一致
+    #
+    #   seg        = YOLO-seg，有实例=有物体，mask 直接给颜色/二维码裁剪。
+    #                imgsz 896，推理慢；能出 mask，但长方体等类别偏弱。
+    #                -> 用 model.side_seg.path，imgsz 必须与训练一致
+    #
+    # 切换后一定要同时确认对应模型路径存在，路径写错会直接启动失败。
+    # ============================================================
+    presence_mode: classifier
     seg:
       padding_ratio: 0.12  # seg 模式按 mask 外接框裁剪时四周留白比例
     recognition:
@@ -362,7 +382,9 @@ vision:
         enabled: true  # 是否启用形状和空背景分类。
         # 形状分类器输入完整侧面 ROI；这些类别表示空托盘/空背景。
         # 训练集目录名必须与这里至少有一个完全一致。
-        no_object_labels: [no_object, empty, background]  # 形状分类器中表示空托盘的类别名列表。
+        # 训练集里的空托盘目录名必须出现在这里，否则模型输出"空托盘"会被当成
+        # 一个真实形状 -> 空托盘被误判成"有物体"。当前 13 类模型的空类别名就是"空托盘"。
+        no_object_labels: [空托盘, no_object, empty, background]  # 形状分类器中表示空托盘的类别名列表。
 
     # 形状 YOLO 已经负责判断“有无物体”。这里的背景差分只在确认有物体后
     # 辅助生成颜色/二维码裁剪，裁剪失败会回退到完整 ROI，不再作为存在性门控。
