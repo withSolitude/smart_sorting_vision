@@ -163,6 +163,18 @@ void Class_Holding_Jaw::Init()
 void Class_Holding_Jaw::
 TIM_1ms_PeriodElapsedCallback()
 {
+
+    // 执行状态看门狗：任何状态停留超过 20s 就报错，
+    // 避免某个到位条件永远成立不了时无限等待。
+    if (Grap_Move_Status != Enum_Grap_Move_Disable &&
+        Grap_Move_Status != Enum_Grap_Move_Fault &&
+        Grap_Move_Status != Enum_Grap_Move_Finish &&
+        (uint32_t)(HAL_GetTick() - Grap_State_Start_Tick) >= 20000U)
+    {
+        Grap_Error = Enum_Grap_Error_Actuator_Timeout;
+        Grap_Failed = true;
+        Set_Grap_Move_Status(Enum_Grap_Move_Fault);
+    }
     XY_Motion.TIM_1ms_PeriodElapsedCallback();
 
     if (Grap_Move_Status != Enum_Grap_Move_Disable &&
@@ -1246,14 +1258,19 @@ void Class_Holding_Jaw::Outputs()
 
                 if (!Tray_Leg_Issued)
                 {
-                    if (XY_Motion.Move_To_mm(
-                            Edge_Motion_Config::Right_Edge_Detour_X_mm,
-                            Detour_Target_Y_mm,
-                            X_Move_Speed_mm_s,
-                            Y_Move_Speed_mm_s) == HAL_OK)
+                    const HAL_StatusTypeDef st = XY_Motion.Move_To_mm(
+                        Edge_Motion_Config::Right_Edge_Detour_X_mm,
+                        Detour_Target_Y_mm,
+                        X_Move_Speed_mm_s,
+                        Y_Move_Speed_mm_s);
+                    if (st == HAL_OK)
                     {
                         Tray_Leg_Issued = true;
                         Tray_Leg_Seen_Moving = false;
+                    }
+                    else if (st != HAL_BUSY)
+                    {
+                        Abort_XY_Fault();   // 真失败就报，不能静默等
                     }
                     break;
                 }
@@ -1282,12 +1299,17 @@ void Class_Holding_Jaw::Outputs()
             // ---- 第二段：去托盘
             if (!Tray_Leg_Issued)
             {
-                if (XY_Motion.Move_To_mm(
-                        Tray_X_mm, Tray_Y_mm,
-                        X_Move_Speed_mm_s, Y_Move_Speed_mm_s) == HAL_OK)
+                const HAL_StatusTypeDef st = XY_Motion.Move_To_mm(
+                    Tray_X_mm, Tray_Y_mm,
+                    X_Move_Speed_mm_s, Y_Move_Speed_mm_s);
+                if (st == HAL_OK)
                 {
                     Tray_Leg_Issued = true;
                     Tray_Leg_Seen_Moving = false;
+                }
+                else if (st != HAL_BUSY)
+                {
+                    Abort_XY_Fault();
                 }
                 break;
             }

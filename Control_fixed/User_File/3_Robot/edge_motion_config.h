@@ -29,7 +29,7 @@ constexpr bool Merge_Start_With_Travel = true;
 // 夹着高件贴着右边沿往 y=0 走，下面只要有一个稍高的物体就会卡死。
 // 所以物体本身落在 x > Right_Edge_Keepout_X_mm 时，放件前先横向退到
 // Right_Edge_Detour_X_mm，再从那里直接去识别托盘。
-constexpr bool Right_Edge_Detour_Enabled = true;
+constexpr bool Right_Edge_Detour_Enabled = false;  // 比赛版先关掉：开着时在 x=-40 处会卡住，待后续修。
 constexpr float Right_Edge_Keepout_X_mm = -30.0f;
 constexpr float Right_Edge_Detour_X_mm = -40.0f; // 再向内留少量数值余量，叠加XY到位容差。
 
