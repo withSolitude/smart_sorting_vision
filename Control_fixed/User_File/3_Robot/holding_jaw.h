@@ -38,6 +38,10 @@ enum Enum_Grap_Move_Status
     Enum_Grap_Move_Lift,
 
     // X/Y/Yaw移动到识别托盘
+    // 右边沿退让：物体贴在 x>-30 时，先横向退到 x=-40，
+    // 再进入 X_Y_Tray 去托盘。
+    Enum_Grap_Move_X_Retreat,
+
     Enum_Grap_Move_X_Y_Tray,
 
     // 到识别托盘后下降
@@ -484,7 +488,7 @@ private:
     // --------------------------------------------------------
 
     float Lift_Servo_Motor_Angle_Recognition_Tray_Descend =
-        -20.0f * PI / 180.0f;
+        -40.0f * PI / 180.0f;
 
 
     // --------------------------------------------------------
@@ -576,7 +580,7 @@ private:
     // --------------------------------------------------------
 
     float Lift_Descend_Max_Angle =
-        -40.0f *
+        -60.0f *
         PI / 180.0f;
 
 
@@ -729,6 +733,13 @@ private:
     // 多个移动阶段共用的边缘中转进度；切换状态时清零，禁止继承上一段路线。
     uint8_t Edge_Move_Step = 0U;
     float Edge_Retreat_Y_mm = 0.0f;
+
+    // 右边沿退让的目标 Y，进入该步时只快照一次。
+    float Detour_Target_Y_mm = 0.0f;
+    bool Detour_Target_Valid = false;
+    // 当前这一步的移动命令是否已下发 / 是否已见到运动开始。
+    bool Tray_Leg_Issued = false;
+    bool Tray_Leg_Seen_Moving = false;
     uint32_t Edge_Yaw_Command_Tick = 0U;
 
 

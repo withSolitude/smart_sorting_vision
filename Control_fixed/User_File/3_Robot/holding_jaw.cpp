@@ -704,9 +704,16 @@ void Class_Holding_Jaw::Grap_Move()
 
             if (Grap_Move_Count >= 10)
             {
-                Set_Grap_Move_Status(
-                    Enum_Grap_Move_X_Y_Tray
-                );
+                // 物体贴在右边沿时，先走退让状态，退完再去托盘。
+                if (Edge_Motion_Config::Right_Edge_Detour_Enabled &&
+                    XY_Motion.Get_X_mm() > Edge_Motion_Config::Right_Edge_Keepout_X_mm)
+                {
+                    Set_Grap_Move_Status(Enum_Grap_Move_X_Retreat);
+                }
+                else
+                {
+                    Set_Grap_Move_Status(Enum_Grap_Move_X_Y_Tray);
+                }
             }
 
 
@@ -719,6 +726,25 @@ void Class_Holding_Jaw::Grap_Move()
         //
         // X/Y/Yaw移动到识别托盘
         // ====================================================
+
+        case Enum_Grap_Move_X_Retreat:
+        {
+            if (!Grap_Output_Flag)
+            {
+                break;
+            }
+
+            // 退让完成后再进去托盘那一步。
+            if (XY_Motion.Get_Motion_Finished())
+            {
+                Set_Grap_Move_Status(
+                    Enum_Grap_Move_X_Y_Tray
+                );
+            }
+
+            break;
+        }
+
 
         case Enum_Grap_Move_X_Y_Tray:
         {
@@ -1213,6 +1239,61 @@ void Class_Holding_Jaw::Outputs()
         // X/Y/Yaw去识别托盘
         // ====================================================
 
+        case Enum_Grap_Move_X_Retreat:
+        {
+            // 右边沿退让（独立一步）：从当前 Y 横向退到 x = Detour_X。
+            if (Grap_Output_Flag)
+            {
+                break;
+            }
+
+            if (!Detour_Target_Valid)
+            {
+                Detour_Target_Y_mm = XY_Motion.Get_Y_mm();
+                Detour_Target_Valid = true;
+            }
+
+            if (!Tray_Leg_Issued)
+            {
+                const HAL_StatusTypeDef st = XY_Motion.Move_To_mm(
+                    Edge_Motion_Config::Right_Edge_Detour_X_mm,
+                    Detour_Target_Y_mm,
+                    X_Move_Speed_mm_s,
+                    Y_Move_Speed_mm_s);
+                if (st == HAL_OK)
+                {
+                    Tray_Leg_Issued = true;
+                    Tray_Leg_Seen_Moving = false;
+                }
+                else if (st != HAL_BUSY)
+                {
+                    Abort_XY_Fault();
+                }
+                break;
+            }
+
+            // 必须真的看到运动开始，才接受之后的“已完成”
+            if (!Tray_Leg_Seen_Moving)
+            {
+                if (!XY_Motion.Get_Motion_Finished())
+                {
+                    Tray_Leg_Seen_Moving = true;
+                }
+                break;
+            }
+
+            if (!XY_Motion.Get_Motion_Finished())
+            {
+                break;
+            }
+
+            Detour_Target_Valid = false;
+            Tray_Leg_Issued = false;
+            Tray_Leg_Seen_Moving = false;
+            Complete_Outputs();
+            break;
+        }
+
         case Enum_Grap_Move_X_Y_Tray:
         {
             // 这里是"抓完 → 去识别托盘放件"，进入本状态前 Lift 已经抬到
@@ -1639,6 +1720,11 @@ void Class_Holding_Jaw::Set_Grap_Move_Status(
 {
     Grap_State_Start_Tick = HAL_GetTick();
     Edge_Move_Step = 0U;
+
+    // 每次切状态都让退让目标/腿标志重新开始。
+    Detour_Target_Valid = false;
+    Tray_Leg_Issued = false;
+    Tray_Leg_Seen_Moving = false;
     Grap_Move_Status =
         New_Status;
 
@@ -2004,6 +2090,7 @@ XY_Move_Finished() const
     switch (Grap_Move_Status)
     {
         case Enum_Grap_Move_X_Y_Start: return XY_At_mm(Grap_Target_X_mm, Grap_Target_Y_mm);
+        case Enum_Grap_Move_X_Retreat: return XY_Motion.Get_Motion_Finished();
         case Enum_Grap_Move_X_Y_Tray: return XY_At_mm(Tray_X_mm, Tray_Y_mm);
         case Enum_Grap_Move_Recognition_Position: return XY_At_mm(Recognition_X_mm, Recognition_Y_mm);
         case Enum_Grap_Move_Return: return XY_At_mm(Disable_X_mm, Disable_Y_mm);
