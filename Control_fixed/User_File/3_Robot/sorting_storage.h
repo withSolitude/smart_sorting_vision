@@ -534,7 +534,7 @@ private:
 
     // 外环最大目标速度，先保守设为1.0rad/s。
     float DM4310_Move_Omega =
-        2.5f;
+        1.5f;
 
     // 位置外环PID。初值以P为主，D直接使用-now_omega抑制过冲。
     float DM4310_Pos_Kp =
@@ -638,7 +638,7 @@ private:
 
     static constexpr uint8_t
     DM4310_Stable_Required =
-        3;
+        5;
 
 
     uint8_t DM4310_Stable_Count =
@@ -688,22 +688,22 @@ private:
 
     static constexpr uint16_t
     Tray_Flip_Move_Time_ms =
-        160;
+        200;
 
 
     static constexpr uint16_t
     Tray_Return_Move_Time_ms =
-        160;
+        200;
 
 
     static constexpr uint16_t
     Tray_Move_Safe_Time_ms =
-        120;
+        200;
 
 
     static constexpr uint16_t
     Tray_Hold_Time_ms =
-        150 ;
+        200 ;
 
 
     // ========================================================

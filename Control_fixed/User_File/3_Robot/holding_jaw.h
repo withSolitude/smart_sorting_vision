@@ -135,6 +135,8 @@ public:
 
     void TIM_100ms_PeriodElapsedCallback();
 
+    // 抓取状态机的快速推进：XY 到位、舵机时间到都不再等下一个 100ms 节拍。
+    void TIM_10ms_PeriodElapsedCallback();
 
 
     // ========================================================
@@ -413,8 +415,9 @@ private:
         20.0f * PI / 180.0f;
 
 
+    // 2026-11-05 重新装配后：15° 就是升降收到最上面的位置。
     float Lift_Servo_Motor_Angle_Disable =
-        34.0f * PI / 180.0f;
+        15.0f * PI / 180.0f;
 
     float Claw_Servo_Motor_Angle_Disable =
         ClawPreopen::kStandbyAngleDeg * PI / 180.0f;
@@ -564,10 +567,8 @@ private:
     // 必须为正值；运动方向由抬升位置和下降终点自动确定。
     // --------------------------------------------------------
 
-    // 抓取下降速度：TOF 闭环，距离<=3mm 连续 2 个采样就停。
-    // 80°/s 时 74° 要 925ms；100°/s 约 740ms。再快接触冲击会明显变大。
     float Lift_Descend_Speed =
-        100.0f *
+        80.0f *
         PI / 180.0f;
 
 
@@ -716,41 +717,6 @@ private:
     static constexpr uint32_t Lift_Tray_Descend_Time_ms = 300U; // 托盘下降（54°，还托着物体）
     static constexpr uint32_t Lift_Tray_Lift_Time_ms = 180U;    // 托盘抬升（54°，夹爪已空）
     static constexpr uint32_t Servo_Stop_Settle_ms = 15U;
-
-    // 抓取各阶段的最短等待（ms，从"命令发完"算起），分辨率 1ms。
-    // 值 = 舵机命令时长 + 余量；余量按该段是否夹着物体调整。
-    static constexpr uint32_t Pre_Clip_Hold_ms = 340U;      // 命令 300
-    static constexpr uint32_t Clip_Hold_ms = 380U;          // 命令 320
-    static constexpr uint32_t Lift_Hold_ms = 700U;          // 命令 420，夹着物体留大余量
-    static constexpr uint32_t Tray_Descend_Hold_ms = 420U;  // 命令 300
-    static constexpr uint32_t Release_Hold_ms = 300U;       // 命令 200
-    static constexpr uint32_t Tray_Lift_Hold_ms = 350U;     // 命令 180，夹爪已空
-    static constexpr uint32_t Recognition_Hold_ms = 100U;   // XY 到位已由 XY_Move_Finished 把关
-    static constexpr uint32_t Return_Hold_ms = 100U;
-
-    // 提前预收缩：离抓取点这么近就开始合爪，到位时基本已经收好，
-    // Pre_Clip 段就只剩一点点尾巴。留太小会和旁边物体干涉，40mm 约 250ms。
-    static constexpr float Early_PreClip_Radius_mm = 40.0f;
-
-    // 右边沿退让的第一段目标 Y。
-    // 必须在进入该段时快照一次并固定下来：
-    // 若每个 tick 都用当前 Y 作为目标，目标会跟着实际位置跑，
-    // 到位判定永远不成立，就会停在 x=-40 不动。
-    float Detour_Target_Y_mm = 0.0f;
-    bool Detour_Target_Valid = false;
-
-    // Outputs() 的发送节拍：分析每 1ms 跑，但命令只按这个间隔往
-    // 舵机总线上发。两者分开是为了不把总线灍死：1kHz 重试会让
-    // Control_Angle 一直返回 HAL_BUSY，状态机就永远等不到命令成功。
-    static constexpr uint32_t Outputs_Period_ms = 10U;
-    uint32_t Outputs_Tick = 0U;
-
-    // 看门狗：任何状态停留超过这个时间就报错进 Return，
-    // 不再像上两次那样永久卡死。
-    static constexpr uint32_t Grap_State_Timeout_ms = 20000U;
-
-    uint32_t Pre_Clip_Early_Tick = 0U;
-    bool Pre_Clip_Early_Sent = false;
     uint32_t Grap_Output_Complete_Tick = 0U;
     uint32_t Return_Lift_Command_Tick = 0U;
     uint32_t Grap_Lift_Limit_Command_Tick = 0U;
@@ -778,7 +744,6 @@ private:
 
     bool XY_Move_Finished() const;
     bool XY_At_mm(float X_mm, float Y_mm) const;
-    bool XY_At_mm_Within(float X_mm, float Y_mm, float Tolerance_mm) const;
     bool Motion_Configuration_Valid() const;
     bool Move_XY_Yaw_Via_Edge(float X_mm, float Y_mm, float Yaw_Rad);
     bool Move_XY_Yaw_Direct(float X_mm, float Y_mm, float Yaw_Rad);
@@ -789,4 +754,3 @@ private:
 
 
 #endif // DM02_TEST_HOLDING_JAW_H
-

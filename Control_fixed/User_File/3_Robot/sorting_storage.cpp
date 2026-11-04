@@ -727,10 +727,6 @@ void Class_Sorting_Storage::Storage_Move()
                 )
             )
             {
-                // 翻转已经到位、物体已经落进盒子：
-                // 立刻通知上位机可以抓下一个，托盘回位和 DM4310 回零继续在后台做。
-                Sort_Finished_Pending = true;
-
                 Set_Storage_Status(
                     Sorting_Storage_Status_TRAY_HOLD
                 );
@@ -844,7 +840,10 @@ void Class_Sorting_Storage::Storage_Move()
                 DM4310_Stable_Required
             )
             {
-                // 通知已经在 TRAY_FLIP 完成时发过了，这里只做状态收尾。
+                Sort_Finished_Pending =
+                    true;
+
+
                 Target_Box_ID =
                     0;
 
