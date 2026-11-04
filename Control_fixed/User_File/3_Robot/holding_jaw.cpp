@@ -1218,9 +1218,33 @@ void Class_Holding_Jaw::Outputs()
             // 这里是"抓完 → 去识别托盘放件"，进入本状态前 Lift 已经抬到
             // Lift_Servo_Motor_Angle_Lift，夹爪在托盘面以上，不需要再为转 Yaw
             // 绕到 y=-40 的中转点：直接一条斜线过去，到位后再转 Yaw。
-            if (!Grap_Output_Flag && Move_XY_Yaw_Direct(
-                    Tray_X_mm, Tray_Y_mm, Tray_Yaw_Angle))
+            if (Grap_Output_Flag)
+            {
+                break;
+            }
+
+            // 右边沿退让：物体本身贴在 x>-30 时，先横向退到 x=-40，
+            // 再从这里直接去托盘。避免夹着高件沿着右边沿那段竖直面往下走，
+            // 和下方较高的物体卡住。
+            if (Grap_Output_Step == 0 &&
+                Edge_Motion_Config::Right_Edge_Detour_Enabled &&
+                XY_Motion.Get_X_mm() > Edge_Motion_Config::Right_Edge_Keepout_X_mm)
+            {
+                const float detour_x = Edge_Motion_Config::Right_Edge_Detour_X_mm;
+                const float detour_y = XY_Motion.Get_Y_mm();
+                if (Move_XY_Yaw_Direct(detour_x, detour_y, Tray_Yaw_Angle))
+                {
+                    Grap_Output_Step = 1;
+                    Edge_Move_Step = 0;   // 第二段要重新从 step 0 起
+                }
+                break;
+            }
+
+            if (Move_XY_Yaw_Direct(Tray_X_mm, Tray_Y_mm, Tray_Yaw_Angle))
+            {
+                Grap_Output_Step = 0;
                 Complete_Outputs();
+            }
             break;
         }
 
