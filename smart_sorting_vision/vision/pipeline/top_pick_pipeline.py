@@ -245,6 +245,7 @@ class TopPickPipeline:
         grasp_search_min_side_gap_mm: float = 0.25,
         grasp_search_yaw_penalty_per_deg: float = 0.12,
         grasp_search_center_penalty_per_mm: float = 0.35,
+        grasp_search_origin_penalty_per_mm: float = 0.0,
         grasp_search_max_trials_per_object: int = 40,
         x_limits_mm: (
             tuple[float, float] | None
@@ -422,6 +423,11 @@ class TopPickPipeline:
         self.grasp_search_min_side_gap_mm = max(0.0, float(grasp_search_min_side_gap_mm))
         self.grasp_search_yaw_penalty_per_deg = max(0.0, float(grasp_search_yaw_penalty_per_deg))
         self.grasp_search_center_penalty_per_mm = max(0.0, float(grasp_search_center_penalty_per_mm))
+        # 离原点（待机/识别托盘那一侧）越远扣分越多。
+        # 夹爪抬升余量有限，先抓近处可缩短拿着高件横穿其它物体的距离。
+        self.grasp_search_origin_penalty_per_mm = max(
+            0.0, float(grasp_search_origin_penalty_per_mm)
+        )
         self.grasp_search_max_trials_per_object = max(1, int(grasp_search_max_trials_per_object))
         if self.grasp_search_enabled:
             self.grasp_search_offsets = build_search_offsets(
@@ -1284,6 +1290,8 @@ class TopPickPipeline:
                     + 5.0 * confidence_score
                     - self.grasp_search_yaw_penalty_per_deg * yaw_deviation_from_family
                     - self.grasp_search_center_penalty_per_mm * center_offset_mm
+                    - self.grasp_search_origin_penalty_per_mm
+                    * (abs(float(x_mm)) + abs(float(y_mm)))
                 )
 
                 # 用当前物理宽度修正用于显示/兼容的像素宽度估计。

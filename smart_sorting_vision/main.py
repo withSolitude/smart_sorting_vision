@@ -351,6 +351,9 @@ class SmartSortingApp:
             grasp_search_min_side_gap_mm=top_grasp_search["min_side_gap_mm"],
             grasp_search_yaw_penalty_per_deg=top_grasp_search["yaw_penalty_per_deg"],
             grasp_search_center_penalty_per_mm=top_grasp_search["center_penalty_per_mm"],
+            grasp_search_origin_penalty_per_mm=top_grasp_search.get(
+                "origin_penalty_per_mm", 0.0
+            ),
             grasp_search_max_trials_per_object=top_grasp_search["max_trials_per_object"],
             x_limits_mm=x_limits,
             y_limits_mm=y_limits,
