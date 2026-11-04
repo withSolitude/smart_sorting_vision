@@ -277,6 +277,7 @@ class SideSortPipeline:
         )
 
         self._last_raw_diag_s = 0.0
+        self._last_empty_diag_s = 0.0
         # 只有 classifier 模式才有背景差分；seg 模式完全不需要背景图。
         self.background = (
             self.extractor.load_background(
@@ -367,6 +368,22 @@ class SideSortPipeline:
             shape_probe = self.shape_classifier.classify(frame)
             object_present = bool(shape_probe.get("object_present", False))
             if not object_present:
+
+                # 诊断：判空时打印分类器的 topk，用于区分
+                # “很确定地看到空托盘”与“被弄慎了”。限速一秒一条。
+                now_diag = time.monotonic()
+                if now_diag - self._last_empty_diag_s >= 1.0:
+                    self._last_empty_diag_s = now_diag
+                    topk_text = ", ".join(
+                        f"{item.get('shape')}={float(item.get('confidence', 0.0)):.3f}"
+                        for item in (shape_probe.get('topk') or [])[:3]
+                    )
+                    print(
+                        "[SIDE DIAG] classifier no_object "
+                        f"top1={shape_probe.get('shape')} "
+                        f"conf={float(shape_probe.get('confidence', 0.0)):.3f} "
+                        f"reason={shape_probe.get('reason')} topk=[{topk_text}]"
+                    )
                 self.consensus.reset()
                 probe_reason = str(shape_probe.get("reason", "unknown"))
                 # 只有模型明确判为 no_object 才立即触发回待机；低置信度
@@ -416,6 +433,17 @@ class SideSortPipeline:
         seg = self.segmenter.detect(frame)
 
         if not seg.get("found", False):
+
+            # 诊断：seg 没找到实例时打印原因与最高分。
+            now_diag = time.monotonic()
+            if now_diag - self._last_empty_diag_s >= 1.0:
+                self._last_empty_diag_s = now_diag
+                print(
+                    "[SIDE DIAG] seg no_instance "
+                    f"reason={seg.get('reason')} "
+                    f"score={float(seg.get('score', 0.0)):.3f} "
+                    f"class={seg.get('class_name')}"
+                )
             self.consensus.reset()
             reason = str(seg.get("reason", "no_object"))
             # 只有明确"没有实例"才立刻回待机；模型异常留待后续帧，

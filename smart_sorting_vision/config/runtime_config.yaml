@@ -80,8 +80,8 @@ model:
   side_seg:
     # seg 方案使用的模型；classifier 模式下完全不加载。
     # 注意：side_seg_v2_896 是用 imgsz 896 训练的，切换过去时下面的 imgsz 也要改 896。
-    path: outputs/training/side_seg/v1_seg_side/side_seg_v1-2/weights/best.engine
-    imgsz: 768  # 训练时的输入尺寸，必须与训练一致
+    path: outputs/training/side_seg/v1_seg_side/side_seg_v2_896/weights/best.engine
+    imgsz: 896  # 必须与训练一致（v2_896 是 896 训练的）
     device: 0  # 推理设备编号
     confidence_threshold: 0.5  # 判空阈值：低于此值视为没有实例
     max_instances: 1  # 侧视只有一个物体，超过 1 没有意义
@@ -329,7 +329,7 @@ vision:
     #
     # 切换后一定要同时确认对应模型路径存在，路径写错会直接启动失败。
     # ============================================================
-    presence_mode: classifier
+    presence_mode: seg
     seg:
       padding_ratio: 0.12  # seg 模式按 mask 外接框裁剪时四周留白比例
     recognition:
