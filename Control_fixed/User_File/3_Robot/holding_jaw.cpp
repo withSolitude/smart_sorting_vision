@@ -1113,17 +1113,13 @@ void Class_Holding_Jaw::Outputs()
 
         case Enum_Grap_Move_X_Y_Start:
         {
-            if (!Grap_Output_Flag &&
-                Move_XY_Yaw_Via_Edge(
-                    Grap_Target_X_mm, Grap_Target_Y_mm, Grap_Target_Yaw_Angle))
-            {
-                Complete_Outputs();
-            }
-
-            // 抓取移动一发出就让夹爪开始预收缩。
-            // 这样不管这一趟是直线还是斜线、距离多长，到位的时候爪子都已经收好，
-            // Pre_Clip 那一段可以直接过去，不用再等 400ms。
-            if (Grap_Output_Flag && !Pre_Clip_Early_Sent)
+            // 先让夹爪开始预收缩，再去执行这次抓取的 XY 移动。
+            //
+            // 不能把预收缩挂在 Move_XY_Yaw_Via_Edge 的返回值后面：
+            // 那个函数只有在“整段移动完成”时才返回 true，挂在那儿就等于
+            // 到位之后才合爪，一点时间都省不到（之前就是这样，现场看到的是
+            // 到位后才预收缩）。
+            if (!Pre_Clip_Early_Sent)
             {
                 Claw_Servo_Motor_Target_Angle = Grap_Target_Pre_Clip_Angle;
                 if (Claw_Servo_Motor.Control_Angle(
@@ -1133,6 +1129,13 @@ void Class_Holding_Jaw::Outputs()
                     Pre_Clip_Early_Sent = true;
                     Pre_Clip_Early_Tick = HAL_GetTick();
                 }
+            }
+
+            if (!Grap_Output_Flag &&
+                Move_XY_Yaw_Via_Edge(
+                    Grap_Target_X_mm, Grap_Target_Y_mm, Grap_Target_Yaw_Angle))
+            {
+                Complete_Outputs();
             }
 
             break;
