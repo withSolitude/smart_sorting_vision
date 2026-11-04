@@ -564,26 +564,6 @@ void Class_Holding_Jaw::Grap_Move()
                 (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
-            // 离目标还剩 Early_PreClip_Radius_mm 时就开始合爪，
-            // 到位时爪子已经收好一大半，Pre_Clip 段只剩尾巴。
-            if (!Pre_Clip_Early_Sent && !XY_Motion.Get_Motion_Finished())
-            {
-                const float dx = Grap_Target_X_mm - XY_Motion.Get_X_mm();
-                const float dy = Grap_Target_Y_mm - XY_Motion.Get_Y_mm();
-                if (dx * dx + dy * dy <=
-                    Early_PreClip_Radius_mm * Early_PreClip_Radius_mm)
-                {
-                    Claw_Servo_Motor_Target_Angle = Grap_Target_Pre_Clip_Angle;
-                    if (Claw_Servo_Motor.Control_Angle(
-                            Claw_Servo_Motor_Target_Angle,
-                            Claw_PreClip_Time_ms) == HAL_OK)
-                    {
-                        Pre_Clip_Early_Sent = true;
-                        Pre_Clip_Early_Tick = HAL_GetTick();
-                    }
-                }
-            }
-
             if (XY_Move_Finished() &&
                 Grap_Move_Count >= 1)
             {
@@ -1133,9 +1113,28 @@ void Class_Holding_Jaw::Outputs()
 
         case Enum_Grap_Move_X_Y_Start:
         {
-            if (!Grap_Output_Flag && Move_XY_Yaw_Via_Edge(
+            if (!Grap_Output_Flag &&
+                Move_XY_Yaw_Via_Edge(
                     Grap_Target_X_mm, Grap_Target_Y_mm, Grap_Target_Yaw_Angle))
+            {
                 Complete_Outputs();
+            }
+
+            // 抓取移动一发出就让夹爪开始预收缩。
+            // 这样不管这一趟是直线还是斜线、距离多长，到位的时候爪子都已经收好，
+            // Pre_Clip 那一段可以直接过去，不用再等 400ms。
+            if (Grap_Output_Flag && !Pre_Clip_Early_Sent)
+            {
+                Claw_Servo_Motor_Target_Angle = Grap_Target_Pre_Clip_Angle;
+                if (Claw_Servo_Motor.Control_Angle(
+                        Claw_Servo_Motor_Target_Angle,
+                        Claw_PreClip_Time_ms) == HAL_OK)
+                {
+                    Pre_Clip_Early_Sent = true;
+                    Pre_Clip_Early_Tick = HAL_GetTick();
+                }
+            }
+
             break;
         }
 

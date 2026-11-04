@@ -711,7 +711,8 @@ private:
     // 原来这三处硬编码 500ms，是"XY 到点后到夹爪预收缩"这段延迟的主要来源。
     // 预收缩提前：XY 移动到离目标这么近时就开始合爪，
     // 到位时爪子已经基本收好。留太小会和旁边物体干涉。
-    static constexpr float Early_PreClip_Radius_mm = 40.0f;
+    // 预收缩已改成“移动命令一下发就合爪”，
+    // 不再靠距离触发（直线与斜线的路径速度不同，距离不可靠）。
     static constexpr uint32_t Claw_PreClip_Time_ms = 300U;
     static constexpr uint32_t Claw_Clip_Time_ms = 320U;
     static constexpr uint32_t Claw_Release_Time_ms = 200U;
