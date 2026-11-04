@@ -460,6 +460,7 @@ class SmartSortingApp:
             reject_unknown=runtime_cfg["reject_unknown"],
             side_timeout_fallback_sort=bool(runtime_cfg.get("side_timeout_fallback_sort", True)),
             on_finished=self._on_finished,
+            on_recognized=self._on_recognized,
             on_session_start=self._on_session_start,
             loop_sleep_idle_s=scheduler_cfg["idle_sleep_s"],
             loop_sleep_wait_s=scheduler_cfg["wait_sleep_s"],
@@ -517,6 +518,40 @@ class SmartSortingApp:
             f"[COMPETITION] START cycle={runtime.cycle_id} "
             f"already_completed={runtime.completed_count}"
         )
+
+    def _on_recognized(self, preview):
+        # 识别完成就先在界面上占一行；
+        # 分拣完成时 _on_finished 会把这一行原地补全，不会重复出行。
+        if self.display is None:
+            return
+
+        color_map = {
+            "red": "红色",
+            "orange": "橙色",
+            "yellow": "黄色",
+            "green": "绿色",
+            "cyan": "青色",
+            "blue": "蓝色",
+            "purple": "紫色",
+            "black": "黑色",
+            "white": "白色",
+            "gray": "灰色",
+            "grey": "灰色",
+        }
+        raw_color = str(preview.get("color", "unknown"))
+        shape = str(preview.get("shape", "unknown"))
+        color_cn = color_map.get(raw_color.lower(), raw_color)
+
+        try:
+            self.display.add_finished_item(
+                sequence=int(preview.get("sequence", 0)),
+                product_name=f"{shape}_{color_cn}",
+                image_bgr=preview.get("image_bgr"),
+                success_count=int(preview.get("success_count", 0)),
+                pending=True,
+            )
+        except Exception as exc:
+            print(f"[UI][WARN] preview row failed: {exc}")
 
     def _on_finished(self, record):
         safe = {k: v for k, v in record.items() if k != "image_bgr"}

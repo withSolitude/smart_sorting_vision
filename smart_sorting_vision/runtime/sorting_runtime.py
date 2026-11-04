@@ -123,6 +123,8 @@ class SortingRuntime:
         # 不要让它一直占着识别台，也不要直接跳过这一件。
         self.side_timeout_fallback_sort = bool(side_timeout_fallback_sort)
         self.on_finished = on_finished
+        # 识别完成、尚未分拣完成时的预览回调（仅用于 UI 立即刷新）
+        self.on_recognized = None
         self.on_session_start = on_session_start
 
         # 状态感知的主循环调度：
@@ -713,6 +715,23 @@ class SortingRuntime:
         self.current_object = obj
         self.current_box = reservation.box_id
         self.current_reservation_id = reservation.reservation_id
+
+        # 识别一完就把结果交给 UI，不等整个分拣动作做完。
+        if callable(self.on_recognized):
+            try:
+                self.on_recognized(
+                    {
+                        "sequence": self.completed_count + 1,
+                        "color": getattr(obj, "color", "unknown"),
+                        "shape": getattr(obj, "shape", "unknown"),
+                        "qr_present": bool(getattr(obj, "qr_present", False)),
+                        "box_id": int(reservation.box_id),
+                        "image_bgr": self.current_side_image,
+                        "success_count": int(self.completed_count),
+                    }
+                )
+            except Exception as exc:
+                print(f"[Runtime][WARN] on_recognized failed: {exc}")
 
         tx = SortingFrame(
             mode=Mode.SORT_RESULT,

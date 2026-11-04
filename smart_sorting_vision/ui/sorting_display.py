@@ -31,6 +31,8 @@ class SortingDisplayRecord:
     product_name: str
     image_bgr: Optional[np.ndarray]
     success_count: int
+    # True 表示只是识别完成的占位行。
+    pending: bool = False
 
 
 class SortingDisplayWindow(QMainWindow):
@@ -75,6 +77,9 @@ class SortingDisplayWindow(QMainWindow):
         self.add_record_signal.connect(
             self._add_record
         )
+
+        # 识别完成先占一行（pending），分拣完成后就地补全。
+        self._pending_row: Optional[int] = None
 
         self.reset_signal.connect(
             self._reset_table
@@ -304,6 +309,7 @@ class SortingDisplayWindow(QMainWindow):
         product_name: str,
         image_bgr: Optional[np.ndarray],
         success_count: int,
+        pending: bool = False,
     ):
         """
         一件货物真正完成分拣后调用。
@@ -319,11 +325,50 @@ class SortingDisplayWindow(QMainWindow):
             product_name=product_name,
             image_bgr=image_bgr,
             success_count=success_count,
+            pending=bool(pending),
         )
 
         self.add_record_signal.emit(
             record
         )
+
+    def _fill_pending_row(
+        self,
+        record: SortingDisplayRecord,
+    ):
+        """把占位行补成正式记录。"""
+        row = self._pending_row
+        self._pending_row = None
+
+        if row is None or row >= self.table.rowCount():
+            return
+
+        self.records.append(
+            record
+        )
+
+        sequence_item = QTableWidgetItem(str(record.sequence))
+        sequence_item.setTextAlignment(Qt.AlignCenter)
+        self.table.setItem(row, 0, sequence_item)
+
+        name_item = QTableWidgetItem(record.product_name)
+        name_item.setTextAlignment(Qt.AlignCenter)
+        self.table.setItem(row, 1, name_item)
+
+        if record.image_bgr is not None:
+            pixmap = self._bgr_to_pixmap(record.image_bgr)
+            if pixmap is not None:
+                label = QLabel()
+                label.setAlignment(Qt.AlignCenter)
+                label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                label.setPixmap(
+                    pixmap.scaled(180, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                )
+                self.table.setCellWidget(row, 2, label)
+
+        count_item = QTableWidgetItem(str(record.success_count))
+        count_item.setTextAlignment(Qt.AlignCenter)
+        self.table.setItem(row, 3, count_item)
 
     def reset(self):
         """
@@ -331,6 +376,8 @@ class SortingDisplayWindow(QMainWindow):
         """
 
         self.reset_signal.emit()
+
+        self._pending_row = None
 
     def set_waiting(
         self,
@@ -348,6 +395,11 @@ class SortingDisplayWindow(QMainWindow):
         self,
         record: SortingDisplayRecord,
     ):
+        # 真正完成的记录到来时，若已有占位行就在原行补全。
+        if not record.pending and self._pending_row is not None:
+            self._fill_pending_row(record)
+            return
+
         self.records.append(
             record
         )
@@ -464,6 +516,9 @@ class SortingDisplayWindow(QMainWindow):
             row,
             135,
         )
+
+        if record.pending:
+            self._pending_row = row
 
         # --------------------------------------------------------
         # 自动滚动到最新结果
