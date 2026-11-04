@@ -699,6 +699,10 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
 {
     Sorting_Storage
     .TIM_10ms_PeriodElapsedCallback();
+
+    // 抓取状态机也在这个 10ms 节拍上推进：
+    // XY 到位、舵机时间到都立刻进入下一步，不再等 100ms 节拍。
+    Holding_Jaw.TIM_10ms_PeriodElapsedCallback();
     // ========================================================
     // 1.
     // 处理Jetson串口命令

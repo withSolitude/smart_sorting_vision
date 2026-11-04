@@ -12,9 +12,18 @@
 // 上位机 edge_yaw_limit.boundary_axis 必须与这里一致。
 namespace Edge_Motion_Config
 {
+// 现场实测：退避/中转点现在是 (x=0, y=-20)，仍在 Y 轴上 -> Boundary_Axis_Y = true。
+// 上电日志会打印实际退避点，若与现场不符请先核对这一项。
 constexpr bool Boundary_Axis_Y = true;
-constexpr float Turn_Boundary_mm = -40.0f;
-constexpr float Turn_Extra_Clearance_mm = 0.01f; // 再向内留少量数值余量，叠加XY到位容差。
+constexpr float Turn_Boundary_mm = -20.0f;
+constexpr float Turn_Extra_Clearance_mm = 0.01f;
+
+// true = 从危险带内出发时不再"先退到边界点再横移"，而是直接一条斜线走向目标；
+//        Yaw 会延迟到实测离开危险带之后再发（见 Move_XY_Yaw_Via_Edge 的 step 4），
+//        所以"危险带内不转 Yaw"这个安全不变量仍然成立。
+// 代价：斜线在 y 从 0 走到边界的那一段，X 已经开始移动。若夹爪在 y≈0 附近
+//       横移会碰到电机/龙门梁，请保持 false 或先把 Turn_Boundary_mm 收紧。
+constexpr bool Merge_Start_With_Travel = true; // 再向内留少量数值余量，叠加XY到位容差。
 
 // 兼容旧名：只表示"边界数值"，不再表示边界一定在 X 轴上。
 constexpr float Turn_Boundary_X_mm = Turn_Boundary_mm;

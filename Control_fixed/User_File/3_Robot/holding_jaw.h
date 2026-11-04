@@ -135,6 +135,9 @@ public:
 
     void TIM_100ms_PeriodElapsedCallback();
 
+    // 抓取状态机的快速推进：XY 到位、舵机时间到都不再等下一个 100ms 节拍。
+    void TIM_10ms_PeriodElapsedCallback();
+
 
     // ========================================================
     // 状态机
@@ -294,10 +297,10 @@ private:
     // ========================================================
 
     float X_Move_Speed_mm_s =
-        150.0f;
+        160.0f;
 
     float Y_Move_Speed_mm_s =
-        150.0f;
+        160.0f;
 
 
     // ========================================================
@@ -355,7 +358,7 @@ private:
     // ========================================================
 
     float Recognition_X_mm =
-        0.0f;
+        -70.0f;
 
     float Recognition_Y_mm =
         -70.0f;
@@ -564,7 +567,7 @@ private:
     // --------------------------------------------------------
 
     float Lift_Descend_Speed =
-        60.0f *
+        80.0f *
         PI / 180.0f;
 
 
@@ -607,7 +610,7 @@ private:
 
     static constexpr uint16_t
     Lift_Control_Move_Time_ms =
-        50;
+        45;
 
 
     // --------------------------------------------------------
@@ -698,8 +701,21 @@ private:
     // 包含每个 XY 阶段的命令提交重试、移动时间和舵机动作时间。
     uint32_t Grap_State_Start_Tick = 0U;
     static constexpr uint32_t XY_State_Timeout_ms = 30000U;
-    static constexpr uint32_t Servo_Move_Time_ms = 280U;
-    static constexpr uint32_t Servo_Stop_Settle_ms = 20U;
+    static constexpr uint32_t Servo_Move_Time_ms = 200U;
+
+    // 夹爪单独的动作时间：预收缩/夹紧/放松不需要和 Yaw/升降一样慢。
+    // 原来这三处硬编码 500ms，是"XY 到点后到夹爪预收缩"这段延迟的主要来源。
+    static constexpr uint32_t Claw_PreClip_Time_ms = 300U;
+    static constexpr uint32_t Claw_Clip_Time_ms = 320U;
+    static constexpr uint32_t Claw_Release_Time_ms = 200U;
+
+    // 识别托盘段（放件）的升降单独一套时间：这一段夹爪不接触物体、
+    // 也没有 TOF 闭环，可以明显比"抓取时"快。抓取那一路仍然走
+    // Lift_Descend_Speed(80°/s) 的 20ms 跟随，两者互不影响。
+    static constexpr uint32_t Lift_Pick_Move_Time_ms = 420U;   // 抓完抬升（74°，约 925ms 行程里的前段）
+    static constexpr uint32_t Lift_Tray_Descend_Time_ms = 300U; // 托盘下降（54°，还托着物体）
+    static constexpr uint32_t Lift_Tray_Lift_Time_ms = 180U;    // 托盘抬升（54°，夹爪已空）
+    static constexpr uint32_t Servo_Stop_Settle_ms = 15U;
     uint32_t Grap_Output_Complete_Tick = 0U;
     uint32_t Return_Lift_Command_Tick = 0U;
     uint32_t Grap_Lift_Limit_Command_Tick = 0U;
