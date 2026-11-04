@@ -12,10 +12,10 @@
 // 上位机 edge_yaw_limit.boundary_axis 必须与这里一致。
 namespace Edge_Motion_Config
 {
-// 现场实测：退避/中转点现在是 (x=0, y=-20)，仍在 Y 轴上 -> Boundary_Axis_Y = true。
+// 现场实测：退避/中转点现在是 (x=0, y=-60)，仍在 Y 轴上 -> Boundary_Axis_Y = true。
 // 上电日志会打印实际退避点，若与现场不符请先核对这一项。
 constexpr bool Boundary_Axis_Y = true;
-constexpr float Turn_Boundary_mm = -20.0f;
+constexpr float Turn_Boundary_mm = -60.0f;
 constexpr float Turn_Extra_Clearance_mm = 0.01f;
 
 // true = 从危险带内出发时不再"先退到边界点再横移"，而是直接一条斜线走向目标；

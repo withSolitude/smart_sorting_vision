@@ -129,7 +129,7 @@ vision:
     edge_yaw_limit:
       enabled: true  # 是否启用边缘抓取姿态约束；下位机中转路线另由edge_motion_config.h配置。
       boundary_axis: y  # 危险边界所在轴：电机在图像下边沿 -> y。必须与下位机 Boundary_Axis_Y 一致（当前 true = Y）。
-      x_threshold_mm: -20.0  # 沿 boundary_axis 的阈值：y 轴时表示 y > -20 算边缘区。
+      x_threshold_mm: -60.0  # 沿 boundary_axis 的阈值：y 轴时表示 y > -60 算边缘区。
       servo_min_deg: 40.0  # 边缘区允许的最小实际Yaw舵机角（度）。
       servo_max_deg: 80.0  # 边缘区允许的最大实际Yaw舵机角（度）。
       preferred_servo_deg: 60.0  # 接触条件相近时优先的平行姿态（度）。
