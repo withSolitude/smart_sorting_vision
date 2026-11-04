@@ -73,6 +73,13 @@ model:
     confidence_threshold: 0.7  # 侧面形状/空背景分类的最低置信度。
     topk: 3  # 保留的最高概率类别数量。
 
+  side_seg:
+    path: outputs/training/side_seg/v1_seg_side/side_seg_v1-2/weights/best.engine  # 侧面 seg 模型；classifier 模式下不使用
+    imgsz: 768  # 训练时的输入尺寸，必须与训练一致
+    device: 0  # 推理设备编号
+    confidence_threshold: 0.5  # 判空阈值：低于此值视为没有实例
+    max_instances: 1  # 侧视只有一个物体，超过 1 没有意义
+
 calibration:
   top_intrinsics: data/calibration/top_camera/top_camera_intrinsics.npz  # 顶部相机内参文件路径。
   pixel_to_robot: data/calibration/top_camera/robot_mapping/pixel_to_robot.json  # 像素到机械 XY 的标定文件路径。
@@ -121,8 +128,8 @@ vision:
     # 仅限制靠近电机/相机一侧的抓取姿态；角度为下位机Yaw舵机命令角，不是PICK_TARGET轴向角。
     edge_yaw_limit:
       enabled: true  # 是否启用边缘抓取姿态约束；下位机中转路线另由edge_motion_config.h配置。
-      boundary_axis: y  # 危险边界所在轴：电机在图像下边沿 -> y。必须与下位机 Boundary_Axis_Y 一致。
-      x_threshold_mm: -40.0  # 沿 boundary_axis 的阈值：y 轴时表示 y > -40 算边缘区。
+      boundary_axis: y  # 危险边界所在轴：电机在图像下边沿 -> y。必须与下位机 Boundary_Axis_Y 一致（当前 true = Y）。
+      x_threshold_mm: -60.0  # 沿 boundary_axis 的阈值：y 轴时表示 y > -60 算边缘区。
       servo_min_deg: 40.0  # 边缘区允许的最小实际Yaw舵机角（度）。
       servo_max_deg: 80.0  # 边缘区允许的最大实际Yaw舵机角（度）。
       preferred_servo_deg: 60.0  # 接触条件相近时优先的平行姿态（度）。
@@ -299,6 +306,9 @@ vision:
       max_grasp_spread_mm: 3.0  # 顶部多帧抓取点允许的最大散布（mm）。
       reset_after_misses: 3  # 连续漏检多少帧后清空顶部跟踪。
   side:
+    presence_mode: seg  # classifier=分类器判空+背景差分裁剪 | seg=侧面 YOLO-seg 判空并直接给 mask
+    seg:
+      padding_ratio: 0.12  # seg 模式按 mask 外接框裁剪时四周留白比例
     recognition:
       color:
         enabled: true  # 是否启用颜色识别。
@@ -399,8 +409,8 @@ vision:
     # 属性识别仍保持 4/5；若 4s 内一直未达共识，Runtime 使用整个
     # 识别阶段的有效完整结果多数票兜底。
     consensus:
-      window: 5  # 多帧共识窗口长度。
-      required: 4  # 窗口内达到该票数才确认。
+      window: 3  # 多帧共识窗口长度。原 5/4 -> 3/2，识别延迟约省 70ms
+      required: 2  # 窗口内达到该票数才确认。
 
 storage:
   box_count: 6  # 储物盒数量。
@@ -448,7 +458,10 @@ runtime:
   max_items: 0  # 固定件数结束上限；0 表示不启用。
 
   # 正式比赛不允许把 unknown 直接分配到储物盒。
-  reject_unknown: true  # 是否拒绝颜色或形状 unknown 的结果。
+  reject_unknown: true
+  # 侧面识别超时时，物体已夹在爪里：优先丢进一个空储物盒（unknown 类），
+  # 只有连空盒都没有时才回退到 RETRY_PICK。
+  side_timeout_fallback_sort: true  # 是否拒绝颜色或形状 unknown 的结果。
 
   warmup:
     enabled: true  # 是否在启动阶段预热推理模型。
@@ -466,5 +479,7 @@ ui:
   max_visible_rows: 6  # 界面最多显示的历史记录行数。
 
 debug:
+  # 每帧打印 [TIMING] infer/search/total，用来定位顶部定位耗时；稳定后可改回 false
+  pipeline_timing: true
   frames_dir: data/debug/last_debug/frames  # 调试帧输出目录。
   dataset_dir: data/debug/last_debug/dataset  # 调试数据集输出目录。

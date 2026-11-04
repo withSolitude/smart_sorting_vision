@@ -126,15 +126,9 @@ class SmartSortingApp:
         )
         self.top_pipeline.reset()
 
-        if self.side_pipeline.shape_classifier is not None:
-            side_stats = self.side_pipeline.shape_classifier.warmup(
-                runs=side_runs,
-            )
-        else:
-            side_stats = {
-                "first_ms": 0.0,
-                "steady_avg_ms": 0.0,
-            }
+        side_stats = self.side_pipeline.warmup(
+            runs=side_runs,
+        )
         self.side_pipeline.reset()
 
         print(
@@ -346,6 +340,7 @@ class SmartSortingApp:
             gripper_body_length_mm=top_gripper_collision["body"]["length_mm"],
             gripper_body_longitudinal_offset_mm=top_gripper_collision["body"]["longitudinal_offset_mm"],
             gripper_debug_log_rejections=top_gripper_collision["debug_log_rejections"],
+            timing_enabled=bool(self.config.get("debug", {}).get("pipeline_timing", False)),
             grasp_search_enabled=top_grasp_search["enabled"],
             grasp_search_yaw_offsets_deg=top_grasp_search["yaw_offsets_deg"],
             grasp_search_longitudinal_offsets_mm=top_grasp_search["longitudinal_offsets_mm"],
@@ -387,8 +382,23 @@ class SmartSortingApp:
             )
         )
 
+        side_presence_mode = str(
+            side_vision_cfg.get("presence_mode", "classifier")
+        ).strip().lower()
+        side_seg_cfg = dict(self.config.get("model", {}).get("side_seg", {}) or {})
+        side_seg_padding = float(
+            (side_vision_cfg.get("seg") or {}).get("padding_ratio", 0.12)
+        )
+
         self.side_pipeline = SideSortPipeline(
-            background_path=self.config["calibration"]["side_background"],
+            background_path=self.config["calibration"].get("side_background"),
+            presence_mode=side_presence_mode,
+            seg_model_path=side_seg_cfg.get("path"),
+            seg_device=side_seg_cfg.get("device", 0),
+            seg_imgsz=int(side_seg_cfg.get("imgsz", 768)),
+            seg_confidence=float(side_seg_cfg.get("confidence_threshold", 0.5)),
+            seg_max_instances=int(side_seg_cfg.get("max_instances", 1)),
+            seg_padding_ratio=side_seg_padding,
             shape_model_path=side_model_cfg["path"],
             shape_device=side_model_cfg["device"],
             shape_imgsz=side_model_cfg["imgsz"],
@@ -445,6 +455,7 @@ class SmartSortingApp:
             empty_finish_hold_s=runtime_cfg["empty_finish_hold_s"],
             max_items=runtime_cfg["max_items"],
             reject_unknown=runtime_cfg["reject_unknown"],
+            side_timeout_fallback_sort=bool(runtime_cfg.get("side_timeout_fallback_sort", True)),
             on_finished=self._on_finished,
             on_session_start=self._on_session_start,
             loop_sleep_idle_s=scheduler_cfg["idle_sleep_s"],

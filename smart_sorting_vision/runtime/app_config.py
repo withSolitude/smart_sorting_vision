@@ -127,12 +127,30 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
         raise ConfigError(
             "calibration.top_camera.max_view_error_px 必须大于0"
         )
-    background_capture = cfg["calibration"].get("side_background_capture")
-    if not isinstance(background_capture, dict):
-        raise ConfigError("缺少 calibration.side_background_capture")
-    for key in ("settle_frames", "frame_count"):
-        if key not in background_capture:
-            raise ConfigError(f"缺少 calibration.side_background_capture.{key}")
+    # 侧面存在性判定方式：classifier（分类器 + 背景差分裁剪）或 seg（YOLO-seg）。
+    side_vision = cfg.setdefault("vision", {}).setdefault("side", {})
+    presence_mode = str(side_vision.get("presence_mode", "classifier")).strip().lower()
+    if presence_mode not in ("classifier", "seg"):
+        raise ConfigError(
+            "vision.side.presence_mode 只能是 'classifier' 或 'seg'，"
+            f"当前为 {presence_mode!r}"
+        )
+    side_vision["presence_mode"] = presence_mode
+
+    if presence_mode == "seg":
+        seg_cfg = cfg.get("model", {}).get("side_seg")
+        if not isinstance(seg_cfg, dict) or not seg_cfg.get("path"):
+            raise ConfigError(
+                "presence_mode=seg 时必须配置 model.side_seg.path（侧面 seg 模型路径）"
+            )
+        # seg 模式不需要固定背景，这两块可以随后删除。
+    else:
+        background_capture = cfg["calibration"].get("side_background_capture")
+        if not isinstance(background_capture, dict):
+            raise ConfigError("缺少 calibration.side_background_capture")
+        for key in ("settle_frames", "frame_count"):
+            if key not in background_capture:
+                raise ConfigError(f"缺少 calibration.side_background_capture.{key}")
     if "scheduler" not in cfg["runtime"] or "warmup" not in cfg["runtime"]:
         raise ConfigError("runtime.scheduler 和 runtime.warmup 必须统一写在 YAML")
     debug_cfg = cfg.get("debug")
@@ -152,9 +170,15 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
     cfg["calibration"]["pixel_to_robot"] = _resolve_path(
         root, cfg["calibration"]["pixel_to_robot"], name="calibration.pixel_to_robot"
     )
-    cfg["calibration"]["side_background"] = _resolve_path(
-        root, cfg["calibration"]["side_background"], name="calibration.side_background"
-    )
+    if cfg["calibration"].get("side_background"):
+        cfg["calibration"]["side_background"] = _resolve_path(
+            root, cfg["calibration"]["side_background"], name="calibration.side_background"
+        )
+    side_seg_cfg = cfg.get("model", {}).get("side_seg")
+    if isinstance(side_seg_cfg, dict) and side_seg_cfg.get("path"):
+        side_seg_cfg["path"] = _resolve_path(
+            root, side_seg_cfg["path"], name="model.side_seg.path"
+        )
 
     workspace = cfg["mechanics"].get("workspace_mm", {})
     x_limits = _as_float_pair(workspace.get("x"), name="mechanics.workspace_mm.x")

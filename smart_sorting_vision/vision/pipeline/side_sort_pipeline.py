@@ -102,7 +102,14 @@ class SideSortPipeline:
     def __init__(
         self,
         *,
-        background_path: str | Path,
+        background_path: str | Path | None = None,
+        presence_mode: str = "classifier",
+        seg_model_path: str | Path | None = None,
+        seg_device=0,
+        seg_imgsz: int = 768,
+        seg_confidence: float = 0.50,
+        seg_max_instances: int = 1,
+        seg_padding_ratio: float = 0.12,
         shape_model_path: str | Path,
         shape_device=0,
         shape_imgsz: int = 224,
@@ -124,9 +131,40 @@ class SideSortPipeline:
         enable_qr: bool = True,
         enable_shape: bool = True,
     ) -> None:
-        self.background_path = Path(
-            background_path
-        )
+        self.presence_mode = str(presence_mode).strip().lower()
+        if self.presence_mode not in ("classifier", "seg"):
+            raise ValueError(
+                "presence_mode 只能是 'classifier' 或 'seg'，"
+                f"收到 {presence_mode!r}"
+            )
+
+        self.segmenter = None
+        self.seg_padding_ratio = float(seg_padding_ratio)
+        self.background_path: Path | None = None
+
+        if self.presence_mode == "seg":
+            # seg 模式不再需要固定背景；有没有物体由"是否有实例"决定。
+            if seg_model_path is None:
+                raise ValueError("presence_mode=seg 时必须提供 seg_model_path")
+            seg_path = Path(seg_model_path)
+            if not seg_path.exists():
+                raise FileNotFoundError(
+                    "\n侧面 seg 模型不存在：\n"
+                    f"  {seg_path}"
+                )
+            from vision.models.side_segmenter import SideSegmenter
+
+            self.segmenter = SideSegmenter(
+                model_path=seg_path,
+                imgsz=seg_imgsz,
+                device=seg_device,
+                confidence_threshold=seg_confidence,
+                max_instances=seg_max_instances,
+            )
+        else:
+            self.background_path = Path(
+                background_path
+            )
 
         self.enable_color = bool(enable_color)
         self.enable_qr = bool(enable_qr)
@@ -138,14 +176,19 @@ class SideSortPipeline:
             f"color={self.enable_color} "
             f"qr={self.enable_qr} "
             f"qr_content_check={self.qr_check_content} "
-            f"shape={self.enable_shape}"
+            f"shape={self.enable_shape} "
+            f"presence={self.presence_mode}"
         )
 
         self.shape_model_path = Path(
             shape_model_path
         )
 
-        if not self.background_path.exists():
+        if (
+            self.presence_mode != "seg"
+            and self.background_path is not None
+            and not self.background_path.exists()
+        ):
             raise FileNotFoundError(
                 "侧面固定背景不存在：\n"
                 f"{self.background_path}"
@@ -169,6 +212,8 @@ class SideSortPipeline:
             SideObjectExtractor(
                 **extractor_cfg
             )
+            if self.presence_mode != "seg"
+            else None
         )
 
         self.color_classifier = (
@@ -231,10 +276,13 @@ class SideSortPipeline:
             consensus_window
         )
 
+        # 只有 classifier 模式才有背景差分；seg 模式完全不需要背景图。
         self.background = (
             self.extractor.load_background(
                 self.background_path
             )
+            if self.extractor is not None
+            else None
         )
 
     def reset(
@@ -252,6 +300,8 @@ class SideSortPipeline:
             )
 
         if (
+            self.background is not None
+            and
             frame.shape
             !=
             self.background.shape
@@ -295,13 +345,20 @@ class SideSortPipeline:
             crop_bbox=None,
         )
 
-    def process(
-        self,
-        frame: np.ndarray,
-    ) -> SideSortPipelineResult:
-        self._check_frame(
-            frame
-        )
+    def warmup(self, runs: int = 2) -> dict[str, float]:
+        """预热当前模式使用的推理后端。"""
+        if self.presence_mode == "seg" and self.segmenter is not None:
+            return self.segmenter.warmup(runs=runs)
+        if self.shape_classifier is not None:
+            return self.shape_classifier.warmup(runs=runs)
+        return {"first_ms": 0.0, "steady_avg_ms": 0.0}
+    # ------------------------------------------------------------------
+    # 存在性 + 裁剪：两种模式产出的变量完全一致，
+    # 后续识别/共识代码不需要知道用的是哪一路。
+    # ------------------------------------------------------------------
+
+    def _probe_classifier(self, frame: np.ndarray):
+        """分类模型判存在性 + 背景差分裁剪（原有逻辑，行为不变）。"""
 
         # 第一步始终对完整侧面 ROI 做形状分类。空托盘必须作为训练集中的
         # no_object/empty/background 类别，不再通过背景差分决定有无物体。
@@ -351,6 +408,104 @@ class SideSortPipeline:
             crop = frame
             crop_mask = np.full(frame.shape[:2], 255, dtype=np.uint8)
             crop_bbox = None
+        return shape_probe, crop, crop_mask, crop_bbox
+
+    def _probe_seg(self, frame: np.ndarray):
+        """seg 模型：有实例=有物体，mask 直接给颜色/二维码裁剪。"""
+        seg = self.segmenter.detect(frame)
+
+        if not seg.get("found", False):
+            self.consensus.reset()
+            reason = str(seg.get("reason", "no_object"))
+            # 只有明确"没有实例"才立刻回待机；模型异常留待后续帧，
+            # 避免一帧推理抖动误触发重抓（与分类路保持一致）。
+            if reason != "no_object":
+                return self._empty_result(
+                    reason=f"seg_pending:{reason}",
+                    required_hits=self.required_hits,
+                    found=True,
+                    shape="unknown",
+                    raw_result={"seg": seg},
+                )
+            return self._empty_result(
+                reason="no_object",
+                required_hits=self.required_hits,
+                found=False,
+                shape="no_object",
+                raw_result={"seg": seg},
+            )
+
+        crop, crop_mask, crop_bbox = self._crop_from_seg(frame, seg)
+        class_name = str(seg.get("class_name", "unknown"))
+        score = float(seg.get("score", 0.0))
+        shape_probe = {
+            "found": True,
+            "object_present": True,
+            "shape": class_name,
+            "raw_shape": class_name,
+            "confidence": score,
+            "raw_confidence": score,
+            "reason": "seg",
+        }
+        return shape_probe, crop, crop_mask, crop_bbox
+
+    def _crop_from_seg(
+        self,
+        frame: np.ndarray,
+        seg: dict,
+    ) -> tuple[np.ndarray, np.ndarray, tuple[int, int, int, int] | None]:
+        """按 mask 外接框裁剪，并留出 padding。mask 全空时退回整幅。"""
+        mask = seg.get("mask")
+        if mask is None:
+            return (
+                frame,
+                np.full(frame.shape[:2], 255, dtype=np.uint8),
+                None,
+            )
+
+        rows = np.any(mask > 0, axis=1)
+        cols = np.any(mask > 0, axis=0)
+        if not rows.any() or not cols.any():
+            return (
+                frame,
+                np.full(frame.shape[:2], 255, dtype=np.uint8),
+                None,
+            )
+
+        y_idx = np.flatnonzero(rows)
+        x_idx = np.flatnonzero(cols)
+        y1, y2 = int(y_idx[0]), int(y_idx[-1]) + 1
+        x1, x2 = int(x_idx[0]), int(x_idx[-1]) + 1
+
+        pad = max(0.0, float(self.seg_padding_ratio))
+        if pad > 0.0:
+            dx = int(round((x2 - x1) * pad))
+            dy = int(round((y2 - y1) * pad))
+            h, w = frame.shape[:2]
+            x1, y1 = max(0, x1 - dx), max(0, y1 - dy)
+            x2, y2 = min(w, x2 + dx), min(h, y2 + dy)
+
+        crop = frame[y1:y2, x1:x2].copy()
+        crop_mask = (mask[y1:y2, x1:x2] > 0).astype(np.uint8) * 255
+        return crop, crop_mask, (x1, y1, x2, y2)
+
+    def process(
+        self,
+        frame: np.ndarray,
+    ) -> SideSortPipelineResult:
+        self._check_frame(
+            frame
+        )
+
+        if self.presence_mode == "seg":
+            probe = self._probe_seg(frame)
+        else:
+            probe = self._probe_classifier(frame)
+
+        if isinstance(probe, SideSortPipelineResult):
+            return probe
+
+        shape_probe, crop, crop_mask, crop_bbox = probe
 
         raw_result = self.recognizer.recognize(
             crop,
