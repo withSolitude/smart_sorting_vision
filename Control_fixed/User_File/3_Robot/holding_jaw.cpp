@@ -702,7 +702,7 @@ void Class_Holding_Jaw::Grap_Move()
                 (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
-            if (Grap_Move_Count >= 10)
+            if (Grap_Move_Count >= 7)
             {
                 // 物体贴在右边沿时，先走退让状态，退完再去托盘。
                 if (Edge_Motion_Config::Right_Edge_Detour_Enabled &&
@@ -799,7 +799,7 @@ void Class_Holding_Jaw::Grap_Move()
                 (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
-            if (Grap_Move_Count >= 5)
+            if (Grap_Move_Count >= 4)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Release
@@ -833,7 +833,7 @@ void Class_Holding_Jaw::Grap_Move()
                 (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
-            if (Grap_Move_Count >= 4)
+            if (Grap_Move_Count >= 3)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Tray_Lift
@@ -867,7 +867,7 @@ void Class_Holding_Jaw::Grap_Move()
                 (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
-            if (Grap_Move_Count >= 5)
+            if (Grap_Move_Count >= 3)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Recognition_Position
@@ -906,7 +906,7 @@ void Class_Holding_Jaw::Grap_Move()
 
 
             if (XY_Move_Finished() &&
-                Grap_Move_Count >= 3)
+                Grap_Move_Count >= 1)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Finish
@@ -939,7 +939,7 @@ void Class_Holding_Jaw::Grap_Move()
 
 
             if (XY_Move_Finished() &&
-                Grap_Move_Count >= 3)
+                Grap_Move_Count >= 1)
             {
                 Calibration_Yaw_Override = false;
                 Set_Grap_Move_Status(
