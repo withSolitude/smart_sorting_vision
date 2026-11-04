@@ -1231,7 +1231,13 @@ void Class_Holding_Jaw::Outputs()
                 XY_Motion.Get_X_mm() > Edge_Motion_Config::Right_Edge_Keepout_X_mm)
             {
                 const float detour_x = Edge_Motion_Config::Right_Edge_Detour_X_mm;
-                const float detour_y = XY_Motion.Get_Y_mm();
+                // 只快照一次：之后这条腿的目标固定，不会跟着实际位置漂移。
+                if (!Detour_Target_Valid)
+                {
+                    Detour_Target_Y_mm = XY_Motion.Get_Y_mm();
+                    Detour_Target_Valid = true;
+                }
+                const float detour_y = Detour_Target_Y_mm;
                 if (Move_XY_Yaw_Direct(detour_x, detour_y, Tray_Yaw_Angle))
                 {
                     Grap_Output_Step = 1;
@@ -1663,6 +1669,9 @@ void Class_Holding_Jaw::Set_Grap_Move_Status(
 {
     Grap_State_Start_Tick = HAL_GetTick();
     Edge_Move_Step = 0U;
+
+    // 每次切状态都让退让目标重新快照。
+    Detour_Target_Valid = false;
     Grap_Move_Status =
         New_Status;
 

@@ -702,6 +702,12 @@ private:
     // 包含每个 XY 阶段的命令提交重试、移动时间和舵机动作时间。
     uint32_t Grap_State_Start_Tick = 0U;
     static constexpr uint32_t XY_State_Timeout_ms = 30000U;
+    // 右边沿退让第一段的固定目标 Y。进入该段时只快照一次：
+    // 若每个 tick 都用 XY_Motion.Get_Y_mm() 当目标，目标会跟着实际位置跑，
+    // Move_XY_Yaw_Direct 里的到位判定永远不成立 —— 机器就会停在 x=-40 不动。
+    float Detour_Target_Y_mm = 0.0f;
+    bool Detour_Target_Valid = false;
+
     static constexpr uint32_t Servo_Move_Time_ms = 200U;
 
     // 夹爪单独的动作时间：预收缩/夹紧/放松不需要和 Yaw/升降一样慢。
