@@ -1216,12 +1216,21 @@ void Class_Holding_Jaw::Outputs()
         case Enum_Grap_Move_X_Y_Tray:
         {
             // "抓完 → 去识别托盘放件"。
-            // 不走 Move_XY_Yaw_Direct：那条路径内部还有一层 Yaw 等待状态机，
-            // Yaw 命令没被总线接受时会一直返回 false，表现成停在原地不动。
-            // 这里两段各自显式发起，到位只看驱动器的 Motion_Finished。
+            // 不走 Move_XY_Yaw_Direct（它内部有 Yaw 等待状态机，可能一直返回 false）。
+            // 两段各自显式发起，到位只看驱动器的 Motion_Finished。
             if (Grap_Output_Flag)
             {
                 break;
+            }
+
+            // Yaw 与移动并行：这一段运动中每次进来都尝试一次，成功后就不再发。
+            // 这样既不会像一次性发送那样"没发出去就丢了"，也不会阻塞移动。
+            if (std::fabs(Yaw_Servo_Motor_Target_Angle - Tray_Yaw_Angle) >= 0.0001f)
+            {
+                if (Yaw_Servo_Motor.Control_Angle(Tray_Yaw_Angle, Servo_Move_Time_ms) == HAL_OK)
+                {
+                    Yaw_Servo_Motor_Target_Angle = Tray_Yaw_Angle;
+                }
             }
 
             // ---- 第一段：右边沿退让（物体贴在 x>-30 时先横向退到 x=-40）
@@ -1244,6 +1253,17 @@ void Class_Holding_Jaw::Outputs()
                             Y_Move_Speed_mm_s) == HAL_OK)
                     {
                         Tray_Leg_Issued = true;
+                        Tray_Leg_Seen_Moving = false;
+                    }
+                    break;
+                }
+
+                // 必须真的看到"运动中"，才接受之后的"已完成"
+                if (!Tray_Leg_Seen_Moving)
+                {
+                    if (!XY_Motion.Get_Motion_Finished())
+                    {
+                        Tray_Leg_Seen_Moving = true;
                     }
                     break;
                 }
@@ -1253,12 +1273,9 @@ void Class_Holding_Jaw::Outputs()
                     break;
                 }
 
-                // 横移完成，转 Yaw 只发一次，不阻塞后续动作。
-                (void)Yaw_Servo_Motor.Control_Angle(Tray_Yaw_Angle, Servo_Move_Time_ms);
-                Yaw_Servo_Motor_Target_Angle = Tray_Yaw_Angle;
-
                 Grap_Output_Step = 1;
                 Tray_Leg_Issued = false;
+                Tray_Leg_Seen_Moving = false;
                 break;
             }
 
@@ -1270,6 +1287,16 @@ void Class_Holding_Jaw::Outputs()
                         X_Move_Speed_mm_s, Y_Move_Speed_mm_s) == HAL_OK)
                 {
                     Tray_Leg_Issued = true;
+                    Tray_Leg_Seen_Moving = false;
+                }
+                break;
+            }
+
+            if (!Tray_Leg_Seen_Moving)
+            {
+                if (!XY_Motion.Get_Motion_Finished())
+                {
+                    Tray_Leg_Seen_Moving = true;
                 }
                 break;
             }
@@ -1279,10 +1306,8 @@ void Class_Holding_Jaw::Outputs()
                 break;
             }
 
-            (void)Yaw_Servo_Motor.Control_Angle(Tray_Yaw_Angle, Servo_Move_Time_ms);
-            Yaw_Servo_Motor_Target_Angle = Tray_Yaw_Angle;
-
             Tray_Leg_Issued = false;
+            Tray_Leg_Seen_Moving = false;
             Grap_Output_Step = 0;
             Complete_Outputs();
             break;
@@ -1707,6 +1732,7 @@ void Class_Holding_Jaw::Set_Grap_Move_Status(
     // 每次切状态都让退让目标重新快照。
     Detour_Target_Valid = false;
     Tray_Leg_Issued = false;
+    Tray_Leg_Seen_Moving = false;
     Grap_Move_Status =
         New_Status;
 
