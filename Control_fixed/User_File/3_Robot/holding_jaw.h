@@ -732,6 +732,13 @@ private:
     // Pre_Clip 段就只剩一点点尾巴。留太小会和旁边物体干涉，40mm 约 250ms。
     static constexpr float Early_PreClip_Radius_mm = 40.0f;
 
+    // 右边沿退让的第一段目标 Y。
+    // 必须在进入该段时快照一次并固定下来：
+    // 若每个 tick 都用当前 Y 作为目标，目标会跟着实际位置跑，
+    // 到位判定永远不成立，就会停在 x=-40 不动。
+    float Detour_Target_Y_mm = 0.0f;
+    bool Detour_Target_Valid = false;
+
     uint32_t Pre_Clip_Early_Tick = 0U;
     bool Pre_Clip_Early_Sent = false;
     uint32_t Grap_Output_Complete_Tick = 0U;
@@ -761,6 +768,7 @@ private:
 
     bool XY_Move_Finished() const;
     bool XY_At_mm(float X_mm, float Y_mm) const;
+    bool XY_At_mm_Within(float X_mm, float Y_mm, float Tolerance_mm) const;
     bool Motion_Configuration_Valid() const;
     bool Move_XY_Yaw_Via_Edge(float X_mm, float Y_mm, float Yaw_Rad);
     bool Move_XY_Yaw_Direct(float X_mm, float Y_mm, float Yaw_Rad);

@@ -43,6 +43,8 @@ void Class_Holding_Jaw::Init()
     Calibration_Yaw_Override = false;
     Edge_Move_Step = 0U;
 
+    Detour_Target_Valid = false;
+
     // ========================================================
     // 舵机初始化
     // ========================================================
@@ -1255,7 +1257,12 @@ void Class_Holding_Jaw::Outputs()
                 XY_Motion.Get_X_mm() > Edge_Motion_Config::Right_Edge_Keepout_X_mm)
             {
                 const float detour_x = Edge_Motion_Config::Right_Edge_Detour_X_mm;
-                const float detour_y = XY_Motion.Get_Y_mm();
+                if (!Detour_Target_Valid)
+                {
+                    Detour_Target_Y_mm = XY_Motion.Get_Y_mm();
+                    Detour_Target_Valid = true;
+                }
+                const float detour_y = Detour_Target_Y_mm;
                 if (Move_XY_Yaw_Direct(detour_x, detour_y, Tray_Yaw_Angle))
                 {
                     Grap_Output_Step = 1;
@@ -2020,7 +2027,7 @@ bool Class_Holding_Jaw::Move_XY_Yaw_Direct(float X_mm, float Y_mm, float Yaw_Rad
 
     if (Edge_Move_Step == 1U)
     {
-        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(X_mm, Y_mm))
+        if (!XY_Motion.Get_Motion_Finished())
             return false;
 
         if (Yaw_Servo_Motor.Control_Angle(Yaw_Rad, Servo_Move_Time_ms) != HAL_OK)
@@ -2058,13 +2065,23 @@ XY_Move_Finished() const
         !XY_Motion.Get_Motion_Finished()) return false;
     switch (Grap_Move_Status)
     {
-        case Enum_Grap_Move_X_Y_Start: return XY_At_mm(Grap_Target_X_mm, Grap_Target_Y_mm);
-        case Enum_Grap_Move_X_Y_Tray: return XY_At_mm(Tray_X_mm, Tray_Y_mm);
-        case Enum_Grap_Move_Recognition_Position: return XY_At_mm(Recognition_X_mm, Recognition_Y_mm);
-        case Enum_Grap_Move_Return: return XY_At_mm(Disable_X_mm, Disable_Y_mm);
+        case Enum_Grap_Move_X_Y_Start: return XY_At_mm_Within(Grap_Target_X_mm, Grap_Target_Y_mm, 1.0f);
+        case Enum_Grap_Move_X_Y_Tray: return XY_At_mm_Within(Tray_X_mm, Tray_Y_mm, 1.0f);
+        case Enum_Grap_Move_Recognition_Position: return XY_At_mm_Within(Recognition_X_mm, Recognition_Y_mm, 1.0f);
+        case Enum_Grap_Move_Return: return XY_At_mm_Within(Disable_X_mm, Disable_Y_mm, 1.0f);
         default: return true;
     }
 }
+
+bool Class_Holding_Jaw::XY_At_mm_Within(
+    float X_mm, float Y_mm, float Tolerance_mm) const
+{
+    const float x = XY_Motion.Get_X_mm(), y = XY_Motion.Get_Y_mm();
+    return std::isfinite(x) && std::isfinite(y) &&
+        std::fabs(x - X_mm) <= Tolerance_mm &&
+        std::fabs(y - Y_mm) <= Tolerance_mm;
+}
+
 
 bool Class_Holding_Jaw::XY_At_mm(float X_mm, float Y_mm) const
 {
