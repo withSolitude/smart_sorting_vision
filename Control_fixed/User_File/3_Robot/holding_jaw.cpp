@@ -716,9 +716,20 @@ void Class_Holding_Jaw::Grap_Move()
 
             if (Grap_Move_Count >= 10)
             {
-                Set_Grap_Move_Status(
-                    Enum_Grap_Move_X_Y_Tray
-                );
+                // 物体贴在右边沿时，先进入退让状态，退完再去托盘。
+                if (Edge_Motion_Config::Right_Edge_Detour_Enabled &&
+                    XY_Motion.Get_X_mm() > Edge_Motion_Config::Right_Edge_Keepout_X_mm)
+                {
+                    Set_Grap_Move_Status(
+                        Enum_Grap_Move_X_Retreat
+                    );
+                }
+                else
+                {
+                    Set_Grap_Move_Status(
+                        Enum_Grap_Move_X_Y_Tray
+                    );
+                }
             }
 
 
@@ -731,6 +742,25 @@ void Class_Holding_Jaw::Grap_Move()
         //
         // X/Y/Yaw移动到识别托盘
         // ====================================================
+
+        case Enum_Grap_Move_X_Retreat:
+        {
+            if (!Grap_Output_Flag)
+            {
+                break;
+            }
+
+            // 退让完成后再进去托盘那一步。
+            if (XY_Motion.Get_Motion_Finished())
+            {
+                Set_Grap_Move_Status(
+                    Enum_Grap_Move_X_Y_Tray
+                );
+            }
+
+            break;
+        }
+
 
         case Enum_Grap_Move_X_Y_Tray:
         {
@@ -1224,6 +1254,62 @@ void Class_Holding_Jaw::Outputs()
         // ====================================================
         // X/Y/Yaw去识别托盘
         // ====================================================
+
+        case Enum_Grap_Move_X_Retreat:
+        {
+            // 右边沿退让（独立一步，不和托盘段搅在一起）：
+            // 从当前 Y 横向退到 x = Right_Edge_Detour_X_mm。
+            if (Grap_Output_Flag)
+            {
+                break;
+            }
+
+            // 快照只做一次，但移动命令必须真正下发成功才算“已发起”。
+            if (!Detour_Target_Valid)
+            {
+                Detour_Target_Y_mm = XY_Motion.Get_Y_mm();
+                Detour_Target_Valid = true;
+            }
+
+            if (!Tray_Leg_Issued)
+            {
+                const HAL_StatusTypeDef st = XY_Motion.Move_To_mm(
+                    Edge_Motion_Config::Right_Edge_Detour_X_mm,
+                    Detour_Target_Y_mm,
+                    X_Move_Speed_mm_s,
+                    Y_Move_Speed_mm_s);
+                if (st == HAL_OK)
+                {
+                    Tray_Leg_Issued = true;
+                    Tray_Leg_Seen_Moving = false;
+                }
+                else if (st != HAL_BUSY)
+                {
+                    Abort_XY_Fault();
+                }
+                break;
+            }
+
+            if (!Tray_Leg_Seen_Moving)
+            {
+                if (!XY_Motion.Get_Motion_Finished())
+                {
+                    Tray_Leg_Seen_Moving = true;
+                }
+                break;
+            }
+
+            if (!XY_Motion.Get_Motion_Finished())
+            {
+                break;
+            }
+
+            Detour_Target_Valid = false;
+            Tray_Leg_Issued = false;
+            Tray_Leg_Seen_Moving = false;
+            Complete_Outputs();
+            break;
+        }
 
         case Enum_Grap_Move_X_Y_Tray:
         {
@@ -2120,6 +2206,7 @@ XY_Move_Finished() const
     switch (Grap_Move_Status)
     {
         case Enum_Grap_Move_X_Y_Start: return XY_At_mm(Grap_Target_X_mm, Grap_Target_Y_mm);
+        case Enum_Grap_Move_X_Retreat: return XY_Motion.Get_Motion_Finished();
         case Enum_Grap_Move_X_Y_Tray: return XY_At_mm(Tray_X_mm, Tray_Y_mm);
         case Enum_Grap_Move_Recognition_Position: return XY_At_mm(Recognition_X_mm, Recognition_Y_mm);
         case Enum_Grap_Move_Return: return XY_At_mm(Disable_X_mm, Disable_Y_mm);

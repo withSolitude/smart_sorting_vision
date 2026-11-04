@@ -37,6 +37,10 @@ enum Enum_Grap_Move_Status
     // 抓住物体后抬升
     Enum_Grap_Move_Lift,
 
+    // 右边沿退让：物体贴在 x>-30 时，先横向退到 x=-40，
+    // 再进入 X_Y_Tray 去托盘。和 y 安全区一样，属于"先退让再走目标"。
+    Enum_Grap_Move_X_Retreat,
+
     // X/Y/Yaw移动到识别托盘
     Enum_Grap_Move_X_Y_Tray,
 
