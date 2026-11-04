@@ -34,7 +34,15 @@ constexpr uint16_t Full_Steps_Per_Rev = 200U; // MotType=1.8deg
 constexpr uint16_t Microsteps = 16U;         // 电机 MStep 必须一致
 constexpr uint32_t Pulses_Per_Rev = Full_Steps_Per_Rev * Microsteps;
 constexpr uint16_t Max_RPM = 300U;
-constexpr uint8_t Acceleration = 25U; // 0=恒速；两轴按位移比例分配转速
+// EMM_V5 的加速度单位是 RPM/s（0 = 不加斜坡，瞬间到速）。
+// 这是整机速度的真正瓶颈：45 时 100mm 移动峰值只有 55mm/s。
+// 255 是驱动器上限；若出现堵转/位置跳变故障，按 255 -> 180 -> 120 退。
+// 0 = 不加减速斜坡（驱动器直接到设定转速）。
+// CoreXY 走直线靠的是两个电机保持固定的转速比；只要有斜坡，两轴从 0
+// 同比例加速，比例在斜坡期间是错的 —— 平台会先沿一条轴走、再拐向对角线。
+// 现场观感就是"哪边长哪边先动"。设 0 之后斜线才是真斜线，同时也是最快的。
+// 如果起停冲击明显，再给一个较小的值（例如 60），但斜线会重新出现弯折。
+constexpr uint8_t Acceleration = 0U; // 0=恒速；两轴按位移比例分配转速
 
 // 沿用当前视觉协议工作区；新结构调试时必须重新测量。
 constexpr float X_Min_mm = -770.0f;
@@ -46,7 +54,7 @@ constexpr double Stopped_RPM = 2.0;
 constexpr uint32_t Feedback_Timeout_ms = 150U;
 constexpr uint32_t Command_Timeout_ms = 500U;
 constexpr uint32_t Move_Timeout_ms = 15000U;
-constexpr uint32_t Settle_ms = 70U;
+constexpr uint32_t Settle_ms = 55U;
 constexpr uint32_t Poll_Interval_ms = 2U; // 每16ms读取一次每台电机的31/36/35/3A
 constexpr uint16_t Encoder_Unwrap_Max_Gap_ms = 80U; // 300RPM 时半圈=100ms
 
