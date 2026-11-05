@@ -72,6 +72,17 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
                     "finals.sort_boxes 必须在 1..storage.box_count 之间"
                 )
 
+    # 失败抓取排除：可选段，缺省启用。
+    failed_pick = cfg["vision"]["top"].get("failed_pick")
+    if failed_pick is not None:
+        if not isinstance(failed_pick, dict):
+            raise ConfigError("vision.top.failed_pick 必须是对象")
+        if "enabled" in failed_pick and not isinstance(failed_pick["enabled"], bool):
+            raise ConfigError("vision.top.failed_pick.enabled 必须是 true/false")
+        for key in ("search_radius_mm", "area_ratio_min", "area_ratio_max", "iou_threshold"):
+            if key in failed_pick and float(failed_pick[key]) <= 0:
+                raise ConfigError(f"vision.top.failed_pick.{key} 必须大于0")
+
     # OCR 是可选段：不写等价于 enabled=false。
     side_recognition = (
         cfg.get("vision", {}).get("side", {}).get("recognition", {})

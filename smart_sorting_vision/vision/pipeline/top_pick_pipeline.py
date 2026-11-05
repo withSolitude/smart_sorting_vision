@@ -105,6 +105,7 @@ class TopPickCandidate:
     # 未启用补偿时 radial_shift_px 为 0、radial_base_pixel 等于 grasp_pixel。
     radial_base_pixel: tuple[float, float] | None = None
     radial_shift_px: float = 0.0
+    previously_failed: bool = False
 
 
 @dataclass
@@ -135,6 +136,9 @@ class TopPickPipelineResult:
     inference_ms: float
 
     candidates: list[TopPickCandidate]
+
+    # 本帧所有候选都被“失败抓取”排除；runtime 据此结束本轮。
+    blocked_all: bool = False
 
 
 class TopPickPipeline:
@@ -235,6 +239,11 @@ class TopPickPipeline:
         gripper_body_longitudinal_offset_mm: float = -25.0,
         gripper_debug_log_rejections: bool = False,
         timing_enabled: bool = False,
+        failed_pick_enabled: bool = True,
+        failed_pick_search_radius_mm: float = 120.0,
+        failed_pick_area_ratio_min: float = 0.6,
+        failed_pick_area_ratio_max: float = 1.6,
+        failed_pick_iou_threshold: float = 0.35,
         grasp_search_enabled: bool = True,
         grasp_search_yaw_offsets_deg=(0.0, -5.0, 5.0, -10.0, 10.0, -15.0, 15.0),
         grasp_search_longitudinal_offsets_mm=(0.0, -2.0, 2.0, -4.0, 4.0),
@@ -417,6 +426,15 @@ class TopPickPipeline:
         self.grasp_search_enabled = bool(grasp_search_enabled)
         # 每帧打印 [TIMING] infer/search/total，用来定位"顶部定位慢"到底慢在推理还是候选搜索。
         self.timing_enabled = bool(timing_enabled)
+        self.failed_pick_enabled = bool(failed_pick_enabled)
+        self.failed_pick_search_radius_mm = max(1.0, float(failed_pick_search_radius_mm))
+        self.failed_pick_area_ratio_min = max(0.05, float(failed_pick_area_ratio_min))
+        self.failed_pick_area_ratio_max = max(
+            self.failed_pick_area_ratio_min, float(failed_pick_area_ratio_max)
+        )
+        self.failed_pick_iou_threshold = min(1.0, max(0.0, float(failed_pick_iou_threshold)))
+        self._last_pick_reference: dict | None = None
+        self._failed_references: list[dict] = []
         self.grasp_search_hard_min_clearance_mm = max(0.0, float(grasp_search_hard_min_clearance_mm))
         self.grasp_search_preferred_clearance_mm = max(
             self.grasp_search_hard_min_clearance_mm,
@@ -1415,6 +1433,7 @@ class TopPickPipeline:
                     search_trial_count=0,  # 结束搜索后统一写入
                     search_safe_count=0,
                     score=float(score),
+                    previously_failed=bool(obj.get("_blocked")),
                 )
 
                 trial_record = {
@@ -1554,6 +1573,137 @@ class TopPickPipeline:
                 candidate.class_name,
         }
 
+    # ========================================================
+    # 失败抓取物体跟踪
+    # ========================================================
+
+    def _reference_from_object(self, obj, image_shape):
+        polygon = self._normalize_polygon(obj.get("polygon"))
+        if polygon is None or len(polygon) < 3:
+            return None
+        center = polygon.mean(axis=0)
+        area = float(abs(cv2.contourArea(polygon.astype(np.float32))))
+        if area <= 1.0:
+            return None
+        try:
+            robot = np.asarray(
+                self.transform.pixel_to_robot(
+                    float(center[0]), float(center[1]), apply_tcp_offset=False
+                ),
+                dtype=np.float64,
+            )
+        except Exception:
+            return None
+        if robot.shape != (2,) or not np.all(np.isfinite(robot)):
+            return None
+        return {
+            "polygon": polygon.astype(np.float32),
+            "center_px": center.astype(np.float64),
+            "area_px": area,
+            "robot": robot,
+        }
+
+    @staticmethod
+    def _aligned_iou(reference, candidate) -> float:
+        shift = (candidate["center_px"] - reference["center_px"]).astype(np.float32)
+        reference_polygon = reference["polygon"] + shift
+        candidate_polygon = candidate["polygon"]
+        points = np.vstack([reference_polygon, candidate_polygon])
+        x0, y0 = np.floor(points.min(axis=0)).astype(int)
+        x1, y1 = np.ceil(points.max(axis=0)).astype(int) + 1
+        width = max(2, int(x1 - x0))
+        height = max(2, int(y1 - y0))
+        reference_mask = np.zeros((height, width), dtype=np.uint8)
+        candidate_mask = np.zeros((height, width), dtype=np.uint8)
+        cv2.fillPoly(
+            reference_mask,
+            [(reference_polygon - [x0, y0]).astype(np.int32)],
+            1,
+        )
+        cv2.fillPoly(
+            candidate_mask,
+            [(candidate_polygon - [x0, y0]).astype(np.int32)],
+            1,
+        )
+        intersection = int(np.count_nonzero(np.logical_and(reference_mask, candidate_mask)))
+        union = int(np.count_nonzero(np.logical_or(reference_mask, candidate_mask)))
+        return intersection / max(union, 1)
+
+    def mark_pick_failed(self) -> bool:
+        """侧面判空后调用：把最后一次选中的物体加入失败清单，后续帧降级。"""
+        if not bool(getattr(self, "failed_pick_enabled", False)):
+            return False
+        last_reference = getattr(self, "_last_pick_reference", None)
+        if last_reference is None:
+            return False
+        reference = {
+            "polygon": last_reference["polygon"].copy(),
+            "center_px": last_reference["center_px"].copy(),
+            "area_px": float(last_reference["area_px"]),
+            "robot": last_reference["robot"].copy(),
+        }
+        references = getattr(self, "_failed_references", None)
+        if references is None:
+            self._failed_references = []
+            references = self._failed_references
+        # 同一位置重复失败合并，避免清单里堆重复项。
+        for existing in references:
+            if float(np.linalg.norm(existing["robot"] - reference["robot"])) <= (
+                self.failed_pick_search_radius_mm * 0.5
+            ):
+                existing.update(reference)
+                break
+        else:
+            references.append(reference)
+        print(f"[FAILED PICK] arm exclusion; failed_objects={len(references)}")
+        return True
+
+    def reset_failed_picks(self) -> None:
+        """新一轮比赛开始时清空失败记忆。"""
+        self._failed_references = []
+        self._last_pick_reference = None
+
+    def _match_failed_object(self, objects, image_shape) -> None:
+        references = getattr(self, "_failed_references", [])
+        if not references:
+            return
+        pairs = []
+        for reference_index, reference in enumerate(references):
+            for index, obj in enumerate(objects):
+                if obj.get("_blocked"):
+                    continue
+                geometry = self._reference_from_object(obj, image_shape)
+                if geometry is None:
+                    continue
+                distance = float(
+                    np.linalg.norm(geometry["robot"] - reference["robot"])
+                )
+                if distance > self.failed_pick_search_radius_mm:
+                    continue
+                ratio = geometry["area_px"] / max(reference["area_px"], 1.0)
+                if (
+                    ratio < self.failed_pick_area_ratio_min
+                    or ratio > self.failed_pick_area_ratio_max
+                ):
+                    continue
+                iou = self._aligned_iou(reference, geometry)
+                if iou < self.failed_pick_iou_threshold:
+                    continue
+                pairs.append((iou, reference_index, index, geometry))
+        pairs.sort(key=lambda item: item[0], reverse=True)
+        matched_references = set()
+        matched_objects = set()
+        for iou, reference_index, index, geometry in pairs:
+            if reference_index in matched_references or index in matched_objects:
+                continue
+            objects[index]["_blocked"] = True
+            matched_references.add(reference_index)
+            matched_objects.add(index)
+            print(
+                f"[FAILED PICK] matched object index={index} "
+                f"iou={iou:.2f}; de-prioritized"
+            )
+
     def process(
         self,
         frame: np.ndarray,
@@ -1581,6 +1731,8 @@ class TopPickPipeline:
                 yolo_result
             )
         )
+
+        self._match_failed_object(objects, frame.shape)
 
         inference_ms = (
             (
@@ -1630,6 +1782,17 @@ class TopPickPipeline:
                 fast_only=False,
             )
 
+        # 优先夹没夹过的物体；全部夹过之后才允许重试失败的。
+        fresh_candidates = [
+            candidate
+            for candidate in candidates
+            if not bool(getattr(candidate, "previously_failed", False))
+        ]
+        if fresh_candidates:
+            candidates = fresh_candidates
+        elif candidates:
+            print("[FAILED PICK] all remaining objects were attempted; allow retry")
+
         search_ms = (
             (time.perf_counter() - start) * 1000.0 - inference_ms
         )
@@ -1671,6 +1834,34 @@ class TopPickPipeline:
             ):
                 output_ready = False
                 output_reason = "yaw_window_boundary_unstable"
+
+        if output_ready and stable.grasp_pixel is not None and candidates:
+            target = (float(stable.grasp_pixel[0]), float(stable.grasp_pixel[1]))
+
+            def _grasp_pixel(item):
+                if isinstance(item, dict):
+                    return item.get("grasp_pixel")
+                return getattr(item, "grasp_pixel", None)
+
+            def _object_index(item):
+                if isinstance(item, dict):
+                    return int(item.get("object_index", -1))
+                return int(getattr(item, "object_index", -1))
+
+            matched = [item for item in candidates if _grasp_pixel(item) is not None]
+            if matched:
+                chosen = min(
+                    matched,
+                    key=lambda item: (
+                        (float(_grasp_pixel(item)[0]) - target[0]) ** 2
+                        + (float(_grasp_pixel(item)[1]) - target[1]) ** 2
+                    ),
+                )
+                index = _object_index(chosen)
+                if 0 <= index < len(objects):
+                    self._last_pick_reference = self._reference_from_object(
+                        objects[index], frame.shape
+                    )
 
         return TopPickPipelineResult(
             ready=

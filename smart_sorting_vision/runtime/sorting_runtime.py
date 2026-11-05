@@ -241,6 +241,11 @@ class SortingRuntime:
         self._urgent_stop_event = threading.Event()
         self._rx_thread: threading.Thread | None = None
 
+        # 独立心跳线程：顶部单帧推理可能阻塞主循环 1~3 秒，主循环里的
+        # 心跳会停发；MCU 连续 3 秒收不到帧就发 STOP_WORK。
+        self._heartbeat_stop_event = threading.Event()
+        self._heartbeat_thread: threading.Thread | None = None
+
     @staticmethod
     def _normalize_limits(value, *, name: str):
         if value is None:
@@ -321,6 +326,42 @@ class SortingRuntime:
         if thread is not None and thread.is_alive():
             thread.join(timeout=0.5)
         self._rx_thread = None
+
+    def _start_heartbeat_thread(self) -> None:
+        if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+            return
+        self._heartbeat_stop_event.clear()
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            name="stm32-heartbeat",
+            daemon=True,
+        )
+        self._heartbeat_thread.start()
+
+    def _stop_heartbeat_thread(self) -> None:
+        self._heartbeat_stop_event.set()
+        thread = self._heartbeat_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=0.5)
+        self._heartbeat_thread = None
+
+    def _heartbeat_loop(self) -> None:
+        """只发心跳，不改状态；发送失败交给主循环的链路看门狗处理。"""
+        while not self._heartbeat_stop_event.wait(0.05):
+            if self._link_offline or self.state == RuntimeState.LINK_OFFLINE:
+                continue
+            if not bool(getattr(self.stm32, "is_online", True)):
+                continue
+            now = time.monotonic()
+            if (now - self._last_heartbeat_sent_at) < self.heartbeat_interval_s:
+                continue
+            try:
+                self.stm32.send_frame(make_heartbeat())
+                self._last_heartbeat_sent_at = now
+            except (LinkOfflineError, OSError):
+                pass
+            except Exception as exc:
+                print(f"[Runtime][WARN] heartbeat send failed: {exc}")
 
     def _poll_control_events(self):
         # 单元测试/独立 run_once 调用时没有接收线程，保持原来的同步 poll。
@@ -722,6 +763,13 @@ class SortingRuntime:
         if allow_fallback_sort and self._try_fallback_sort(reason=reason):
             return
 
+        # 侧面判空 = 这次确实没夹起来。把最后一帧选中的物体交给顶部流水线，
+        # 后续帧用抓取时的 mask 模板匹配它，并把它降级到“夹过的”候选。
+        if not allow_fallback_sort:
+            mark_failed = getattr(self.top_pipeline, "mark_pick_failed", None)
+            if callable(mark_failed):
+                mark_failed()
+
         self.current_object = None
         self.current_box = None
         self.current_sort_command = None
@@ -974,6 +1022,9 @@ class SortingRuntime:
         self.fault_reason = None
         self._session_started_at = time.monotonic()
         self.drop_recovery_count = 0
+        reset_failed = getattr(self.top_pipeline, "reset_failed_picks", None)
+        if callable(reset_failed):
+            reset_failed()
         self._begin_cycle()
         if callable(self.on_session_start):
             try:
@@ -1827,6 +1878,7 @@ class SortingRuntime:
         )
         self._shutdown_event.clear()
         self._start_rx_thread()
+        self._start_heartbeat_thread()
         try:
             while not self._shutdown_event.is_set():
                 self.run_once()
@@ -1838,4 +1890,5 @@ class SortingRuntime:
         except KeyboardInterrupt:
             self.shutdown(send_stop=True)
         finally:
+            self._stop_heartbeat_thread()
             self._stop_rx_thread()
