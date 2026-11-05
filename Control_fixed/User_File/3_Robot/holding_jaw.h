@@ -198,6 +198,8 @@ public:
 
     // 停止 XY，但不能松开可能夹持的物体，也不能伪称已经安全回零。
     void Abort_XY_Fault();
+    // XY 故障自动恢复：空爪时清故障并回安全位；爪中可能已有物体时返回 false。
+    bool Recover_From_XY_Fault(Enum_Grap_Move_Status previous);
 
     // UART 舵机稳定性依据已发送命令经过的时间，不是舵机反馈。
     // XY 就绪始终依据 CAN 实测位置和已确认的停机状态。

@@ -355,6 +355,7 @@ Service_Sorting_Stop_Ready_Ack()
 bool Class_Robot::
 Start_Sorting_Work()
 {
+    XY_Recovery_Count = 0U;
     // ========================================================
     // 如果上一轮STOP以后夹爪仍然在安全回位，
     // 不允许马上重新启动。
@@ -917,7 +918,10 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
 
         if (Calib_Action_Active && Calib_Move_Count >= Calib_Timeout_10ms)
         {
-            Holding_Jaw.Abort_XY_Fault();
+            [[maybe_unused]] const auto previous_status =
+        Holding_Jaw.Get_Grap_Move_Status();
+
+    Holding_Jaw.Abort_XY_Fault();
             Service_XY_Fault();
         }
     }
@@ -1585,6 +1589,9 @@ bool Class_Robot::Service_XY_Fault()
     {
         return false;
     }
+
+    [[maybe_unused]] const auto previous_status =
+        Holding_Jaw.Get_Grap_Move_Status();
 
     Holding_Jaw.Abort_XY_Fault();
     Sorting_Start_Request_Pending = false;

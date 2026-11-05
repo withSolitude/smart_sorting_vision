@@ -239,6 +239,10 @@ private:
 
     uint16_t Pick_Start_Wait_Count = 0;
 
+    // XY 可恢复故障（堵转/丢 ACK）自动重试次数；每次 START 清零。
+    uint8_t XY_Recovery_Count = 0U;
+    static constexpr uint8_t XY_Recovery_Limit = 3U;
+
     // TOF 瞬时掉线重试计数：现场偶发 1s 左右的 TOF 无响应，Start_Grap 会报
     // TOF_Invalid。保持 Pick_Start_Pending，最多等这么久再按故障上报。
     uint16_t Pick_Start_Tof_Wait_Count = 0;

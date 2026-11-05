@@ -26,6 +26,9 @@ public:
     bool Get_Power_On_Origin_Captured() const { return Power_On_Origin_Captured; }
     bool Get_Fault() const { return Fault != XY_Fault::None; }
     XY_Fault Get_Fault_Code() const { return Fault; }
+
+    // 只清故障、保留已建立的原点，用于堵转/丢 ACK 后自动恢复。
+    void Clear_Fault();
     bool Get_Motion_Finished() const;
     bool Get_Stop_Confirmed() const;
     // 启动安全的“单电机、单轴、顺序碰撞回零”。默认配置关闭。
