@@ -1374,6 +1374,10 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
         // 下一件顶部视觉开始前，夹爪必须已经完全回到 Disable。
         // 如果仍在 Recognition/Return 过程中，只继续等待/重试回位，
         // 暂不发送 SORT_DONE，避免上位机开始下一件识别时夹爪挡住画面。
+        //
+        // 储物机构不再等“托盘回位 + 4310 回待机”：
+        // 物品翻进盒子（TRAY_HOLD 结束）时就已经置完成标志，
+        // 托盘回位与 4310 回待机在后台继续跑，上位机可以立刻开始下一件。
         // ----------------------------------------------------
         if (!Holding_Jaw.Get_Disable_Ready())
         {
@@ -1384,7 +1388,7 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
                 return;
             }
         }
-        else if (Sorting_Storage.Get_Disable_Ready() && !Sorting_Storage.Get_Fault() &&
+        else if (!Sorting_Storage.Get_Fault() &&
                  Sorting_Handshake.Notify_Sort_Done())
         {
             Sort_Done_Notify_Pending = false;

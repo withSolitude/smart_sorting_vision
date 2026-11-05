@@ -753,6 +753,13 @@ void Class_Sorting_Storage::Storage_Move()
                 Tray_Hold_Time_ms
             )
             {
+                // 物品已经翻进储物盒：本件储物到这里就算完成。
+                // 托盘回位和 4310 回待机在后台继续跑，不再拖住 SORT_DONE，
+                // 上位机可以立刻开始下一件（顶部预取结果直接下发）。
+                Sort_Finished_Pending =
+                    true;
+
+
                 Set_Storage_Status(
                     Sorting_Storage_Status_TRAY_RETURN
                 );
@@ -840,10 +847,8 @@ void Class_Sorting_Storage::Storage_Move()
                 DM4310_Stable_Required
             )
             {
-                Sort_Finished_Pending =
-                    true;
-
-
+                // 完成标志已经在 TRAY_HOLD 置位（物品落盒即算完成），
+                // 这里只负责把机构收回待机。
                 Target_Box_ID =
                     0;
 
