@@ -239,6 +239,13 @@ private:
 
     uint16_t Pick_Start_Wait_Count = 0;
 
+    // TOF 瞬时掉线重试计数：现场偶发 1s 左右的 TOF 无响应，Start_Grap 会报
+    // TOF_Invalid。保持 Pick_Start_Pending，最多等这么久再按故障上报。
+    uint16_t Pick_Start_Tof_Wait_Count = 0;
+
+    // 10ms 调度下 120 拍 = 1.2s；TOF 判离线需要约 1s，留一点余量。
+    static constexpr uint16_t Pick_Start_Tof_Grace_Ticks = 120U;
+
 
     // ========================================================
     // 动态抓取Yaw机械标定

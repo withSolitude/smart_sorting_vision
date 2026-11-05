@@ -378,6 +378,35 @@ Process_Frame(
     }
 
 
+    // ========================================================
+    // 物理范围粗校验
+    //
+    // 协议没有校验和：bit 翻转仍可能凑出合法帧头/帧尾。这里按"物理上
+    // 不可能"的范围丢弃，避免把坏数据送进抓取状态机。
+    // ========================================================
+
+    if (mode == Sorting_Vision_Mode_PICK_TARGET)
+    {
+        if (std::fabs(data.X_mm) > SORTING_UART_TARGET_SANITY_MM ||
+            std::fabs(data.Y_mm) > SORTING_UART_TARGET_SANITY_MM ||
+            data.Grasp_Axis_Deg < -90.0f ||
+            data.Grasp_Axis_Deg >= 90.0f)
+        {
+            Rx_Error_Count++;
+            return;
+        }
+    }
+    else if (mode == Sorting_Vision_Mode_PICK_PREOPEN)
+    {
+        if (!(data.X_mm >= 0.0f &&
+              data.X_mm <= SORTING_UART_PREOPEN_MAX_MM))
+        {
+            Rx_Error_Count++;
+            return;
+        }
+    }
+
+
     Rx_Frame_Count++;
 
 

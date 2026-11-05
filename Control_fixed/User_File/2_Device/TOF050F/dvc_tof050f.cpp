@@ -938,8 +938,28 @@ void Class_TOF050F::UART_RxCpltCallback(
                 false;
 
 
-            Status =
-                TOF050F_Status_ERROR;
+            // ====================================================
+            // 异常响应按"一次丢包"处理，不能把 Status 永久锁死。
+            //
+            // 旧实现把 Status 改成 ERROR，之后 Request_Distance()
+            // 一直返回 HAL_ERROR，TOF 再也不轮询；如果此时
+            // Distance_Valid 仍是 true，抓取会拿旧距离继续下降。
+            // 现在继续轮询：连续 5 次失败才判离线，恢复后自动回在线。
+            // ====================================================
+
+            if (Offline_Count < 255U)
+            {
+                ++Offline_Count;
+            }
+
+            if (Offline_Count >= 5U)
+            {
+                Data.Online =
+                    false;
+
+                Data.Distance_Valid =
+                    false;
+            }
 
 
             return;
