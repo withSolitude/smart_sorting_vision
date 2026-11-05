@@ -359,6 +359,10 @@ private:
     //
     // 当前默认先沿用识别托盘附近的安全姿态：
     // X/Y与托盘一致、Yaw保持托盘角、Lift抬起、Claw保持释放。
+    //
+    // 注意：Lift 的机械最高点就是待机角 15°，识别姿态也必须用 15°。
+    // 以前这里写 34°，舵机会一直顶在机械限位上堵转（表现为"只有识别时
+    // 才升到顶/上升很慢/发烫"），不要再填大于待机角的值。
     // ========================================================
 
     float Recognition_X_mm =
@@ -371,7 +375,7 @@ private:
         20.0f * PI / 180.0f;
 
     float Recognition_Lift_Angle =
-        34.0f * PI / 180.0f;
+        15.0f * PI / 180.0f;
 
     float Recognition_Claw_Angle =
         ClawPreopen::kStandbyAngleDeg * PI / 180.0f;
