@@ -46,6 +46,13 @@
 
 #define SORTING_UART_DEFAULT_COORDINATE_SCALE_MM  0.1f
 
+// PICK_TARGET / PICK_PREOPEN 的物理范围粗校验。
+// 本协议没有校验和：一个被干扰翻转的 bit 仍可能凑出合法的帧头/帧尾，
+// 例如 X 变成 ±20000mm、预开口变成 3000mm。明显超出物理行程的帧直接丢弃，
+// 不要送进抓取状态机（现场偶发 Target_Invalid 的来源之一）。
+#define SORTING_UART_TARGET_SANITY_MM             2000.0f
+#define SORTING_UART_PREOPEN_MAX_MM               120.0f
+
 
 // ============================================================
 // 通信模式
