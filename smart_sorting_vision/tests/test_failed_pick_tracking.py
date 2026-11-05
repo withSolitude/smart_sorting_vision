@@ -56,9 +56,10 @@ class FailedPickTrackingTests(unittest.TestCase):
         moved = {"polygon": square(130, 100)}
         pipeline._match_failed_object([moved], (400, 400))
         self.assertTrue(moved.get("_blocked"))
-        self.assertAlmostEqual(
-            float(pipeline._failed_references[0]["center_px"][0]), 150.0, delta=1.0
-        )
+        reference = pipeline._failed_references[0]
+        # 原始 mask 中心不变，只更新 last_center 用于继续跟随。
+        self.assertAlmostEqual(float(reference["center_px"][0]), 120.0, delta=1.0)
+        self.assertAlmostEqual(float(reference["last_center_px"][0]), 150.0, delta=1.0)
 
     def test_two_failed_objects_are_both_remembered(self):
         pipeline = make_pipeline()
@@ -79,9 +80,9 @@ class FailedPickTrackingTests(unittest.TestCase):
         second_frame = {"polygon": square(160, 100)}
         pipeline._match_failed_object([second_frame], (400, 400))
         self.assertTrue(second_frame.get("_blocked"))
-        self.assertAlmostEqual(
-            float(pipeline._failed_references[0]["center_px"][0]), 180.0, delta=1.0
-        )
+        reference = pipeline._failed_references[0]
+        self.assertAlmostEqual(float(reference["center_px"][0]), 120.0, delta=1.0)
+        self.assertAlmostEqual(float(reference["last_center_px"][0]), 180.0, delta=1.0)
 
     def test_permanent_point_blocks_after_tracking_gives_up(self):
         pipeline = make_pipeline()

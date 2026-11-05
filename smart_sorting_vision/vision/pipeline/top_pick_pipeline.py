@@ -1641,11 +1641,15 @@ class TopPickPipeline:
         last_reference = getattr(self, "_last_pick_reference", None)
         if last_reference is None:
             return False
+        # polygon/center/area 保留抓取当时的原始 mask，作为比对模板；
+        # last_* 只更新物体当前位置，避免逐帧替换模板后漂移到邻居。
         reference = {
             "polygon": last_reference["polygon"].copy(),
             "center_px": last_reference["center_px"].copy(),
             "area_px": float(last_reference["area_px"]),
             "robot": last_reference["robot"].copy(),
+            "last_center_px": last_reference["center_px"].copy(),
+            "last_robot": last_reference["robot"].copy(),
             "miss_frames": 0,
         }
         references = getattr(self, "_failed_references", None)
@@ -1706,8 +1710,9 @@ class TopPickPipeline:
                     geometry = self._reference_from_object(obj, image_shape)
                     if geometry is None:
                         continue
+                    reference_position = reference.get("last_robot", reference["robot"])
                     distance = float(
-                        np.linalg.norm(geometry["robot"] - reference["robot"])
+                        np.linalg.norm(geometry["robot"] - reference_position)
                     )
                     if distance > self.failed_pick_search_radius_mm:
                         continue
@@ -1728,8 +1733,10 @@ class TopPickPipeline:
                 if reference_index in matched_references or index in matched_objects:
                     continue
                 objects[index]["_blocked"] = True
-                geometry["miss_frames"] = 0
-                references[reference_index] = geometry
+                reference = references[reference_index]
+                reference["last_center_px"] = geometry["center_px"].copy()
+                reference["last_robot"] = geometry["robot"].copy()
+                reference["miss_frames"] = 0
                 matched_references.add(reference_index)
                 matched_objects.add(index)
                 print(
