@@ -147,7 +147,7 @@ vision:
     outward_radial_compensation:
       enabled: true  # 是否启用向外径向补偿；false恢复原抓取点。
       gain: 0.05  # 位移 = 离主点距离 * gain；0 不补偿，禁止负值。
-      max_shift_px: 100.0  # 单次向外位移上限（像素）；gain=0.1 时约 1000px 触顶。
+      max_shift_px: 20.0  # 单次向外位移上限（像素）；现场按 20 使用，约 3.6mm。
       center_full_px: null  # null读取去畸变内参new_camera_matrix主点；也可填实测垂足[x,y]。
       # 手填坐标属于完整去畸变图，程序自动减当前safe_roi原点；不能填ROI中心。
 
@@ -282,13 +282,13 @@ vision:
 
       # 同一物体多姿态抓取搜索
       grasp_search:
-        enabled: true  # 是否启用同一物体的多姿态抓取搜索。
+        enabled: false  # 是否启用同一物体的多姿态抓取搜索。现场关闭，抓取轴靠帧间迟滞保持稳定。
 
         yaw_offsets_deg:  # 同一物体尝试的Yaw偏移角度列表（度）。
-          [0, -8, 8, -15 ,15 ]
+          [0, -15 ,15 ]
 
         longitudinal_offsets_mm:  # 同一物体尝试的前后偏移列表（mm）。
-          [0.0, -3.0, 3.0]
+          [0.0, -2.0, 2.0]
 
         closing_offsets_mm:  # 同一物体尝试的左右偏移列表（mm）。
           [0.0]

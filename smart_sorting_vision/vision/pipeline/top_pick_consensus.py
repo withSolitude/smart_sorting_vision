@@ -332,12 +332,17 @@ class TopPickConsensus:
         # is intentional and deterministic.
         yaw_values = [float(item.get("yaw_deg", 0.0)) for item in valid]
         stable_yaw_deg = axial_mean_deg(yaw_values)
-        yaw_deviations = np.asarray(
-            [abs(axial_difference_deg(value, stable_yaw_deg)) for value in yaw_values],
-            dtype=np.float64,
-        )
-        max_yaw_deviation = float(np.max(yaw_deviations))
-        if max_yaw_deviation > self.max_yaw_spread_deg:
+        # 判据用“任意两帧的最大差”，不能用“每帧与均值之差”：
+        # 两帧相差 24° 时各自离均值只有 12°，旧判据恰好放行，随后输出
+        # 两族的平均角——既不贴 A 面也不贴 B 面，夹下去就是歪的。
+        max_yaw_spread = 0.0
+        for i in range(len(yaw_values)):
+            for j in range(i + 1, len(yaw_values)):
+                max_yaw_spread = max(
+                    max_yaw_spread,
+                    abs(axial_difference_deg(yaw_values[i], yaw_values[j])),
+                )
+        if max_yaw_spread > self.max_yaw_spread_deg:
             return StableTopPick(
                 ready=False,
                 votes=votes,
@@ -351,7 +356,7 @@ class TopPickConsensus:
                 confidence=0.0,
                 clearance_px=0.0,
                 class_name=None,
-                reason=f"yaw_spread_too_large:{max_yaw_deviation:.1f}deg",
+                reason=f"yaw_spread_too_large:{max_yaw_spread:.1f}deg",
             )
 
         grasp_pixels = np.asarray(
