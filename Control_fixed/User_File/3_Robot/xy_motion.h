@@ -58,6 +58,8 @@ private:
     int64_t Last_A = 0, Last_B = 0;
     uint16_t Speed_A = 1, Speed_B = 1;
     uint32_t Phase_Tick = 0, Move_Tick = 0, Poll_Tick = 0;
+    // 当前阶段的命令重发次数；Set_Phase 成功推进时清零。
+    uint8_t Command_Retry_Count = 0U;
     uint32_t Stable_Tick = 0, Ack_Baseline = 0;
     uint32_t Position_A_Baseline = 0, Position_B_Baseline = 0;
     uint32_t Status_A_Baseline = 0, Status_B_Baseline = 0;
@@ -83,6 +85,8 @@ private:
     bool Config_Valid() const;
     bool Feedback_Fresh() const;
     void Set_Phase(State phase);
+    // 把"等待 ACK"阶段退回对应的"发命令"阶段，用于丢 ACK 重试。
+    void Retry_Command_Phase();
     void Set_Fault(XY_Fault fault);
     void Begin_Stop();
     void Fail_Homing();

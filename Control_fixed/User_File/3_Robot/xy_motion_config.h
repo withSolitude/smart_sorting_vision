@@ -53,6 +53,9 @@ constexpr double Position_Tolerance_mm = 0.30;
 constexpr double Stopped_RPM = 2.0;
 constexpr uint32_t Feedback_Timeout_ms = 150U;
 constexpr uint32_t Command_Timeout_ms = 500U;
+// 命令 ACK 丢失（CAN 干扰/瞬时丢帧）时不立刻判故障：把当前等待阶段退回
+// 发命令阶段重发，最多重试这么多次，仍然超时才报 Command_Timeout。
+constexpr uint8_t Command_Retry_Limit = 2U;
 constexpr uint32_t Move_Timeout_ms = 15000U;
 // 到位后的稳定确认时间。原 55ms，现场平台没有可见振动，降到 35ms 每段到位省 20ms。
 constexpr uint32_t Settle_ms = 35U;
