@@ -182,6 +182,7 @@ class SideSortPipeline:
 
         self.enable_color = bool(enable_color)
         self.enable_qr = bool(enable_qr)
+        self.enable_ocr = bool(enable_ocr)
         self.enable_shape = bool(enable_shape)
         self.qr_check_content = bool(qr_check_content)
 
@@ -241,7 +242,6 @@ class SideSortPipeline:
             if self.enable_qr else None
         )
 
-        self.enable_ocr = bool(enable_ocr)
         self.ocr_recognizer = (
             TextRecognizer(ocr_config)
             if self.enable_ocr else None
