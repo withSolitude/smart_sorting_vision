@@ -26,6 +26,18 @@ constexpr float Turn_Extra_Clearance_mm = 0.01f;
 constexpr bool Merge_Start_With_Travel = true; // 再向内留少量数值余量，叠加XY到位容差。
 
 // 兼容旧名：只表示"边界数值"，不再表示边界一定在 X 轴上。
+
+// ----------------------------------------------------------------
+// 图片右边沿（x 接近 0）到识别托盘的连接处是竖直面，
+// 而夹爪抬升余量有限：夹着高件贴着右边沿往 y=0 走，
+// 下面只要有一个稍高的物体就会卡死。
+// 所以物体本身落在 x > Keepout 时，放件前先横向退到 Detour_X，
+// 再进入去托盘那一步。
+// 和 y=-60 那段一样，属于“先退让、再走目标”。
+// ----------------------------------------------------------------
+constexpr bool Right_Edge_Detour_Enabled = true;
+constexpr float Right_Edge_Keepout_X_mm = -30.0f;
+constexpr float Right_Edge_Detour_X_mm = -40.0f;
 constexpr float Turn_Boundary_X_mm = Turn_Boundary_mm;
 }
 

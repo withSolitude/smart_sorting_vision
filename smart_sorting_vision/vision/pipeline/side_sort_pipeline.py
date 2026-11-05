@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import time
 
 from vision.processors.side_object_extractor import (
     SideObjectExtractor,
@@ -98,6 +99,9 @@ class SideSortPipeline:
         侧面这里仍保持现有 4/5，因为颜色/QR/形状组合识别
         比单纯位置确认更容易出现单帧波动。
     """
+
+    # 连续判空多少帧才认作"空托盘"；单帧判空会把旧帧/瞬时遮挡当成空台。
+    EMPTY_CONFIRM_FRAMES = 2
 
     def __init__(
         self,
@@ -276,6 +280,12 @@ class SideSortPipeline:
             consensus_window
         )
 
+        self._last_raw_diag_s = 0.0
+        self._last_empty_diag_s = 0.0
+        # 连续多少帧判空才真正认作"空托盘"。
+        # 单帧判空遇到 V4L2 旧帧/瞬时遮挡时，会把已经放好的物体当成空台，
+        # 直接丢掉这一件（RETRY_PICK）。
+        self._empty_streak = 0
         # 只有 classifier 模式才有背景差分；seg 模式完全不需要背景图。
         self.background = (
             self.extractor.load_background(
@@ -289,6 +299,7 @@ class SideSortPipeline:
         self,
     ) -> None:
         self.consensus.reset()
+        self._empty_streak = 0
 
     def _check_frame(
         self,
@@ -366,11 +377,36 @@ class SideSortPipeline:
             shape_probe = self.shape_classifier.classify(frame)
             object_present = bool(shape_probe.get("object_present", False))
             if not object_present:
-                self.consensus.reset()
+
+                # 诊断：判空时打印分类器的 topk，用于区分
+                # “很确定地看到空托盘”与“被弄慎了”。限速一秒一条。
+                now_diag = time.monotonic()
+                if now_diag - self._last_empty_diag_s >= 1.0:
+                    self._last_empty_diag_s = now_diag
+                    topk_text = ", ".join(
+                        f"{item.get('shape')}={float(item.get('confidence', 0.0)):.3f}"
+                        for item in (shape_probe.get('topk') or [])[:3]
+                    )
+                    print(
+                        "[SIDE DIAG] classifier no_object "
+                        f"top1={shape_probe.get('shape')} "
+                        f"conf={float(shape_probe.get('confidence', 0.0)):.3f} "
+                        f"reason={shape_probe.get('reason')} topk=[{topk_text}]"
+                    )
                 probe_reason = str(shape_probe.get("reason", "unknown"))
-                # 只有模型明确判为 no_object 才立即触发回待机；低置信度
+                # 只有模型明确判为 no_object 才回待机；低置信度
                 # 留在当前识别周期等待后续帧，避免一帧抖动误触发重抓。
                 if probe_reason == "no_object":
+                    self._empty_streak += 1
+                    if self._empty_streak < self.EMPTY_CONFIRM_FRAMES:
+                        return self._empty_result(
+                            reason="empty_pending",
+                            required_hits=self.required_hits,
+                            found=True,
+                            shape="no_object",
+                            raw_result={"shape_probe": shape_probe},
+                        )
+                    self.consensus.reset()
                     return self._empty_result(
                         reason="no_object",
                         required_hits=self.required_hits,
@@ -378,6 +414,7 @@ class SideSortPipeline:
                         shape="no_object",
                         raw_result={"shape_probe": shape_probe},
                     )
+                self.consensus.reset()
                 return self._empty_result(
                     reason=f"shape_pending:{probe_reason}",
                     required_hits=self.required_hits,
@@ -393,6 +430,8 @@ class SideSortPipeline:
                 "confidence": 0.0,
                 "reason": "shape_disabled",
             }
+
+        self._empty_streak = 0
 
         # 形状已经确认有物体后，背景差分只作为颜色/二维码的裁剪辅助。
         # 裁剪失败时退回完整 ROI，绝不能把裁剪失败伪装成 no_object。
@@ -415,9 +454,20 @@ class SideSortPipeline:
         seg = self.segmenter.detect(frame)
 
         if not seg.get("found", False):
+
+            # 诊断：seg 没找到实例时打印原因与最高分。
+            now_diag = time.monotonic()
+            if now_diag - self._last_empty_diag_s >= 1.0:
+                self._last_empty_diag_s = now_diag
+                print(
+                    "[SIDE DIAG] seg no_instance "
+                    f"reason={seg.get('reason')} "
+                    f"score={float(seg.get('score', 0.0)):.3f} "
+                    f"class={seg.get('class_name')}"
+                )
             self.consensus.reset()
             reason = str(seg.get("reason", "no_object"))
-            # 只有明确"没有实例"才立刻回待机；模型异常留待后续帧，
+            # 只有明确"没有实例"才回待机；模型异常留待后续帧，
             # 避免一帧推理抖动误触发重抓（与分类路保持一致）。
             if reason != "no_object":
                 return self._empty_result(
@@ -427,6 +477,18 @@ class SideSortPipeline:
                     shape="unknown",
                     raw_result={"seg": seg},
                 )
+            # 明确没有实例：连续两帧才认作空托盘。
+            # 队列里的旧帧、物体刚放下的瞬时遮挡都只算"还没看清"。
+            self._empty_streak += 1
+            if self._empty_streak < self.EMPTY_CONFIRM_FRAMES:
+                return self._empty_result(
+                    reason="empty_pending",
+                    required_hits=self.required_hits,
+                    found=True,
+                    shape="no_object",
+                    raw_result={"seg": seg},
+                )
+            self.consensus.reset()
             return self._empty_result(
                 reason="no_object",
                 required_hits=self.required_hits,
@@ -435,6 +497,7 @@ class SideSortPipeline:
                 raw_result={"seg": seg},
             )
 
+        self._empty_streak = 0
         crop, crop_mask, crop_bbox = self._crop_from_seg(frame, seg)
         class_name = str(seg.get("class_name", "unknown"))
         score = float(seg.get("score", 0.0))
@@ -512,6 +575,23 @@ class SideSortPipeline:
             crop_mask,
             shape_result=shape_probe,
         )
+
+
+        # 诊断：打印本帧原始结果。
+        # consensus 里只要 color 或 shape 是 unknown 就会把这一帧丢弃，
+        # 所以这两个字段分开打印才能分清到底是哪一步出问题。
+        now_raw = time.monotonic()
+        if now_raw - self._last_raw_diag_s >= 1.0:
+            self._last_raw_diag_s = now_raw
+            print(
+                "[SIDE RAW] "
+                f"color={raw_result.get('color')} "
+                f"cconf={float(raw_result.get('color_confidence', 0.0)):.3f} "
+                f"shape={raw_result.get('shape')} "
+                f"sconf={float(raw_result.get('shape_confidence', 0.0)):.3f} "
+                f"qr={int(bool(raw_result.get('qr_present', False)))} "
+                f"crop={crop.shape[1]}x{crop.shape[0]}"
+            )
 
         stable_state = (
             self.consensus.update(

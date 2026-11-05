@@ -595,8 +595,12 @@ void Class_Holding_Jaw::Grap_Move()
             }
 
 
+            // 提前发过的从提前时刻算，否则从本状态命令完成时刻算。
+            const uint32_t pre_clip_base_tick = Pre_Clip_Early_Sent
+                ? Pre_Clip_Early_Tick
+                : Grap_Output_Complete_Tick;
             Grap_Move_Count = static_cast<uint16_t>(
-                (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
+                (uint32_t)(HAL_GetTick() - pre_clip_base_tick) / 100U + 1U);
 
 
             if (Grap_Move_Count >= 4)
@@ -702,11 +706,18 @@ void Class_Holding_Jaw::Grap_Move()
                 (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
-            if (Grap_Move_Count >= 10)
+            if (Grap_Move_Count >= 7)
             {
-                Set_Grap_Move_Status(
-                    Enum_Grap_Move_X_Y_Tray
-                );
+                // 物体贴在右边沿时，先走退让状态，退完再去托盘。
+                if (Edge_Motion_Config::Right_Edge_Detour_Enabled &&
+                    XY_Motion.Get_X_mm() > Edge_Motion_Config::Right_Edge_Keepout_X_mm)
+                {
+                    Set_Grap_Move_Status(Enum_Grap_Move_X_Retreat);
+                }
+                else
+                {
+                    Set_Grap_Move_Status(Enum_Grap_Move_X_Y_Tray);
+                }
             }
 
 
@@ -719,6 +730,25 @@ void Class_Holding_Jaw::Grap_Move()
         //
         // X/Y/Yaw移动到识别托盘
         // ====================================================
+
+        case Enum_Grap_Move_X_Retreat:
+        {
+            if (!Grap_Output_Flag)
+            {
+                break;
+            }
+
+            // 退让完成后再进去托盘那一步。
+            if (XY_Motion.Get_Motion_Finished())
+            {
+                Set_Grap_Move_Status(
+                    Enum_Grap_Move_X_Y_Tray
+                );
+            }
+
+            break;
+        }
+
 
         case Enum_Grap_Move_X_Y_Tray:
         {
@@ -773,7 +803,7 @@ void Class_Holding_Jaw::Grap_Move()
                 (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
-            if (Grap_Move_Count >= 5)
+            if (Grap_Move_Count >= 4)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Release
@@ -807,7 +837,7 @@ void Class_Holding_Jaw::Grap_Move()
                 (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
-            if (Grap_Move_Count >= 4)
+            if (Grap_Move_Count >= 3)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Tray_Lift
@@ -841,7 +871,7 @@ void Class_Holding_Jaw::Grap_Move()
                 (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
-            if (Grap_Move_Count >= 5)
+            if (Grap_Move_Count >= 3)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Recognition_Position
@@ -880,7 +910,7 @@ void Class_Holding_Jaw::Grap_Move()
 
 
             if (XY_Move_Finished() &&
-                Grap_Move_Count >= 3)
+                Grap_Move_Count >= 1)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Finish
@@ -913,7 +943,7 @@ void Class_Holding_Jaw::Grap_Move()
 
 
             if (XY_Move_Finished() &&
-                Grap_Move_Count >= 3)
+                Grap_Move_Count >= 1)
             {
                 Calibration_Yaw_Override = false;
                 Set_Grap_Move_Status(
@@ -1083,9 +1113,31 @@ void Class_Holding_Jaw::Outputs()
 
         case Enum_Grap_Move_X_Y_Start:
         {
-            if (!Grap_Output_Flag && Move_XY_Yaw_Via_Edge(
+            // 先让夹爪开始预收缩，再去执行这次抓取的 XY 移动。
+            //
+            // 不能把预收缩挂在 Move_XY_Yaw_Via_Edge 的返回值后面：
+            // 那个函数只有在“整段移动完成”时才返回 true，挂在那儿就等于
+            // 到位之后才合爪，一点时间都省不到（之前就是这样，现场看到的是
+            // 到位后才预收缩）。
+            if (!Pre_Clip_Early_Sent)
+            {
+                Claw_Servo_Motor_Target_Angle = Grap_Target_Pre_Clip_Angle;
+                if (Claw_Servo_Motor.Control_Angle(
+                        Claw_Servo_Motor_Target_Angle,
+                        Claw_PreClip_Time_ms) == HAL_OK)
+                {
+                    Pre_Clip_Early_Sent = true;
+                    Pre_Clip_Early_Tick = HAL_GetTick();
+                }
+            }
+
+            if (!Grap_Output_Flag &&
+                Move_XY_Yaw_Via_Edge(
                     Grap_Target_X_mm, Grap_Target_Y_mm, Grap_Target_Yaw_Angle))
+            {
                 Complete_Outputs();
+            }
+
             break;
         }
 
@@ -1098,6 +1150,14 @@ void Class_Holding_Jaw::Outputs()
         {
             if (Grap_Output_Flag)
             {
+                break;
+            }
+
+
+            // 已经在运动中提前下发过就不重发，直接标记完成。
+            if (Pre_Clip_Early_Sent)
+            {
+                Complete_Outputs();
                 break;
             }
 
@@ -1212,6 +1272,61 @@ void Class_Holding_Jaw::Outputs()
         // ====================================================
         // X/Y/Yaw去识别托盘
         // ====================================================
+
+        case Enum_Grap_Move_X_Retreat:
+        {
+            // 右边沿退让（独立一步）：从当前 Y 横向退到 x = Detour_X。
+            if (Grap_Output_Flag)
+            {
+                break;
+            }
+
+            if (!Detour_Target_Valid)
+            {
+                Detour_Target_Y_mm = XY_Motion.Get_Y_mm();
+                Detour_Target_Valid = true;
+            }
+
+            if (!Tray_Leg_Issued)
+            {
+                const HAL_StatusTypeDef st = XY_Motion.Move_To_mm(
+                    Edge_Motion_Config::Right_Edge_Detour_X_mm,
+                    Detour_Target_Y_mm,
+                    X_Move_Speed_mm_s,
+                    Y_Move_Speed_mm_s);
+                if (st == HAL_OK)
+                {
+                    Tray_Leg_Issued = true;
+                    Tray_Leg_Seen_Moving = false;
+                }
+                else if (st != HAL_BUSY)
+                {
+                    Abort_XY_Fault();
+                }
+                break;
+            }
+
+            // 必须真的看到运动开始，才接受之后的“已完成”
+            if (!Tray_Leg_Seen_Moving)
+            {
+                if (!XY_Motion.Get_Motion_Finished())
+                {
+                    Tray_Leg_Seen_Moving = true;
+                }
+                break;
+            }
+
+            if (!XY_Motion.Get_Motion_Finished())
+            {
+                break;
+            }
+
+            Detour_Target_Valid = false;
+            Tray_Leg_Issued = false;
+            Tray_Leg_Seen_Moving = false;
+            Complete_Outputs();
+            break;
+        }
 
         case Enum_Grap_Move_X_Y_Tray:
         {
@@ -1639,6 +1754,18 @@ void Class_Holding_Jaw::Set_Grap_Move_Status(
 {
     Grap_State_Start_Tick = HAL_GetTick();
     Edge_Move_Step = 0U;
+
+    // 每次切状态都让退让目标/腿标志重新开始。
+    Detour_Target_Valid = false;
+
+    // 每次开始新一次抓取移动时清掉提前预收缩标记。
+    if (New_Status == Enum_Grap_Move_X_Y_Start)
+    {
+        Pre_Clip_Early_Sent = false;
+        Pre_Clip_Early_Tick = 0U;
+    }
+    Tray_Leg_Issued = false;
+    Tray_Leg_Seen_Moving = false;
     Grap_Move_Status =
         New_Status;
 
@@ -1978,8 +2105,12 @@ bool Class_Holding_Jaw::Move_XY_Yaw_Direct(float X_mm, float Y_mm, float Yaw_Rad
 
     if (Edge_Move_Step == 2U)
     {
-        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(X_mm, Y_mm) ||
-            (uint32_t)(HAL_GetTick() - Edge_Yaw_Command_Tick) < Servo_Move_Time_ms)
+        // 只等 XY 到位，不再等 Yaw 那一段命令时长。
+        // Yaw 与移动是同时下发的，舵机自己在跑；而这条路径的三个调用者
+        // （去识别托盘、去相机前、回待机）之后下一步动的都是升降或夹爪，
+        // 和 Yaw 是不同的轴，不需要等它转完，可以重叠起来。
+        // 原来这里卡 Servo_Move_Time_ms，等于每次放件前白等最多 200ms。
+        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(X_mm, Y_mm))
             return false;
         Edge_Move_Step = 7U;
     }
@@ -2000,6 +2131,7 @@ XY_Move_Finished() const
     switch (Grap_Move_Status)
     {
         case Enum_Grap_Move_X_Y_Start: return XY_At_mm(Grap_Target_X_mm, Grap_Target_Y_mm);
+        case Enum_Grap_Move_X_Retreat: return XY_Motion.Get_Motion_Finished();
         case Enum_Grap_Move_X_Y_Tray: return XY_At_mm(Tray_X_mm, Tray_Y_mm);
         case Enum_Grap_Move_Recognition_Position: return XY_At_mm(Recognition_X_mm, Recognition_Y_mm);
         case Enum_Grap_Move_Return: return XY_At_mm(Disable_X_mm, Disable_Y_mm);

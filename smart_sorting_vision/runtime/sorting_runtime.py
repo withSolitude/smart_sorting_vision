@@ -98,6 +98,7 @@ class SortingRuntime:
         side_timeout_fallback_sort: bool = True,
         on_finished=None,
         on_session_start=None,
+        on_recognized=None,
         loop_sleep_idle_s: float = 0.010,
         loop_sleep_wait_s: float = 0.002,
         loop_sleep_vision_s: float = 0.001,
@@ -124,6 +125,9 @@ class SortingRuntime:
         self.side_timeout_fallback_sort = bool(side_timeout_fallback_sort)
         self.on_finished = on_finished
         self.on_session_start = on_session_start
+        # 侧面识别通过、SORT_RESULT 已下发时回调，用于 UI 立即显示本件，
+        # 不必等储物动作结束。参数：(cycle_id, ObjectInfo, 侧视裁剪图, box_id)。
+        self.on_recognized = on_recognized
 
         # 状态感知的主循环调度：
         # - IDLE 不需要高频轮询，保持低 CPU；
@@ -197,6 +201,20 @@ class SortingRuntime:
         self.current_sort_command: SortingFrame | None = None
         self.current_retry_pick_command: SortingFrame | None = None
         self.current_side_image = None
+        # 分拣期间预取的下一个顶部抓取结果（SORT_DONE 后直接下发，省一轮识别）。
+        # 只存坐标，不提前发送任何抓取命令。
+        self.prefetched_top = None
+        self.prefetched_top_at = 0.0
+
+        # 相机长时间不读时，V4L2/OpenCV 的队列里会留着上一帧（实测能留到十几秒前），
+        # 直接拿它做判断会把"刚抓走的位置"当成新目标，因此进入视觉阶段先丢几帧。
+        self._top_needs_flush = True
+        self._side_needs_flush = True
+
+        # 上一次真正下发的抓取目标，用于识别"预取结果其实是上一件的旧画面"。
+        self._last_pick_x_mm: float | None = None
+        self._last_pick_y_mm: float | None = None
+        self._last_pick_yaw_deg: float | None = None
 
         self.completed_count = 0
         # 本场比赛内“夹取后识别台为空”的自动恢复次数，仅用于日志，不计成功件数。
@@ -480,8 +498,15 @@ class SortingRuntime:
         self._timeout_notice_states.discard(state)
         if state == RuntimeState.WAIT_TOP_OBJECT:
             self._top_last_frame_at = self.state_entered_at
+            # 抓取/分拣期间顶部相机一直没读，队列里的旧帧必须丢掉。
+            self._top_needs_flush = True
         elif state == RuntimeState.WAIT_SIDE_OBJECT:
             self._side_last_frame_at = self.state_entered_at
+            # 同样：上一件识别完到现在，侧面相机也没读。
+            self._side_needs_flush = True
+        elif state == RuntimeState.WAIT_SORT_ACK:
+            # 储物动作期间的顶部预取，同样要先清掉旧帧和上一件的共识。
+            self._top_needs_flush = True
         print(f"[Runtime] state -> {state.name} cycle={self.cycle_id}")
 
     @staticmethod
@@ -489,6 +514,25 @@ class SortingRuntime:
         reset = getattr(pipeline, "reset", None)
         if callable(reset):
             reset()
+
+    @staticmethod
+    def _discard_camera_frames(camera, count: int = 2) -> int:
+        """丢弃相机采集队列里的旧帧，返回真正丢掉的帧数。
+
+        只用于“刚进入视觉阶段”的第一次取帧；失败不抛异常。
+        """
+        if camera is None:
+            return 0
+        dropped = 0
+        for _ in range(max(0, int(count))):
+            try:
+                frame = camera.read()
+            except Exception:
+                break
+            if frame is None:
+                break
+            dropped += 1
+        return dropped
 
     def _reset_side_vote_stats(self) -> None:
         """清空本次侧面识别阶段的超时多数票统计。"""
@@ -644,8 +688,21 @@ class SortingRuntime:
         if frame is not None:
             self._send_command(frame, label=label, retry=True)
 
-    def _request_retry_pick(self, *, reason: str) -> None:
+    def _request_retry_pick(
+        self,
+        *,
+        reason: str,
+        allow_fallback_sort: bool = True,
+    ) -> None:
         """放弃本次未成功送达识别台的夹取，但保持比赛运行。
+
+        allow_fallback_sort：
+            True  = 识别台上确实有物体、只是颜色/形状认不出来时，先尝试
+                    丢进一个空盒（默认，保持原有行为）。
+            False = 识别台是空的（模型判 no_object / 空托盘）。这时不能再走
+                    兜底分箱：发 SORT_RESULT 会让储物盒转一次、占掉一个箱位，
+                    还会在 UI 上留一行 unknown。直接 RETRY_PICK 回 Disable，
+                    随后重新开始顶部抓取，不做任何储物动作。
 
         注意：不能直接回 WAIT_TOP_OBJECT。下位机此时还停在 Recognition
         姿态，必须先通过 RETRY_PICK 让机构安全 Return -> Disable；只有收到
@@ -660,9 +717,9 @@ class SortingRuntime:
             self.storage_manager.cancel(self.current_reservation_id)
             self.current_reservation_id = None
 
-        # 物体此时还留在识别台上（模型没认出来）。先尝试丢进一个空盒，
-        # 否则重抓时它会一直占着识别台。
-        if self._try_fallback_sort(reason=reason):
+        # 只有“识别台上有实物、只是属性认不出”才兜底分箱。
+        # 空托盘没有东西可丢，绝不能发 SORT_RESULT（见上面 allow_fallback_sort）。
+        if allow_fallback_sort and self._try_fallback_sort(reason=reason):
             return
 
         self.current_object = None
@@ -1110,37 +1167,130 @@ class SortingRuntime:
             self.process_top()
         elif self.state == RuntimeState.WAIT_SIDE_OBJECT:
             self.process_side()
+        elif self.state in (RuntimeState.WAIT_SORT_ACK, RuntimeState.WAIT_SORT_DONE):
+            # 储物动作进行时顶部相机空闲：先把下一件的抓取目标算好。
+            # 只计算、不下发；真正的 PICK_TARGET 仍然等 SORT_DONE 之后。
+            self._prefetch_top()
 
     # =====================================================
     # 顶部视觉
     # =====================================================
+
+    def _prefetch_top(self):
+        """分拣动作进行时，先把下一件的顶部抓取目标算好。
+
+        WAIT_SORT_ACK / WAIT_SORT_DONE 期间顶部相机是空闲的，而这段时间
+        正被储物机构的翻转与回位占着。这里只跑一轮识别并把结果存起来，
+        不发送任何抓取命令；等 SORT_DONE 到了再由 process_top 下发。
+        """
+        if not self.running or self.prefetched_top is not None:
+            return
+        if self.state not in (
+            RuntimeState.WAIT_SORT_ACK,
+            RuntimeState.WAIT_SORT_DONE,
+        ):
+            return
+
+        # 进入储物阶段后的第一次预取：先丢掉相机队列里的旧帧、清掉上一件的
+        # 共识状态。否则 V4L2 队列里"抓取前"的那一帧会算出一个已经抓走的位置。
+        if self._top_needs_flush:
+            dropped = self._discard_camera_frames(self.top_camera, 2)
+            self._safe_reset(self.top_pipeline)
+            self._top_needs_flush = False
+            if dropped:
+                print(f"[Runtime] PREFETCH flushed {dropped} stale camera frame(s)")
+
+        image = self.top_camera.read()
+        if image is None:
+            return
+
+        result = self.top_pipeline.process(image)
+        if not bool(getattr(result, "ready", False)):
+            return
+        if result.x_mm is None or result.y_mm is None:
+            return
+        if self._target_matches_last_pick(result):
+            # 正常画面里，刚抓走的位置不可能还有物体；命中说明还是旧帧。
+            print(
+                "[Runtime] PREFETCH ignored: same position as the last pick "
+                f"x={float(result.x_mm):.1f} y={float(result.y_mm):.1f}"
+            )
+            return
+
+        self.prefetched_top = result
+        self.prefetched_top_at = time.monotonic()
+        print(
+            "[Runtime] PREFETCH top target "
+            f"x={float(result.x_mm):.1f} y={float(result.y_mm):.1f} "
+            f"yaw={float(getattr(result, 'yaw_deg', 0.0)):.1f}"
+        )
+
+    def _target_matches_last_pick(self, result) -> bool:
+        """预取结果是否和刚下发的抓取点几乎重合。
+
+        物体被抓走之后，那个位置不可能还有可抓目标；重合只可能是相机
+        还在返回抓取前的旧帧。
+        """
+        if self._last_pick_x_mm is None or self._last_pick_y_mm is None:
+            return False
+        try:
+            dx = float(result.x_mm) - self._last_pick_x_mm
+            dy = float(result.y_mm) - self._last_pick_y_mm
+        except (TypeError, ValueError):
+            return False
+        if math.hypot(dx, dy) > 8.0:
+            return False
+        if self._last_pick_yaw_deg is None:
+            return True
+        yaw = float(getattr(result, "yaw_deg", 0.0))
+        diff = abs(((yaw - self._last_pick_yaw_deg + 90.0) % 180.0) - 90.0)
+        return diff <= 6.0
 
     def process_top(self):
         # 防止调试代码/回调在非顶部识别状态重复下发 PICK_TARGET。
         if not self.running or self.state != RuntimeState.WAIT_TOP_OBJECT:
             return
 
-        image = self.top_camera.read()
-        if image is None:
-            return
+        # 分拣期间已经预取到目标：直接用，省掉这一轮的取帧 + 共识 + 推理。
+        # 预取结果不参与“空场景结束”判定；超过 5 s 视为过期，退回实时帧。
+        result = self.prefetched_top
+        prefetched_at = self.prefetched_top_at
+        self.prefetched_top = None
+        self.prefetched_top_at = 0.0
+        if result is not None and (time.monotonic() - prefetched_at) > 5.0:
+            print("[Runtime] PREFETCH result expired; fall back to a live frame")
+            result = None
 
-        self._top_last_frame_at = time.monotonic()
-        result = self.top_pipeline.process(image)
+        if result is None:
+            # 长时间没读相机，先丢几帧再取，避免用抓取前的旧画面。
+            if self._top_needs_flush:
+                dropped = self._discard_camera_frames(self.top_camera, 2)
+                self._safe_reset(self.top_pipeline)
+                self._top_needs_flush = False
+                if dropped:
+                    print(f"[Runtime] TOP flushed {dropped} stale camera frame(s)")
 
-        # 正式比赛自动结束：只有顶部模型连续确认“0 个物体”，并且已经
-        # 完成不少于配置的最小件数，才判定场上货物清空。
-        if int(getattr(result, "object_count", 0)) == 0:
-            now = time.monotonic()
-            if self._empty_scene_since is None:
-                self._empty_scene_since = now
-            elif (
-                self.completed_count >= self.minimum_items_before_empty_finish
-                and (now - self._empty_scene_since) >= self.empty_finish_hold_s
-            ):
-                self._finish_competition("top_scene_empty")
+            image = self.top_camera.read()
+            if image is None:
                 return
-        else:
-            self._empty_scene_since = None
+
+            self._top_last_frame_at = time.monotonic()
+            result = self.top_pipeline.process(image)
+
+            # 正式比赛自动结束：只有顶部模型连续确认“0 个物体”，并且已经
+            # 完成不少于配置的最小件数，才判定场上货物清空。
+            if int(getattr(result, "object_count", 0)) == 0:
+                now = time.monotonic()
+                if self._empty_scene_since is None:
+                    self._empty_scene_since = now
+                elif (
+                    self.completed_count >= self.minimum_items_before_empty_finish
+                    and (now - self._empty_scene_since) >= self.empty_finish_hold_s
+                ):
+                    self._finish_competition("top_scene_empty")
+                    return
+            else:
+                self._empty_scene_since = None
 
         if not result.ready:
             return
@@ -1227,6 +1377,12 @@ class SortingRuntime:
             f"axis={self.current_pick_command.yaw_deg:+.1f}deg "
             f"physical={physical_yaw_deg:+.1f}deg servo={servo_yaw_deg:+.2f}deg"
         )
+
+        # 记下这次真正下发的抓取点：分拣期间如果预取又"看到"同一个位置，
+        # 只能说明相机还在给旧帧，必须丢掉。
+        self._last_pick_x_mm = float(self.current_pick_command.x_mm)
+        self._last_pick_y_mm = float(self.current_pick_command.y_mm)
+        self._last_pick_yaw_deg = float(self.current_pick_command.yaw_deg)
 
         preopen_mm = getattr(result, "preopen_mm", None)
         grasp_width_mm = getattr(result, "grasp_width_mm", None)
@@ -1349,13 +1505,44 @@ class SortingRuntime:
             self.current_box = None
             return
 
+        # SORT_RESULT 已经发出去：本件识别结果可以立刻上屏，
+        # 不必等储物动作跑完（SORT_DONE）。
+        self._notify_recognized()
+
         self._enter_state(RuntimeState.WAIT_SORT_ACK)
+
+    def _notify_recognized(self) -> None:
+        """把本件识别结果交给 UI；回调异常不影响分拣流程。"""
+        callback = self.on_recognized
+        if not callable(callback):
+            return
+        obj = self.current_object
+        if obj is None:
+            return
+        try:
+            callback(
+                self.cycle_id,
+                obj,
+                self.current_side_image,
+                self.current_box,
+            )
+        except Exception as exc:
+            print(f"[Runtime][WARN] on_recognized failed: {exc}")
 
     def process_side(self):
         # SideRecognitionConsensus READY 后会锁存，因此这里必须用状态门控，
         # 避免重复 reserve / 重复发送 SORT_RESULT。
         if not self.running or self.state != RuntimeState.WAIT_SIDE_OBJECT:
             return
+
+        # 上一件识别完到现在侧面相机没读过，先丢掉队列里的旧帧
+        # （否则可能拿着上一件的画面判空/判形状）。
+        if self._side_needs_flush:
+            dropped = self._discard_camera_frames(self.side_camera, 2)
+            self._safe_reset(self.side_pipeline)
+            self._side_needs_flush = False
+            if dropped:
+                print(f"[Runtime] SIDE flushed {dropped} stale camera frame(s)")
 
         image = self.side_camera.read()
         if image is None:
@@ -1366,8 +1553,8 @@ class SortingRuntime:
 
         result = self.side_pipeline.process(image)
 
-        # 侧面流水线现在先运行形状分类器。只有形状分类器确认不是
-        # no_object，才会继续颜色、二维码等属性识别。
+        # 侧面流水线先判空（classifier：空托盘类；seg：没有实例）。
+        # 只有确认有物体，才会继续颜色、二维码等属性识别。
         side_reason = str(getattr(result, "reason", ""))
         if side_reason.startswith("shape_pending:"):
             return
@@ -1375,12 +1562,14 @@ class SortingRuntime:
         # -----------------------------------------------------
         # 无物体恢复
         # -----------------------------------------------------
-        # no_object 已由形状 YOLO 直接确认。此时不再进入颜色/QR/Shape
-        # 后续流程，也不等待背景差分的时间/帧数门槛，马上请求下位机
-        # Return -> Disable；收到 MCU_RETRY_PICK_READY 后重新开始顶部识别。
+        # 模型确认识别台上没有物体（空托盘）。这时不做任何储物动作：
+        # 不占箱、不发 SORT_RESULT、储物盒不转、托盘不翻、UI 不记一行；
+        # 直接请求下位机 Return -> Disable，收到 MCU_RETRY_PICK_READY 后
+        # 重新开始顶部识别，抓下一件。
         if not bool(getattr(result, "found", True)):
             self._request_retry_pick(
-                reason=f"no_object from shape classifier: {side_reason or 'no_object'}"
+                reason=f"no_object on side tray: {side_reason or 'no_object'}",
+                allow_fallback_sort=False,
             )
             return
 

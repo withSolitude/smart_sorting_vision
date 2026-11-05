@@ -38,6 +38,10 @@ enum Enum_Grap_Move_Status
     Enum_Grap_Move_Lift,
 
     // X/Y/Yaw移动到识别托盘
+    // 右边沿退让：物体贴在 x>-30 时，先横向退到 x=-40，
+    // 再进入 X_Y_Tray 去托盘。
+    Enum_Grap_Move_X_Retreat,
+
     Enum_Grap_Move_X_Y_Tray,
 
     // 到识别托盘后下降
@@ -355,6 +359,10 @@ private:
     //
     // 当前默认先沿用识别托盘附近的安全姿态：
     // X/Y与托盘一致、Yaw保持托盘角、Lift抬起、Claw保持释放。
+    //
+    // 注意：Lift 的机械最高点就是待机角 15°，识别姿态也必须用 15°。
+    // 以前这里写 34°，舵机会一直顶在机械限位上堵转（表现为"只有识别时
+    // 才升到顶/上升很慢/发烫"），不要再填大于待机角的值。
     // ========================================================
 
     float Recognition_X_mm =
@@ -367,7 +375,7 @@ private:
         20.0f * PI / 180.0f;
 
     float Recognition_Lift_Angle =
-        34.0f * PI / 180.0f;
+        15.0f * PI / 180.0f;
 
     float Recognition_Claw_Angle =
         ClawPreopen::kStandbyAngleDeg * PI / 180.0f;
@@ -416,7 +424,7 @@ private:
 
 
     float Lift_Servo_Motor_Angle_Disable =
-        34.0f * PI / 180.0f;
+        15.0f * PI / 180.0f;
 
     float Claw_Servo_Motor_Angle_Disable =
         ClawPreopen::kStandbyAngleDeg * PI / 180.0f;
@@ -484,7 +492,7 @@ private:
     // --------------------------------------------------------
 
     float Lift_Servo_Motor_Angle_Recognition_Tray_Descend =
-        -20.0f * PI / 180.0f;
+        -40.0f * PI / 180.0f;
 
 
     // --------------------------------------------------------
@@ -500,7 +508,7 @@ private:
     // --------------------------------------------------------
 
     float Lift_Servo_Motor_Angle_Lift =
-        34.0f * PI / 180.0f;
+        15.0f * PI / 180.0f;
 
 
     // --------------------------------------------------------
@@ -576,7 +584,7 @@ private:
     // --------------------------------------------------------
 
     float Lift_Descend_Max_Angle =
-        -40.0f *
+        -60.0f *
         PI / 180.0f;
 
 
@@ -705,6 +713,10 @@ private:
 
     // 夹爪单独的动作时间：预收缩/夹紧/放松不需要和 Yaw/升降一样慢。
     // 原来这三处硬编码 500ms，是"XY 到点后到夹爪预收缩"这段延迟的主要来源。
+    // 预收缩提前：XY 移动到离目标这么近时就开始合爪，
+    // 到位时爪子已经基本收好。留太小会和旁边物体干涉。
+    // 预收缩已改成“移动命令一下发就合爪”，
+    // 不再靠距离触发（直线与斜线的路径速度不同，距离不可靠）。
     static constexpr uint32_t Claw_PreClip_Time_ms = 300U;
     static constexpr uint32_t Claw_Clip_Time_ms = 320U;
     static constexpr uint32_t Claw_Release_Time_ms = 200U;
@@ -729,7 +741,18 @@ private:
     // 多个移动阶段共用的边缘中转进度；切换状态时清零，禁止继承上一段路线。
     uint8_t Edge_Move_Step = 0U;
     float Edge_Retreat_Y_mm = 0.0f;
+
+    // 右边沿退让的目标 Y，进入该步时只快照一次。
+    float Detour_Target_Y_mm = 0.0f;
+    bool Detour_Target_Valid = false;
+    // 当前这一步的移动命令是否已下发 / 是否已见到运动开始。
+    bool Tray_Leg_Issued = false;
+    bool Tray_Leg_Seen_Moving = false;
     uint32_t Edge_Yaw_Command_Tick = 0U;
+
+    // 提前预收缩的标记与时刻（用于把等待时间从发命令那一刻算）。
+    bool Pre_Clip_Early_Sent = false;
+    uint32_t Pre_Clip_Early_Tick = 0U;
 
 
     // ========================================================

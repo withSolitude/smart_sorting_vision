@@ -2,11 +2,21 @@
 #define TEST_XY_MOTION_H
 #include "test_hardware.h"
 #include "3_Robot/xy_motion_config.h"
+
+// 与真实驱动保持一致：Grap 故障细分需要读取具体故障码。
+enum class XY_Fault : uint8_t
+{
+    None, Configuration, Feedback_Timeout, Drive_Stall, Drive_Disabled,
+    Command_Rejected, Command_Timeout, Transport, Move_Timeout, Position_Jump,
+    Homing_Failed
+};
+
 class Class_XY_Motion
 {
 public:
     struct Move { float X,Y,VX,VY; uint32_t Tick; };
     bool Position_Valid=true, Fault=false, Motion_Finished=true, Stop_Confirmed=true;
+    XY_Fault Fault_Code=XY_Fault::None;
     // 当前机构以上电位置作为软件原点，待机点的 XY 夹具也从 (0,0) 开始。
     float X=0,Y=0;
     uint32_t Stop_Calls=0;
@@ -17,6 +27,7 @@ public:
     void TIM_1ms_PeriodElapsedCallback() {}
     bool Get_Position_Valid() const { return Position_Valid; }
     bool Get_Fault() const { return Fault; }
+    XY_Fault Get_Fault_Code() const { return Fault_Code; }
     bool Get_Motion_Finished() const { return Motion_Finished; }
     bool Get_Stop_Confirmed() const { return Stop_Confirmed; }
     bool Get_Homing_Active() const { return false; }

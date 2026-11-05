@@ -1224,7 +1224,9 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
     // 所以任务不能直接丢弃，要继续重试。
     // ========================================================
 
-    if (Pick_Start_Pending)
+    // 托盘还在翻转/回位时不要开始下一次抓取：夹爪从待机位出发的斜线
+    // 会扫过托盘区域。只等多出来的 100~300 ms，不等到 4310 回待机。
+    if (Pick_Start_Pending && Sorting_Storage.Get_Tray_Ready())
     {
         // HAL_BUSY 只表示夹爪/XY 尚未准备好，不能把它当作通信超时。
         // 计数保留给调试观察，并在最大值处饱和。
@@ -1374,6 +1376,10 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
         // 下一件顶部视觉开始前，夹爪必须已经完全回到 Disable。
         // 如果仍在 Recognition/Return 过程中，只继续等待/重试回位，
         // 暂不发送 SORT_DONE，避免上位机开始下一件识别时夹爪挡住画面。
+        //
+        // 储物机构不再等“托盘回位 + 4310 回待机”：
+        // 物品翻进盒子（TRAY_HOLD 结束）时就已经置完成标志，
+        // 托盘回位与 4310 回待机在后台继续跑，上位机可以立刻开始下一件。
         // ----------------------------------------------------
         if (!Holding_Jaw.Get_Disable_Ready())
         {
@@ -1384,7 +1390,7 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
                 return;
             }
         }
-        else if (Sorting_Storage.Get_Disable_Ready() && !Sorting_Storage.Get_Fault() &&
+        else if (!Sorting_Storage.Get_Fault() &&
                  Sorting_Handshake.Notify_Sort_Done())
         {
             Sort_Done_Notify_Pending = false;
@@ -1594,9 +1600,30 @@ bool Class_Robot::Service_XY_Fault()
         // 只请求一次：每 10ms 重复 Request_Disable 会重置储物回程状态，
         // 使安全停机无法完成。
         if (!Sorting_Storage.Get_Fault()) Sorting_Storage.Request_Disable();
-        // Existing Jetson protocol retains its XY error code; detailed drive
-        // 更详细的原因可通过 MCU 的 XY_Motion 诊断数据读取。
-        Sorting_Handshake.Notify_Error(Grap_Error_To_Sorting_Error_Code(Holding_Jaw.Get_Grap_Error()));
+        // 先按夹爪错误出码；若是 XY 驱动故障，再用细分码覆盖（12~16），
+        // 这样上位机日志能直接区分反馈超时/堵转/命令被拒/命令超时/位置跳变。
+        uint8_t error_code = Grap_Error_To_Sorting_Error_Code(Holding_Jaw.Get_Grap_Error());
+        switch (Holding_Jaw.XY_Motion.Get_Fault_Code())
+        {
+            case XY_Fault::Feedback_Timeout:
+                error_code = Sorting_Vision_Error_XY_Feedback_Timeout;
+                break;
+            case XY_Fault::Drive_Stall:
+                error_code = Sorting_Vision_Error_XY_Drive_Stall;
+                break;
+            case XY_Fault::Command_Rejected:
+                error_code = Sorting_Vision_Error_XY_Command_Rejected;
+                break;
+            case XY_Fault::Command_Timeout:
+                error_code = Sorting_Vision_Error_XY_Command_Timeout;
+                break;
+            case XY_Fault::Position_Jump:
+                error_code = Sorting_Vision_Error_XY_Position_Jump;
+                break;
+            default:
+                break;
+        }
+        Sorting_Handshake.Notify_Error(error_code);
     }
     return true;
 }

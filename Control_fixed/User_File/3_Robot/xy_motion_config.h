@@ -54,7 +54,8 @@ constexpr double Stopped_RPM = 2.0;
 constexpr uint32_t Feedback_Timeout_ms = 150U;
 constexpr uint32_t Command_Timeout_ms = 500U;
 constexpr uint32_t Move_Timeout_ms = 15000U;
-constexpr uint32_t Settle_ms = 55U;
+// 到位后的稳定确认时间。原 55ms，现场平台没有可见振动，降到 35ms 每段到位省 20ms。
+constexpr uint32_t Settle_ms = 35U;
 constexpr uint32_t Poll_Interval_ms = 2U; // 每16ms读取一次每台电机的31/36/35/3A
 constexpr uint16_t Encoder_Unwrap_Max_Gap_ms = 80U; // 300RPM 时半圈=100ms
 
@@ -82,3 +83,4 @@ constexpr float Power_On_Origin_Y_mm = 0.0f;
 }
 
 #endif
+

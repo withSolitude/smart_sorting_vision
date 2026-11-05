@@ -223,6 +223,14 @@ enum Enum_Sorting_Vision_Error_Code : uint8_t
     Sorting_Vision_Error_Grap_TOF_Invalid = 9U,
     Sorting_Vision_Error_Grap_Target_Invalid = 10U,
     Sorting_Vision_Error_Grap_TOF_Timeout = 11U,
+
+    // XY 驱动细分（12~16）：抓取过程中 XY 故障时区分具体原因，
+    // 不再一律报 8（8 仍表示“位置无效/驱动故障”的笼统含义）。
+    Sorting_Vision_Error_XY_Feedback_Timeout = 12U,
+    Sorting_Vision_Error_XY_Drive_Stall = 13U,
+    Sorting_Vision_Error_XY_Command_Rejected = 14U,
+    Sorting_Vision_Error_XY_Command_Timeout = 15U,
+    Sorting_Vision_Error_XY_Position_Jump = 16U,
 };
 
 

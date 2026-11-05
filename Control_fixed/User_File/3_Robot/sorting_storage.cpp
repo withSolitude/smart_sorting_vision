@@ -753,6 +753,13 @@ void Class_Sorting_Storage::Storage_Move()
                 Tray_Hold_Time_ms
             )
             {
+                // 物品已经翻进储物盒：本件储物到这里就算完成。
+                // 托盘回位和 4310 回待机在后台继续跑，不再拖住 SORT_DONE，
+                // 上位机可以立刻开始下一件（顶部预取结果直接下发）。
+                Sort_Finished_Pending =
+                    true;
+
+
                 Set_Storage_Status(
                     Sorting_Storage_Status_TRAY_RETURN
                 );
@@ -840,10 +847,8 @@ void Class_Sorting_Storage::Storage_Move()
                 DM4310_Stable_Required
             )
             {
-                Sort_Finished_Pending =
-                    true;
-
-
+                // 完成标志已经在 TRAY_HOLD 置位（物品落盒即算完成），
+                // 这里只负责把机构收回待机。
                 Target_Box_ID =
                     0;
 
@@ -1690,6 +1695,16 @@ bool Class_Sorting_Storage::Get_Disable_Ready()
         DM4310_Feedback_Fresh() && Tray_Disable_Ready() &&
         std::fabs(Get_Circular_Angle_Error(DM4310_Disable_Angle,Get_DM4310_Output_Angle())) <= DM4310_Angle_Tolerance &&
         std::fabs(DM4310.Get_Now_Omega()) <= DM4310_Omega_Tolerance;
+}
+
+// 只看托盘：翻转/保持/回位过程中返回 false，回到待机后才允许夹爪横穿托盘区域。
+// 注意与 Get_Disable_Ready 的区别：后者还要求 4310 回待机，会多等 0.4~1.3 s。
+bool Class_Sorting_Storage::Get_Tray_Ready() const
+{
+    return Storage_Status != Sorting_Storage_Status_TRAY_FLIP &&
+        Storage_Status != Sorting_Storage_Status_TRAY_HOLD &&
+        Storage_Status != Sorting_Storage_Status_TRAY_RETURN &&
+        Storage_Status != Sorting_Storage_Status_STOP_TRAY_RETURN;
 }
 
 bool Class_Sorting_Storage::Clear_Fault()

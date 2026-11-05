@@ -155,6 +155,11 @@ public:
     // 安全待机必须同时满足 DM 反馈新鲜和托盘回位指令的动作时间。
     // UART 舵机没有实测位置应答，因此这里只能依据已发送命令和时间判断。
     bool Get_Disable_Ready();
+
+    // 托盘是否已经回到待机位（不在翻转/保持/回位过程中）。
+    // 上位机开始下一次抓取前用它判断：夹爪从待机位斜穿托盘区域是否安全。
+    bool Get_Tray_Ready() const;
+
     inline bool Get_Fault() const { return Fault_Latched; }
     // Explicit operator recovery; communication returning alone never clears it.
     bool Clear_Fault();
@@ -534,7 +539,7 @@ private:
 
     // 外环最大目标速度，先保守设为1.0rad/s。
     float DM4310_Move_Omega =
-        1.5f;
+        2.5f;
 
     // 位置外环PID。初值以P为主，D直接使用-now_omega抑制过冲。
     float DM4310_Pos_Kp =
@@ -638,7 +643,7 @@ private:
 
     static constexpr uint8_t
     DM4310_Stable_Required =
-        5;
+        3;
 
 
     uint8_t DM4310_Stable_Count =
@@ -688,22 +693,22 @@ private:
 
     static constexpr uint16_t
     Tray_Flip_Move_Time_ms =
-        200;
+        150;
 
 
     static constexpr uint16_t
     Tray_Return_Move_Time_ms =
-        200;
+        150;
 
 
     static constexpr uint16_t
     Tray_Move_Safe_Time_ms =
-        200;
+        120;
 
 
     static constexpr uint16_t
     Tray_Hold_Time_ms =
-        200 ;
+        150 ;
 
 
     // ========================================================

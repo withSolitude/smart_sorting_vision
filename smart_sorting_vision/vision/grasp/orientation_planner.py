@@ -595,6 +595,9 @@ def plan_grasp_axis(
     min_contact_span_px: float = 6.0,
     circle_circularity_threshold: float = 0.985,
     circle_min_vertices: int = 8,
+    continuity_axis_deg: float | None = None,
+    continuity_tolerance_deg: float = 20.0,
+    continuity_score_margin: float = 1.5,
 ) -> ObjectOrientation:
     """Plan a production parallel-jaw grasp for a simple top-view shape.
 
@@ -684,6 +687,26 @@ def plan_grasp_axis(
             grasp_pixel_override=(int(round(preferred[0])), int(round(preferred[1]))),
             contact_type="none",
         )
+
+    # ========================================================
+    # 帧间连续性（迟滞）
+    #
+    # 几何上等价的族（正方形两组边、正多边形多组边、多边形相邻边）分数
+    # 常常只差零点几，mask 抖动 1~2 px 就会换赢家，抓取点于是跳到另一族。
+    # 上一帧选中的族如果仍然"够好"，就沿用它，避免每帧重新洗牌。
+    # ========================================================
+    if continuity_axis_deg is not None and math.isfinite(float(continuity_axis_deg)):
+        frame_best = max(float(c.score_base) for c in candidates)
+        near = [
+            c
+            for c in candidates
+            if abs(axial_difference_deg(c.axis_robot_deg, float(continuity_axis_deg)))
+            <= float(continuity_tolerance_deg)
+        ]
+        if near:
+            best_near = max(near, key=lambda c: float(c.score_base))
+            if float(best_near.score_base) >= frame_best - float(continuity_score_margin):
+                candidates = [best_near]
 
     # Multiple axes can be physically equivalent (square, regular triangle,
     # regular pentagon, hexagon...). Pixel-level contour jitter must not make

@@ -111,6 +111,7 @@ class SingleYawPipelineTests(unittest.TestCase):
         pipeline.transform = SimpleNamespace(check_frame=lambda _: None)
         pipeline.segmenter = SimpleNamespace(predict=lambda _: None, get_objects=lambda _: [{}])
         pipeline.grasp_search_enabled = False
+        pipeline.timing_enabled = False
         pipeline.required_hits = pipeline.window_size = 2
         pipeline.consensus = TopPickConsensus(window_size=2, required_hits=2)
         pipeline._candidate_to_consensus_dict = lambda candidate: candidate
@@ -146,6 +147,19 @@ class SingleYawPipelineTests(unittest.TestCase):
         self.assertTrue(stable.ready)
         self.assertEqual(stable.yaw_deg, -90.0)
         self.assertAlmostEqual(pipeline._physical_yaw(stable.yaw_deg), -90.0)
+
+    def test_two_face_families_are_never_averaged(self):
+        # 两族相差 24°：各自离均值只有 12°，旧判据恰好放行，再把两族平均
+        # 成一个中间角（既不贴 A 面也不贴 B 面）。必须直接判不合格。
+        pipeline = self.consensus_pipeline()
+        self.assertFalse(self.observe(pipeline, -16.0).ready)
+        mixed = self.observe(pipeline, 8.0)
+        self.assertFalse(mixed.ready)
+        self.assertIn("yaw_spread_too_large", mixed.reason)
+        # 同一族连续两帧仍然正常通过。
+        stable = self.observe(pipeline, 8.0)
+        self.assertTrue(stable.ready)
+        self.assertEqual(stable.yaw_deg, 8.0)
 
 
 if __name__ == "__main__":
