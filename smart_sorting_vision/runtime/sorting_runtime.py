@@ -644,8 +644,21 @@ class SortingRuntime:
         if frame is not None:
             self._send_command(frame, label=label, retry=True)
 
-    def _request_retry_pick(self, *, reason: str) -> None:
+    def _request_retry_pick(
+        self,
+        *,
+        reason: str,
+        allow_fallback_sort: bool = True,
+    ) -> None:
         """放弃本次未成功送达识别台的夹取，但保持比赛运行。
+
+        allow_fallback_sort：
+            True  = 识别台上确实有物体、只是颜色/形状认不出来时，先尝试
+                    丢进一个空盒（默认，保持原有行为）。
+            False = 识别台是空的（模型判 no_object / 空托盘）。这时不能再走
+                    兜底分箱：发 SORT_RESULT 会让储物盒转一次、占掉一个箱位，
+                    还会在 UI 上留一行 unknown。直接 RETRY_PICK 回 Disable，
+                    随后重新开始顶部抓取，不做任何储物动作。
 
         注意：不能直接回 WAIT_TOP_OBJECT。下位机此时还停在 Recognition
         姿态，必须先通过 RETRY_PICK 让机构安全 Return -> Disable；只有收到
@@ -660,9 +673,9 @@ class SortingRuntime:
             self.storage_manager.cancel(self.current_reservation_id)
             self.current_reservation_id = None
 
-        # 物体此时还留在识别台上（模型没认出来）。先尝试丢进一个空盒，
-        # 否则重抓时它会一直占着识别台。
-        if self._try_fallback_sort(reason=reason):
+        # 只有“识别台上有实物、只是属性认不出”才兜底分箱。
+        # 空托盘没有东西可丢，绝不能发 SORT_RESULT（见上面 allow_fallback_sort）。
+        if allow_fallback_sort and self._try_fallback_sort(reason=reason):
             return
 
         self.current_object = None
@@ -1366,8 +1379,8 @@ class SortingRuntime:
 
         result = self.side_pipeline.process(image)
 
-        # 侧面流水线现在先运行形状分类器。只有形状分类器确认不是
-        # no_object，才会继续颜色、二维码等属性识别。
+        # 侧面流水线先判空（classifier：空托盘类；seg：没有实例）。
+        # 只有确认有物体，才会继续颜色、二维码等属性识别。
         side_reason = str(getattr(result, "reason", ""))
         if side_reason.startswith("shape_pending:"):
             return
@@ -1375,12 +1388,14 @@ class SortingRuntime:
         # -----------------------------------------------------
         # 无物体恢复
         # -----------------------------------------------------
-        # no_object 已由形状 YOLO 直接确认。此时不再进入颜色/QR/Shape
-        # 后续流程，也不等待背景差分的时间/帧数门槛，马上请求下位机
-        # Return -> Disable；收到 MCU_RETRY_PICK_READY 后重新开始顶部识别。
+        # 模型确认识别台上没有物体（空托盘）。这时不做任何储物动作：
+        # 不占箱、不发 SORT_RESULT、储物盒不转、托盘不翻、UI 不记一行；
+        # 直接请求下位机 Return -> Disable，收到 MCU_RETRY_PICK_READY 后
+        # 重新开始顶部识别，抓下一件。
         if not bool(getattr(result, "found", True)):
             self._request_retry_pick(
-                reason=f"no_object from shape classifier: {side_reason or 'no_object'}"
+                reason=f"no_object on side tray: {side_reason or 'no_object'}",
+                allow_fallback_sort=False,
             )
             return
 
