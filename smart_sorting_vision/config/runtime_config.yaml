@@ -454,6 +454,11 @@ vision:
 storage:
   box_count: 6  # 储物盒数量。
 
+# 决赛模式：只分前 sort_boxes 类，其余全部丢进最后一个垃圾桶盒。
+finals:
+  enabled: false  # 是否启用决赛的“5 分类 + 1 垃圾桶”模式。
+  sort_boxes: 5  # 参与分类的盒子数；第 6 个自动作为垃圾桶。
+
 runtime:
   # 命令丢包时的周期重发间隔。动作超时只触发提示和重发，不把整场锁死。
   retry_interval_s: 0.25  # 动作命令重发间隔（秒）。

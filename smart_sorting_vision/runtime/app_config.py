@@ -57,6 +57,21 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
         if section not in cfg:
             raise ConfigError(f"缺少配置段: {section}")
 
+    # 决赛模式是可选段：只分前 N 类，其余丢垃圾桶。
+    finals_cfg = cfg.get("finals")
+    if finals_cfg is not None:
+        if not isinstance(finals_cfg, dict):
+            raise ConfigError("finals 必须是对象")
+        if "enabled" in finals_cfg and not isinstance(finals_cfg["enabled"], bool):
+            raise ConfigError("finals.enabled 必须是 true/false")
+        if "sort_boxes" in finals_cfg:
+            sort_boxes = int(finals_cfg["sort_boxes"])
+            box_count = int(cfg["storage"]["box_count"])
+            if not 0 < sort_boxes <= box_count:
+                raise ConfigError(
+                    "finals.sort_boxes 必须在 1..storage.box_count 之间"
+                )
+
     # OCR 是可选段：不写等价于 enabled=false。
     side_recognition = (
         cfg.get("vision", {}).get("side", {}).get("recognition", {})

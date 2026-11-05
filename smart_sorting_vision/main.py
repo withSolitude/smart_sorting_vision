@@ -436,7 +436,22 @@ class SmartSortingApp:
         self._warmup_inference_backends()
         print("[OK] Pipeline + Warmup")
 
-        self.storage = StorageManager(box_count=int(self.config["storage"]["box_count"]))
+        finals_cfg = dict(self.config.get("finals") or {})
+        self.finals_enabled = bool(finals_cfg.get("enabled", False))
+        box_count = int(self.config["storage"]["box_count"])
+        if self.finals_enabled:
+            sort_boxes = int(finals_cfg.get("sort_boxes", box_count - 1))
+            self.storage = StorageManager(
+                box_count=box_count,
+                assignable_count=sort_boxes,
+            )
+            print(
+                "[CONFIG] FINALS mode ON: "
+                f"sort_boxes={sort_boxes}, trash_box={sort_boxes + 1}"
+            )
+        else:
+            self.storage = StorageManager(box_count=box_count)
+            print("[CONFIG] FINALS mode OFF")
         print("[OK] Storage")
 
         runtime_cfg = self.config["runtime"]

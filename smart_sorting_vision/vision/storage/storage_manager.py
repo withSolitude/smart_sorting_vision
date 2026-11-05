@@ -36,8 +36,19 @@ class StorageReservation:
 
 
 class StorageManager:
-    def __init__(self, box_count: int = 6):
+    def __init__(self, box_count: int = 6, *, assignable_count: int | None = None):
         self.boxes = [StorageBox(i + 1) for i in range(box_count)]
+        # 决赛模式：前 assignable_count 个盒子参与分类，剩下的最后一个作为垃圾桶。
+        self.assignable_count = (
+            box_count
+            if assignable_count is None
+            else max(0, min(int(assignable_count), box_count))
+        )
+        self.trash_box_id = (
+            self.assignable_count + 1
+            if self.assignable_count < box_count
+            else None
+        )
         self._reservations: dict[int, StorageReservation] = {}
         self._next_reservation_id = 1
 
@@ -66,8 +77,8 @@ class StorageManager:
 
     def reserve(self, obj: ObjectInfo) -> StorageReservation:
         """为当前物体预留目标盒，但不修改真实库存。"""
-        # 1) 已有同类箱优先。
-        for box in self.boxes:
+        # 1) 已有同类箱优先；垃圾桶不参与“同类匹配”。
+        for box in self.boxes[: self.assignable_count]:
             if box.match(obj):
                 return self._new_reservation(
                     box=box,
@@ -83,7 +94,7 @@ class StorageManager:
             if item.success and item.is_new_box
         }
 
-        for box in self.boxes:
+        for box in self.boxes[: self.assignable_count]:
             if box.empty() and box.box_id not in reserved_new_box_ids:
                 return self._new_reservation(
                     box=box,
@@ -91,6 +102,15 @@ class StorageManager:
                     is_new_box=True,
                     reason="new_box_reserved",
                 )
+
+        # 3) 前 N 个盒子已分满：剩下的一律丢垃圾桶。
+        if self.trash_box_id is not None:
+            return self._new_reservation(
+                box=self.boxes[self.trash_box_id - 1],
+                obj=obj,
+                is_new_box=False,
+                reason="trash_box_reserved",
+            )
 
         return StorageReservation(
             success=False,
@@ -115,8 +135,12 @@ class StorageManager:
         if box is None:
             return StorageResult(False, 0, False, 0, "box_not_found")
 
-        # 提交时再次验证目标箱没有被错误改成其它类别。
-        if not box.empty() and not box.match(reservation.obj):
+        # 提交时再次验证目标箱没有被错误改成其它类别；垃圾桶接受任意物体。
+        if (
+            box.box_id != self.trash_box_id
+            and not box.empty()
+            and not box.match(reservation.obj)
+        ):
             return StorageResult(
                 False,
                 box.box_id,
