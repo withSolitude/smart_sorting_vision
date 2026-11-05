@@ -255,7 +255,13 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
             raise ConfigError("vision.top.failed_pick 必须是对象")
         if "enabled" in failed_pick and not isinstance(failed_pick["enabled"], bool):
             raise ConfigError("vision.top.failed_pick.enabled 必须是 true/false")
-        for key in ("search_radius_mm", "area_ratio_min", "area_ratio_max", "iou_threshold"):
+        for key in (
+            "search_radius_mm",
+            "area_ratio_min",
+            "area_ratio_max",
+            "iou_threshold",
+            "permanent_radius_mm",
+        ):
             if key in failed_pick and float(failed_pick[key]) <= 0:
                 raise ConfigError(f"vision.top.failed_pick.{key} 必须大于0")
         if "give_up_frames" in failed_pick and int(failed_pick["give_up_frames"]) <= 0:

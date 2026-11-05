@@ -253,6 +253,7 @@ vision:
       area_ratio_max: 1.6  # 与新检测的面积比上限。
       iou_threshold: 0.35  # 质心对齐后的 mask IoU 阈值。
       give_up_frames: 3  # 连续找不到多少帧后放弃排除。
+      permanent_radius_mm: 60.0  # 失败点永久记忆半径：旧位置附近不再抓。
 
     gripper_collision:
       enabled: false  # 是否启用夹爪碰撞和禁入区域检查。

@@ -360,6 +360,9 @@ class SmartSortingApp:
             failed_pick_give_up_frames=int(
                 top_failed_pick.get("give_up_frames", 3)
             ),
+            failed_pick_permanent_radius_mm=float(
+                top_failed_pick.get("permanent_radius_mm", 60.0)
+            ),
             grasp_search_enabled=top_grasp_search["enabled"],
             grasp_search_yaw_offsets_deg=top_grasp_search["yaw_offsets_deg"],
             grasp_search_longitudinal_offsets_mm=top_grasp_search["longitudinal_offsets_mm"],

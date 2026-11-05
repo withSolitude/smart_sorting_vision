@@ -244,6 +244,7 @@ class TopPickPipeline:
         failed_pick_area_ratio_max: float = 1.6,
         failed_pick_iou_threshold: float = 0.35,
         failed_pick_give_up_frames: int = 3,
+        failed_pick_permanent_radius_mm: float = 60.0,
         grasp_search_enabled: bool = True,
         grasp_search_yaw_offsets_deg=(0.0, -5.0, 5.0, -10.0, 10.0, -15.0, 15.0),
         grasp_search_longitudinal_offsets_mm=(0.0, -2.0, 2.0, -4.0, 4.0),
@@ -434,9 +435,10 @@ class TopPickPipeline:
         )
         self.failed_pick_iou_threshold = min(1.0, max(0.0, float(failed_pick_iou_threshold)))
         self.failed_pick_give_up_frames = max(1, int(failed_pick_give_up_frames))
+        self.failed_pick_permanent_radius_mm = max(1.0, float(failed_pick_permanent_radius_mm))
         self._last_pick_reference: dict | None = None
-        self._failed_reference: dict | None = None
-        self._failed_miss_frames = 0
+        self._failed_references: list[dict] = []
+        self._attempted_points: list[np.ndarray] = []
         self.grasp_search_hard_min_clearance_mm = max(0.0, float(grasp_search_hard_min_clearance_mm))
         self.grasp_search_preferred_clearance_mm = max(
             self.grasp_search_hard_min_clearance_mm,
@@ -1633,52 +1635,123 @@ class TopPickPipeline:
         return intersection / max(union, 1)
 
     def mark_pick_failed(self) -> bool:
-        """侧面判空后调用：把最后一次选中的物体标记为失败，后续帧排除。"""
+        """侧面判空后调用：把最后一次选中的物体加入失败清单，后续帧排除。"""
         if not bool(getattr(self, "failed_pick_enabled", False)):
             return False
         last_reference = getattr(self, "_last_pick_reference", None)
         if last_reference is None:
             return False
-        self._failed_reference = dict(last_reference)
-        self._failed_reference["polygon"] = self._failed_reference["polygon"].copy()
-        self._failed_miss_frames = 0
-        print("[FAILED PICK] arm exclusion for last picked object")
+        reference = {
+            "polygon": last_reference["polygon"].copy(),
+            "center_px": last_reference["center_px"].copy(),
+            "area_px": float(last_reference["area_px"]),
+            "robot": last_reference["robot"].copy(),
+            "miss_frames": 0,
+        }
+        references = getattr(self, "_failed_references", None)
+        if references is None:
+            self._failed_references = []
+            references = self._failed_references
+        # 同一个物体再次失败时合并，避免清单里堆重复项。
+        for existing in references:
+            if float(np.linalg.norm(existing["robot"] - reference["robot"])) <= (
+                self.failed_pick_search_radius_mm * 0.5
+            ):
+                existing.update(reference)
+                break
+        else:
+            references.append(reference)
+        points = getattr(self, "_attempted_points", None)
+        if points is None:
+            self._attempted_points = []
+            points = self._attempted_points
+        points.append(reference["robot"].copy())
+        print(
+            f"[FAILED PICK] arm exclusion; failed_objects={len(references)} "
+            f"attempted_points={len(points)}"
+        )
         return True
 
-    def _match_failed_object(self, objects, image_shape) -> None:
-        reference = getattr(self, "_failed_reference", None)
-        if reference is None:
+    def reset_failed_picks(self) -> None:
+        """新一轮比赛开始时清空失败记忆。"""
+        self._failed_references = []
+        self._attempted_points = []
+        self._last_pick_reference = None
+
+    def _block_by_attempted_points(self, objects, image_shape) -> None:
+        points = getattr(self, "_attempted_points", [])
+        if not points:
             return
-        best = None
-        for index, obj in enumerate(objects):
+        radius = float(getattr(self, "failed_pick_permanent_radius_mm", 60.0))
+        for obj in objects:
             if obj.get("_blocked"):
                 continue
             geometry = self._reference_from_object(obj, image_shape)
             if geometry is None:
                 continue
-            distance = float(np.linalg.norm(geometry["robot"] - reference["robot"]))
-            if distance > self.failed_pick_search_radius_mm:
-                continue
-            ratio = geometry["area_px"] / max(reference["area_px"], 1.0)
-            if ratio < self.failed_pick_area_ratio_min or ratio > self.failed_pick_area_ratio_max:
-                continue
-            iou = self._aligned_iou(reference, geometry)
-            if iou < self.failed_pick_iou_threshold:
-                continue
-            if best is None or iou > best[0]:
-                best = (iou, index, geometry)
-        if best is not None:
-            iou, index, geometry = best
-            objects[index]["_blocked"] = True
-            self._failed_reference = geometry
-            self._failed_miss_frames = 0
-            print(f"[FAILED PICK] matched moved object index={index} iou={iou:.2f}; excluded")
-            return
-        self._failed_miss_frames = int(getattr(self, "_failed_miss_frames", 0)) + 1
-        if self._failed_miss_frames >= self.failed_pick_give_up_frames:
-            print("[FAILED PICK] object not found in consecutive frames; stop excluding")
-            self._failed_reference = None
-            self._failed_miss_frames = 0
+            if any(
+                float(np.linalg.norm(geometry["robot"] - point)) <= radius
+                for point in points
+            ):
+                obj["_blocked"] = True
+
+    def _match_failed_object(self, objects, image_shape) -> None:
+        references = getattr(self, "_failed_references", [])
+        if references:
+            pairs = []
+            for reference_index, reference in enumerate(references):
+                for index, obj in enumerate(objects):
+                    if obj.get("_blocked"):
+                        continue
+                    geometry = self._reference_from_object(obj, image_shape)
+                    if geometry is None:
+                        continue
+                    distance = float(
+                        np.linalg.norm(geometry["robot"] - reference["robot"])
+                    )
+                    if distance > self.failed_pick_search_radius_mm:
+                        continue
+                    ratio = geometry["area_px"] / max(reference["area_px"], 1.0)
+                    if (
+                        ratio < self.failed_pick_area_ratio_min
+                        or ratio > self.failed_pick_area_ratio_max
+                    ):
+                        continue
+                    iou = self._aligned_iou(reference, geometry)
+                    if iou < self.failed_pick_iou_threshold:
+                        continue
+                    pairs.append((iou, reference_index, index, geometry))
+            pairs.sort(key=lambda item: item[0], reverse=True)
+            matched_references = set()
+            matched_objects = set()
+            for iou, reference_index, index, geometry in pairs:
+                if reference_index in matched_references or index in matched_objects:
+                    continue
+                objects[index]["_blocked"] = True
+                geometry["miss_frames"] = 0
+                references[reference_index] = geometry
+                matched_references.add(reference_index)
+                matched_objects.add(index)
+                print(
+                    f"[FAILED PICK] matched moved object index={index} "
+                    f"iou={iou:.2f}; excluded"
+                )
+            kept = []
+            for reference_index, reference in enumerate(references):
+                if reference_index in matched_references:
+                    kept.append(reference)
+                    continue
+                reference["miss_frames"] = int(reference.get("miss_frames", 0)) + 1
+                if reference["miss_frames"] < self.failed_pick_give_up_frames:
+                    kept.append(reference)
+                else:
+                    print(
+                        "[FAILED PICK] object not found in consecutive frames; "
+                        "drop from tracking (point memory remains)"
+                    )
+            self._failed_references = kept
+        # 失败点永久记忆：即使跟踪丢了，旧位置附近也不再抓。
+        self._block_by_attempted_points(objects, image_shape)
 
     def process(
         self,
@@ -1708,7 +1781,10 @@ class TopPickPipeline:
             )
         )
 
-        had_failed_reference = getattr(self, "_failed_reference", None) is not None
+        had_failed_reference = bool(
+            getattr(self, "_failed_references", [])
+            or getattr(self, "_attempted_points", [])
+        )
         self._match_failed_object(objects, frame.shape)
 
         inference_ms = (

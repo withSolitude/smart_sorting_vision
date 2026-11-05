@@ -1033,6 +1033,9 @@ class SortingRuntime:
         self.fault_reason = None
         self._session_started_at = time.monotonic()
         self.drop_recovery_count = 0
+        reset_failed = getattr(self.top_pipeline, "reset_failed_picks", None)
+        if callable(reset_failed):
+            reset_failed()
         self._begin_cycle()
         if callable(self.on_session_start):
             try:
