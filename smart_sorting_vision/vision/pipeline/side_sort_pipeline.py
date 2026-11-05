@@ -100,6 +100,9 @@ class SideSortPipeline:
         比单纯位置确认更容易出现单帧波动。
     """
 
+    # 连续判空多少帧才认作"空托盘"；单帧判空会把旧帧/瞬时遮挡当成空台。
+    EMPTY_CONFIRM_FRAMES = 2
+
     def __init__(
         self,
         *,
@@ -279,6 +282,10 @@ class SideSortPipeline:
 
         self._last_raw_diag_s = 0.0
         self._last_empty_diag_s = 0.0
+        # 连续多少帧判空才真正认作"空托盘"。
+        # 单帧判空遇到 V4L2 旧帧/瞬时遮挡时，会把已经放好的物体当成空台，
+        # 直接丢掉这一件（RETRY_PICK）。
+        self._empty_streak = 0
         # 只有 classifier 模式才有背景差分；seg 模式完全不需要背景图。
         self.background = (
             self.extractor.load_background(
@@ -292,6 +299,7 @@ class SideSortPipeline:
         self,
     ) -> None:
         self.consensus.reset()
+        self._empty_streak = 0
 
     def _check_frame(
         self,
@@ -385,11 +393,20 @@ class SideSortPipeline:
                         f"conf={float(shape_probe.get('confidence', 0.0)):.3f} "
                         f"reason={shape_probe.get('reason')} topk=[{topk_text}]"
                     )
-                self.consensus.reset()
                 probe_reason = str(shape_probe.get("reason", "unknown"))
-                # 只有模型明确判为 no_object 才立即触发回待机；低置信度
+                # 只有模型明确判为 no_object 才回待机；低置信度
                 # 留在当前识别周期等待后续帧，避免一帧抖动误触发重抓。
                 if probe_reason == "no_object":
+                    self._empty_streak += 1
+                    if self._empty_streak < self.EMPTY_CONFIRM_FRAMES:
+                        return self._empty_result(
+                            reason="empty_pending",
+                            required_hits=self.required_hits,
+                            found=True,
+                            shape="no_object",
+                            raw_result={"shape_probe": shape_probe},
+                        )
+                    self.consensus.reset()
                     return self._empty_result(
                         reason="no_object",
                         required_hits=self.required_hits,
@@ -397,6 +414,7 @@ class SideSortPipeline:
                         shape="no_object",
                         raw_result={"shape_probe": shape_probe},
                     )
+                self.consensus.reset()
                 return self._empty_result(
                     reason=f"shape_pending:{probe_reason}",
                     required_hits=self.required_hits,
@@ -412,6 +430,8 @@ class SideSortPipeline:
                 "confidence": 0.0,
                 "reason": "shape_disabled",
             }
+
+        self._empty_streak = 0
 
         # 形状已经确认有物体后，背景差分只作为颜色/二维码的裁剪辅助。
         # 裁剪失败时退回完整 ROI，绝不能把裁剪失败伪装成 no_object。
@@ -447,7 +467,7 @@ class SideSortPipeline:
                 )
             self.consensus.reset()
             reason = str(seg.get("reason", "no_object"))
-            # 只有明确"没有实例"才立刻回待机；模型异常留待后续帧，
+            # 只有明确"没有实例"才回待机；模型异常留待后续帧，
             # 避免一帧推理抖动误触发重抓（与分类路保持一致）。
             if reason != "no_object":
                 return self._empty_result(
@@ -457,6 +477,18 @@ class SideSortPipeline:
                     shape="unknown",
                     raw_result={"seg": seg},
                 )
+            # 明确没有实例：连续两帧才认作空托盘。
+            # 队列里的旧帧、物体刚放下的瞬时遮挡都只算"还没看清"。
+            self._empty_streak += 1
+            if self._empty_streak < self.EMPTY_CONFIRM_FRAMES:
+                return self._empty_result(
+                    reason="empty_pending",
+                    required_hits=self.required_hits,
+                    found=True,
+                    shape="no_object",
+                    raw_result={"seg": seg},
+                )
+            self.consensus.reset()
             return self._empty_result(
                 reason="no_object",
                 required_hits=self.required_hits,
@@ -465,6 +497,7 @@ class SideSortPipeline:
                 raw_result={"seg": seg},
             )
 
+        self._empty_streak = 0
         crop, crop_mask, crop_bbox = self._crop_from_seg(frame, seg)
         class_name = str(seg.get("class_name", "unknown"))
         score = float(seg.get("score", 0.0))
