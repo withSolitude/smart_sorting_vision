@@ -83,6 +83,7 @@ void Class_Robot::Init()
     Pick_Start_Pending =
         false;
     Pick_Start_Wait_Count = 0U;
+    Pick_Start_Tof_Wait_Count = 0U;
 
 
     Pick_Action_Active =
@@ -627,6 +628,7 @@ void Class_Robot::Handle_Stop_Request()
 
     Pick_Start_Pending = false;
     Pick_Start_Wait_Count = 0;
+    Pick_Start_Tof_Wait_Count = 0U;
     Pending_Pick_Request = Struct_Sorting_Pick_Request{};
 
     if (Pick_Action_Active)
@@ -1210,6 +1212,10 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
 
             Pick_Start_Pending =
                 true;
+
+
+            Pick_Start_Tof_Wait_Count =
+                0U;
         }
     }
 
@@ -1258,6 +1264,7 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
                 false;
 
             Pick_Start_Wait_Count = 0;
+            Pick_Start_Tof_Wait_Count = 0U;
 
 
             Pick_Action_Active =
@@ -1268,16 +1275,30 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
             HAL_ERROR
         )
         {
-            // ------------------------------------------------
-            // 例如：
-            // TOF无效
-            // XY位置无效
-            // ------------------------------------------------
+            const uint8_t error_code =
+                Grap_Error_To_Sorting_Error_Code(
+                    Holding_Jaw.Get_Grap_Error());
+
+            // 现场偶发 TOF 掉线约 1 秒（连续 5 次 Modbus 响应超时），
+            // Start_Grap 会报 TOF_Invalid。此时请求本身有效，保持
+            // Pick_Start_Pending 最多等 1.2 秒，恢复后直接启动；
+            // 超时才按原逻辑上报故障。
+            if (error_code ==
+                    Sorting_Vision_Error_Grap_TOF_Invalid &&
+                Pick_Start_Tof_Wait_Count <
+                    Pick_Start_Tof_Grace_Ticks)
+            {
+                ++Pick_Start_Tof_Wait_Count;
+
+                return;
+            }
+
 
             Pick_Start_Pending =
                 false;
 
             Pick_Start_Wait_Count = 0;
+            Pick_Start_Tof_Wait_Count = 0U;
 
 
             Pending_Pick_Request =
@@ -1286,8 +1307,7 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
 
             Sorting_Handshake
                 .Notify_Error(
-                    Grap_Error_To_Sorting_Error_Code(
-                        Holding_Jaw.Get_Grap_Error())
+                    error_code
                 );
         }
 
@@ -1569,6 +1589,7 @@ bool Class_Robot::Service_XY_Fault()
     Pick_Start_Pending = false;
     Pick_Action_Active = false;
     Pick_Start_Wait_Count = 0U;
+    Pick_Start_Tof_Wait_Count = 0U;
     Pending_Pick_Request = Struct_Sorting_Pick_Request{};
     Stop_Waiting_Safe_Disable = false;
     Retry_Pick_Return_Active = false;
