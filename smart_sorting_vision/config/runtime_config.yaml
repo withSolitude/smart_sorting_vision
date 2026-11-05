@@ -378,20 +378,6 @@ vision:
         curved_warp_size: 360  # 曲面二维码展开图边长（像素）。
         curved_quiet_zone: 28  # 展开二维码保留的白边宽度（像素）。
         curved_gammas: [0.72, 0.82, 0.90, 1.10, 1.22]  # 曲面展开尝试的非线性校正参数列表。
-      # 文字识别（OCR）：与颜色/二维码同级，默认关闭，不影响分拣主流程。
-      # 引擎按 engine=auto 的顺序尝试：rapidocr_onnxruntime -> easyocr -> pytesseract，
-      # 都不可用时返回 engine_missing，不会抛异常。
-      ocr:
-        enabled: false  # 是否启用文字识别。
-        engine: auto  # auto / rapidocr / easyocr / tesseract。
-        languages: [ch_sim, en]  # 识别语言；tesseract 自动映射为 chi_sim/eng。
-        min_confidence: 0.35  # 低于该置信度的文字丢弃。
-        mask_erode_px: 2  # OCR 前对 mask 腐蚀的像素数，避开物体边缘。
-        mask_background: white  # 物体外的填充色：white / black。
-        upscale: 2.0  # 放大倍数，小字建议 2.0。
-        psm: 7  # tesseract 页面分割模式；单行文字用 7。
-        max_chars: 64  # 最多保留的字符数。
-        run_when_qr_found: false  # 已识别出二维码时是否还跑 OCR（默认跳过省时间）。
       shape:
         enabled: true  # 是否启用形状和空背景分类。
         # 形状分类器输入完整侧面 ROI；这些类别表示空托盘/空背景。

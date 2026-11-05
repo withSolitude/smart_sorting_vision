@@ -374,12 +374,6 @@ class SmartSortingApp:
         side_qr_cfg = dict(side_recognition_cfg["qr"])
         enable_color = bool(side_color_cfg.pop("enabled"))
         enable_qr = bool(side_qr_cfg.pop("enabled"))
-        # OCR 文字识别：与颜色/二维码同级，默认关闭。
-        side_ocr_cfg = dict(side_recognition_cfg.get("ocr") or {})
-        enable_ocr = bool(side_ocr_cfg.pop("enabled", False))
-        ocr_run_when_qr_found = bool(
-            side_ocr_cfg.pop("run_when_qr_found", False)
-        )
         # QR 的内容校验不是解码器参数，而是多帧共识策略参数。
         # 从 QRDetector 配置中取出，避免把策略配置误传给底层解码器。
         qr_check_content = bool(side_qr_cfg.pop("check_content_consistency", False))
@@ -422,12 +416,9 @@ class SmartSortingApp:
             color_config=side_color_cfg,
             qr_config=side_qr_cfg,
             qr_check_content=qr_check_content,
-            ocr_config=side_ocr_cfg,
-            ocr_run_when_qr_found=ocr_run_when_qr_found,
             no_object_labels=no_object_labels,
             enable_color=enable_color,
             enable_qr=enable_qr,
-            enable_ocr=enable_ocr,
             enable_shape=enable_shape,
         )
 

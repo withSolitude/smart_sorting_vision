@@ -1509,7 +1509,6 @@ class SortingRuntime:
             color=color,
             shape=shape,
             qr_present=qr_present,
-            text=str(getattr(result, "text", "") or ""),
         )
         crop = getattr(result, "crop", None)
         if crop is not None:
