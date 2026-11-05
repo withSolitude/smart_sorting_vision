@@ -410,6 +410,9 @@ class TopPickPipeline:
         )
         self.last_gripper_rejections: list[dict] = []
         self.last_gripper_search_alternatives: list[dict] = []
+        # 上一帧每个物体选中的 (中心x, 中心y, 抓取轴角)，用于姿态连续性迟滞：
+        # 几何等价的抓取族分数接近时，沿用它而不是每帧重新洗牌。
+        self._prev_frame_axes: list[tuple[float, float, float]] = []
 
         self.grasp_search_enabled = bool(grasp_search_enabled)
         # 每帧打印 [TIMING] infer/search/total，用来定位"顶部定位慢"到底慢在推理还是候选搜索。
@@ -696,6 +699,21 @@ class TopPickPipeline:
             base_grasp_x, base_grasp_y = grasp_result.grasp_point
             center_pixel = self._polygon_center(target_polygon)
 
+            # 同一物体在上一帧选中的抓取轴（中心 30px 内视为同一个），
+            # 传给姿态规划器做帧间迟滞，避免两族分数打平时每帧换姿态。
+            continuity_axis_deg = None
+            if self._prev_frame_axes:
+                nearest = min(
+                    self._prev_frame_axes,
+                    key=lambda item: (item[0] - center_pixel[0]) ** 2
+                    + (item[1] - center_pixel[1]) ** 2,
+                )
+                if math.hypot(
+                    nearest[0] - center_pixel[0],
+                    nearest[1] - center_pixel[1],
+                ) <= 30.0:
+                    continuity_axis_deg = float(nearest[2])
+
             # ---------- 先求一个几何上合理的基础姿态 ----------
             orientation = None
             parallel_edge_options = []
@@ -715,6 +733,7 @@ class TopPickPipeline:
                         min_contact_span_px=self.grasp_min_contact_span_px,
                         circle_circularity_threshold=self.grasp_circle_circularity_threshold,
                         circle_min_vertices=self.grasp_circle_min_vertices,
+                        continuity_axis_deg=continuity_axis_deg,
                     )
                     if orientation.grasp_pixel_override is not None:
                         base_grasp_x, base_grasp_y = orientation.grasp_pixel_override
@@ -1463,6 +1482,16 @@ class TopPickPipeline:
                     f"dlong={best_candidate.search_longitudinal_offset_mm:+.1f}mm "
                     f"gap={best_candidate.gripper_clearance_mm:.2f}mm"
                 )
+
+        # 记录本帧最终选中的轴，供下一帧做连续性迟滞。
+        self._prev_frame_axes = [
+            (
+                float(candidate.center_pixel[0]),
+                float(candidate.center_pixel[1]),
+                float(candidate.yaw_deg),
+            )
+            for candidate in candidates
+        ]
 
         return candidates
 
