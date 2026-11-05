@@ -1339,11 +1339,6 @@ class SortingRuntime:
             self._top_last_frame_at = time.monotonic()
             result = self.top_pipeline.process(image)
 
-            # 本帧所有候选都是“失败过一次”的物体：本轮不再尝试，直接收尾。
-            if bool(getattr(result, "blocked_all", False)):
-                self._finish_competition("all_objects_attempted")
-                return
-
             # 正式比赛自动结束：只有顶部模型连续确认“0 个物体”，并且已经
             # 完成不少于配置的最小件数，才判定场上货物清空。
             if int(getattr(result, "object_count", 0)) == 0:
