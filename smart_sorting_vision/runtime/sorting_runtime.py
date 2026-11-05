@@ -302,6 +302,11 @@ class SortingRuntime:
                 continue
 
             for frame in frames:
+                # 先在接收线程记录“收到过有效 MCU 帧”，再把帧交给主线程。
+                # 主线程可能正在执行一次较慢的视觉推理；如果只在
+                # process_message() 里更新，心跳ACK会滞留在队列里，
+                # watchdog 会把仍在线的串口误判成超过3秒掉线。
+                self._last_peer_seen_at = time.monotonic()
                 if frame.mode in (Mode.MCU_ERROR, Mode.MCU_STOP_WORK):
                     self._urgent_stop_event.set()
                 self._rx_queue.put(frame)
