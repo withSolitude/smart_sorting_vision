@@ -272,7 +272,9 @@ static void test_origin_and_motion() {
 static void test_ack_timeout() {
     Rig r; r.origin(); r.drop_b_arm_ack = true;
     assert(r.xy.Move_To_mm(-10, 10, 20, 20) == HAL_OK);
-    r.step(700);
+    // The XY command phase retries twice before latching a timeout:
+    // 3 * Command_Timeout_ms plus scheduler overhead.
+    r.step(1700);
     assert(r.sync_count == 0);
     assert(r.xy.Get_Fault() && !r.xy.Get_Motion_Finished());
     assert(r.xy.Get_Fault_Code() == XY_Fault::Command_Timeout);
@@ -343,8 +345,9 @@ static void test_reset_jump_and_stall() {
 static void test_sync_and_command_errors() {
     Rig r; r.origin(); r.drop_sync_ack = true;
     assert(r.xy.Move_To_mm(-1, 1, 20, 20) == HAL_OK);
-    r.step(700);
-    assert(r.sync_count == 1 && r.xy.Get_Fault_Code() == XY_Fault::Command_Timeout);
+    r.step(1700);
+    assert(r.sync_count == XY_Config::Command_Retry_Limit + 1U &&
+        r.xy.Get_Fault_Code() == XY_Fault::Command_Timeout);
     assert(!r.xy.Get_Motion_Finished());
     Rig s; s.origin(); s.arm_result = 0xE2;
     assert(s.xy.Move_To_mm(-1, 1, 20, 20) == HAL_OK);

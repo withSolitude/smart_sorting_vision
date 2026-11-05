@@ -152,7 +152,14 @@ void Class_XY_Motion::Set_Phase(State phase)
 {
     Phase = phase;
     Phase_Tick = HAL_GetTick();
-    Command_Retry_Count = 0U;
+    if (Preserve_Command_Retry_Count)
+    {
+        Preserve_Command_Retry_Count = false;
+    }
+    else
+    {
+        Command_Retry_Count = 0U;
+    }
 }
 
 void Class_XY_Motion::Retry_Command_Phase()
@@ -169,16 +176,18 @@ void Class_XY_Motion::Retry_Command_Phase()
         case State::Stopping: Phase = State::Stop_A; break;
         default: break;
     }
+    Preserve_Command_Retry_Count = true;
     Phase_Tick = HAL_GetTick();
 }
 
 void Class_XY_Motion::Clear_Fault()
 {
-    // 堵转/丢 ACK 只清故障，不重置 Origin_Valid：原点仍然有效，可直接继续抓取。
+    // 只清故障状态；Set_Fault() 已经把原点标记为失效时，这里不能伪造原点。
     Fault = Config_Valid() ? XY_Fault::None : XY_Fault::Configuration;
     Phase = State::Stop_A;
     Phase_Tick = HAL_GetTick();
     Command_Retry_Count = 0U;
+    Preserve_Command_Retry_Count = false;
     Stable = false;
     Motion_Completed = false;
     Move_Tick = HAL_GetTick();

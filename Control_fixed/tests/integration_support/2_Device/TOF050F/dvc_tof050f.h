@@ -9,6 +9,8 @@ public:
     uint16_t Distance=30;
     Struct_Test_TOF_Data Data;
     bool Get_Distance_Valid() const { return Valid; }
+    uint32_t Get_Distance_Age_ms() const { return Valid ? 0U : UINT32_MAX; }
+    uint32_t Get_Distance_Rx_Count() const { return Data.Rx_Count; }
     uint16_t Get_Distance_mm() const { return Distance; }
     const Struct_Test_TOF_Data &Get_Data() const { return Data; }
     void TIM_100ms_PeriodElapsedCallback() {}

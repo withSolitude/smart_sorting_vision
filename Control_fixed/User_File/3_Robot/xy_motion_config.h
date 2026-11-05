@@ -57,8 +57,9 @@ constexpr uint32_t Command_Timeout_ms = 500U;
 // 发命令阶段重发，最多重试这么多次，仍然超时才报 Command_Timeout。
 constexpr uint8_t Command_Retry_Limit = 2U;
 constexpr uint32_t Move_Timeout_ms = 15000U;
-// 到位后的稳定确认时间。原 55ms，现场平台没有可见振动，降到 35ms 每段到位省 20ms。
-constexpr uint32_t Settle_ms = 35U;
+// 到位后的稳定确认时间。35ms 版本会让高速斜线在反馈刚稳定时立刻进入下一段；
+// 先恢复到70ms，确认稳定后再继续压缩。
+constexpr uint32_t Settle_ms = 70U;
 constexpr uint32_t Poll_Interval_ms = 2U; // 每16ms读取一次每台电机的31/36/35/3A
 constexpr uint16_t Encoder_Unwrap_Max_Gap_ms = 80U; // 300RPM 时半圈=100ms
 

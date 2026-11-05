@@ -145,6 +145,10 @@ void Class_Holding_Jaw::Init()
         0;
 
 
+    Grap_TOF_Last_Update_Tick =
+        0;
+
+
     Grap_TOF_No_Update_Count_ms =
         0;
 
@@ -199,7 +203,8 @@ TIM_1ms_PeriodElapsedCallback()
     // 现在无效数据立即冻结继续下降，并累计无效时长；达到阈值后安全Return。
     // ========================================================
 
-    if (!TOF050F.Get_Distance_Valid())
+    if (!TOF050F.Get_Distance_Valid() ||
+        TOF050F.Get_Distance_Age_ms() > TOF_Data_Timeout_ms)
     {
         Grap_TOF_Stable_Count = 0;
         Grap_TOF_Reached = false;
@@ -226,7 +231,9 @@ TIM_1ms_PeriodElapsedCallback()
     // ========================================================
 
     const uint32_t current_rx_count =
-        TOF050F.Get_Data().Rx_Count;
+        TOF050F.Get_Distance_Rx_Count();
+    bool tof_frame_updated = false;
+    uint32_t tof_elapsed_ms = 0U;
 
 
     if (current_rx_count !=
@@ -238,6 +245,22 @@ TIM_1ms_PeriodElapsedCallback()
 
         Grap_TOF_Last_Rx_Count =
             current_rx_count;
+        tof_frame_updated = true;
+
+        const uint32_t now_tick = HAL_GetTick();
+        tof_elapsed_ms =
+            static_cast<uint32_t>(now_tick - Grap_TOF_Last_Update_Tick);
+        if (tof_elapsed_ms == 0U)
+        {
+            tof_elapsed_ms = 1U;
+        }
+        // 传感器恢复时不能把长时间无数据折算成一次大幅下降，
+        // 单帧最多按100ms的正常控制周期推进。
+        if (tof_elapsed_ms > 100U)
+        {
+            tof_elapsed_ms = 100U;
+        }
+        Grap_TOF_Last_Update_Tick = now_tick;
 
 
         Grap_TOF_No_Update_Count_ms =
@@ -296,6 +319,16 @@ TIM_1ms_PeriodElapsedCallback()
         {
             Grap_TOF_No_Update_Count_ms++;
         }
+
+        // Distance_Valid 只代表“曾经收到过有效帧”，不能把旧帧继续当作
+        // 当前下降控制量。没有新的 Rx 帧时保持当前Lift目标；达到截止
+        // 时间后再进入安全回程，避免通信抖动期间盲目下压。
+        if (Grap_TOF_No_Update_Count_ms >= TOF_Data_Timeout_ms)
+        {
+            Grap_Error = Enum_Grap_Error_TOF_Timeout;
+            Grap_Failed = true;
+            Set_Grap_Move_Status(Enum_Grap_Move_Return);
+        }
     }
 
 
@@ -332,16 +365,20 @@ TIM_1ms_PeriodElapsedCallback()
     // 方向由剩余角度决定，支持当前 28° -> -40°，也支持角度递增的机构。
     // ========================================================
 
-    const float remaining_angle = Lift_Descend_Max_Angle - Lift_Descend_Target_Angle;
-    const float angle_step = Lift_Descend_Speed * 0.001f;
-    if (std::fabs(remaining_angle) <= angle_step)
+    if (tof_frame_updated)
     {
-        // 最后一步直接到终点，避免越界和来回振荡。
-        Lift_Descend_Target_Angle = Lift_Descend_Max_Angle;
-    }
-    else
-    {
-        Lift_Descend_Target_Angle += remaining_angle > 0.0f ? angle_step : -angle_step;
+        const float remaining_angle = Lift_Descend_Max_Angle - Lift_Descend_Target_Angle;
+        const float angle_step = Lift_Descend_Speed *
+            static_cast<float>(tof_elapsed_ms) * 0.001f;
+        if (std::fabs(remaining_angle) <= angle_step)
+        {
+            // 最后一步直接到终点，避免越界和来回振荡。
+            Lift_Descend_Target_Angle = Lift_Descend_Max_Angle;
+        }
+        else
+        {
+            Lift_Descend_Target_Angle += remaining_angle > 0.0f ? angle_step : -angle_step;
+        }
     }
 
 
@@ -672,7 +709,8 @@ void Class_Holding_Jaw::Grap_Move()
                 (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) / 100U + 1U);
 
 
-            if (Grap_Move_Count >= 4)
+            if ((uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) >=
+                Claw_Clip_Time_ms)
             {
                 Set_Grap_Move_Status(
                     Enum_Grap_Move_Lift
@@ -1025,7 +1063,7 @@ void Class_Holding_Jaw::Outputs()
                 tx_status =
                     Yaw_Servo_Motor.Control_Angle(
                         Yaw_Servo_Motor_Target_Angle,
-                        500
+                        Disable_Yaw_Move_Time_ms
                     );
 
 
@@ -1615,7 +1653,8 @@ Class_Holding_Jaw::Start_Grap(
     // 第一阶段调试建议保留。
     // ========================================================
 
-    if (!TOF050F.Get_Distance_Valid())
+    if (!TOF050F.Get_Distance_Valid() ||
+        TOF050F.Get_Distance_Age_ms() > TOF_Data_Timeout_ms)
     {
         Grap_Error = Enum_Grap_Error_TOF_Invalid;
         return HAL_ERROR;
@@ -1834,7 +1873,9 @@ void Class_Holding_Jaw::Set_Grap_Move_Status(
         // ----------------------------------------------------
 
         Grap_TOF_Last_Rx_Count =
-            TOF050F.Get_Data().Rx_Count;
+            TOF050F.Get_Distance_Rx_Count();
+        Grap_TOF_Last_Update_Tick =
+            HAL_GetTick();
 
 
         Grap_TOF_No_Update_Count_ms =
@@ -2149,8 +2190,12 @@ bool Class_Holding_Jaw::XY_At_mm(float X_mm, float Y_mm) const
 
 bool Class_Holding_Jaw::Get_Outputs_Settled() const
 {
+    const uint32_t required_ms =
+        Grap_Move_Status == Enum_Grap_Move_Disable
+            ? Disable_Yaw_Move_Time_ms
+            : Servo_Move_Time_ms;
     return Grap_Output_Flag &&
-        (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) >= Servo_Move_Time_ms;
+        (uint32_t)(HAL_GetTick() - Grap_Output_Complete_Tick) >= required_ms;
 }
 
 bool Class_Holding_Jaw::Get_Disable_Ready() const
@@ -2270,6 +2315,18 @@ bool Class_Holding_Jaw::Recover_From_XY_Fault(Enum_Grap_Move_Status previous)
         previous == Enum_Grap_Move_Recognition_Position ||
         previous == Enum_Grap_Move_Return)
     {
+        return false;
+    }
+
+    // Set_Fault() invalidates the XY origin because the actual carriage
+    // position is unknown after a command timeout, stall, or lost feedback.
+    // Do not clear that fault and pretend that a safe return is possible:
+    // Move_To_mm() will (correctly) reject commands without a confirmed
+    // origin, and the operator must home/reconfirm XY before another pick.
+    if (!XY_Motion.Get_Origin_Valid())
+    {
+        Grap_Error = Enum_Grap_Error_XY_Position_Invalid;
+        Grap_Failed = true;
         return false;
     }
 

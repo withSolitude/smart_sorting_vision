@@ -198,7 +198,8 @@ public:
 
     // 停止 XY，但不能松开可能夹持的物体，也不能伪称已经安全回零。
     void Abort_XY_Fault();
-    // XY 故障自动恢复：空爪时清故障并回安全位；爪中可能已有物体时返回 false。
+    // XY 故障自动恢复：仅在原点仍有效时允许空爪回安全位；
+    // 故障导致原点失效时必须重新回零/确认，不能自动清故障。
     bool Recover_From_XY_Fault(Enum_Grap_Move_Status previous);
 
     // UART 舵机稳定性依据已发送命令经过的时间，不是舵机反馈。
@@ -302,11 +303,12 @@ private:
     // 单位：mm/s
     // ========================================================
 
+    // 160mm/s 是压缩时序后的高速值；先恢复到此前已验证的110mm/s。
     float X_Move_Speed_mm_s =
-        160.0f;
+        110.0f;
 
     float Y_Move_Speed_mm_s =
-        160.0f;
+        110.0f;
 
 
     // ========================================================
@@ -577,7 +579,7 @@ private:
     // --------------------------------------------------------
 
     float Lift_Descend_Speed =
-        80.0f *
+        60.0f *
         PI / 180.0f;
 
 
@@ -626,13 +628,14 @@ private:
     // --------------------------------------------------------
     // TOF数据最大允许陈旧时间
     //
-    // 如果250ms没有新的TOF数据：
-    // 停止继续下降。
+    // TOF请求周期为100ms，单次等待超时后立即重试；允许一次丢帧和
+    // 一次完整重试周期，避免把正常串口抖动误报成TOF超时。
+    // 进入下降后无新帧会立即冻结Lift，500ms只作为故障回程截止。
     // --------------------------------------------------------
 
     static constexpr uint16_t
     TOF_Data_Timeout_ms =
-        250;
+        500;
 
 
     // ========================================================
@@ -659,6 +662,11 @@ private:
 
     // 上一次已经处理过的TOF Rx Count
     volatile uint32_t Grap_TOF_Last_Rx_Count =
+        0;
+
+
+    // 上一次用于更新Lift目标的有效TOF帧时间。
+    volatile uint32_t Grap_TOF_Last_Update_Tick =
         0;
 
 
@@ -711,7 +719,7 @@ private:
     // 包含每个 XY 阶段的命令提交重试、移动时间和舵机动作时间。
     uint32_t Grap_State_Start_Tick = 0U;
     static constexpr uint32_t XY_State_Timeout_ms = 30000U;
-    static constexpr uint32_t Servo_Move_Time_ms = 200U;
+    static constexpr uint32_t Servo_Move_Time_ms = 280U;
 
     // 夹爪单独的动作时间：预收缩/夹紧/放松不需要和 Yaw/升降一样慢。
     // 原来这三处硬编码 500ms，是"XY 到点后到夹爪预收缩"这段延迟的主要来源。
@@ -725,11 +733,14 @@ private:
 
     // 识别托盘段（放件）的升降单独一套时间：这一段夹爪不接触物体、
     // 也没有 TOF 闭环，可以明显比"抓取时"快。抓取那一路仍然走
-    // Lift_Descend_Speed(80°/s) 的 20ms 跟随，两者互不影响。
+    // Lift_Descend_Speed(60°/s) 的 20ms 跟随，两者互不影响。
     static constexpr uint32_t Lift_Pick_Move_Time_ms = 420U;   // 抓完抬升（74°，约 925ms 行程里的前段）
     static constexpr uint32_t Lift_Tray_Descend_Time_ms = 300U; // 托盘下降（54°，还托着物体）
     static constexpr uint32_t Lift_Tray_Lift_Time_ms = 180U;    // 托盘抬升（54°，夹爪已空）
-    static constexpr uint32_t Servo_Stop_Settle_ms = 15U;
+    // 故障停机没有舵机位置反馈，15ms不足以覆盖UART提交和机构惯性。
+    static constexpr uint32_t Servo_Stop_Settle_ms = 50U;
+    // Disable状态的Yaw命令使用500ms，Ready判断必须至少覆盖它。
+    static constexpr uint32_t Disable_Yaw_Move_Time_ms = 500U;
     uint32_t Grap_Output_Complete_Tick = 0U;
     uint32_t Return_Lift_Command_Tick = 0U;
     uint32_t Grap_Lift_Limit_Command_Tick = 0U;

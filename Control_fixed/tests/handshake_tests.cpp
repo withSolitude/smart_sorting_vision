@@ -142,9 +142,10 @@ static void test_stop_clears_retry_and_preopen()
     assert(r.handshake.Request_Start_Work());
     r.command(Sorting_Vision_Mode_PICK_TARGET,-5,5);
     Struct_Sorting_Pick_Request pick;
-    assert(r.handshake.Pop_Pick_Request(pick));
-    assert(!pick.Preopen_Valid);
-    std::puts("PASS: STOP clears retry and per-item preopen before the next transaction");
+    assert(sent.back().Mode==Sorting_Vision_Mode_MCU_ERROR);
+    assert(sent.back().Box==Sorting_Vision_Error_Grap_Target_Invalid);
+    assert(!r.handshake.Pop_Pick_Request(pick));
+    std::puts("PASS: STOP clears retry and rejects a target without a fresh preopen");
 }
 
 static void test_pick_without_branch_transaction()

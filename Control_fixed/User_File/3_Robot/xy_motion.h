@@ -27,7 +27,7 @@ public:
     bool Get_Fault() const { return Fault != XY_Fault::None; }
     XY_Fault Get_Fault_Code() const { return Fault; }
 
-    // 只清故障、保留已建立的原点，用于堵转/丢 ACK 后自动恢复。
+    // 只清故障，不恢复失效的原点；调用方必须先确认 Origin_Valid。
     void Clear_Fault();
     bool Get_Motion_Finished() const;
     bool Get_Stop_Confirmed() const;
@@ -63,6 +63,8 @@ private:
     uint32_t Phase_Tick = 0, Move_Tick = 0, Poll_Tick = 0;
     // 当前阶段的命令重发次数；Set_Phase 成功推进时清零。
     uint8_t Command_Retry_Count = 0U;
+    // 重发时先退回发送阶段；该阶段成功提交后不能把累计重试次数清零。
+    bool Preserve_Command_Retry_Count = false;
     uint32_t Stable_Tick = 0, Ack_Baseline = 0;
     uint32_t Position_A_Baseline = 0, Position_B_Baseline = 0;
     uint32_t Status_A_Baseline = 0, Status_B_Baseline = 0;

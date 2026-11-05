@@ -371,14 +371,14 @@ Handle_Frame(
             if (State == Sorting_Handshake_State_WAIT_PICK_TARGET)
             {
                 // 在确认前先检查请求开口是否在当前线性公式的安全范围内。
-                // 错误 8：预开口公式未配置、参数非法或请求超出范围。
+                // 预开口公式未配置、参数非法或请求超出范围都属于目标参数错误。
                 float unused_angle_deg = 0.0f;
                 if (std::fabs(Data.Y_mm) > 0.051f ||
                     !ClawPreopen::ToAngle(Data.X_mm, unused_angle_deg))
                 {
                     Pending_Preopen_Valid = false;
                     Pending_Preopen_mm = 0.0f;
-                    Notify_Error(8U);
+                    Notify_Error(Sorting_Vision_Error_Grap_Target_Invalid);
                     break;
                 }
 
@@ -412,6 +412,16 @@ Handle_Frame(
                 Sorting_Handshake_State_WAIT_PICK_TARGET
             )
             {
+                // PICK_PREOPEN 是当前抓取协议的必需前置帧。若只收到
+                // PICK_TARGET，继续排队会等到 HoldingJaw::Start_Grap()
+                // 才报 Grap_Target_Invalid，而且上位机已经收到了误导性的
+                // PICK_TARGET_ACK。这里在接受目标前直接返回明确错误。
+                if (!Pending_Preopen_Valid)
+                {
+                    Notify_Error(Sorting_Vision_Error_Grap_Target_Invalid);
+                    break;
+                }
+
                 // 先确保ACK已进入可靠发送队列，再把机械任务置为可执行。
                 // 如果TX队列异常满，不允许“动作已经开始但上位机从未收到ACK”。
                 if (Communication->Send_Pick_Target_Ack(
