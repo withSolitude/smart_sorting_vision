@@ -36,6 +36,9 @@ from vision.grasp.grasp_pose_search import (
 )
 from vision.calibration.yaw_tcp_compensation import YawTcpCompensator
 from vision.calibration.yaw_servo import YawServoCalibration
+from vision.classify.top_classifier import (
+    TopObjectClassifier,
+)
 
 
 @dataclass
@@ -98,6 +101,12 @@ class TopPickCandidate:
     search_safe_count: int
 
     score: float
+
+    # 决赛模式：顶部颜色 + 形状族（初赛恒为 unknown/0）。
+    # 只用于"挑哪个物体"，最终箱位仍由侧面识别决定。
+    final_color: str = "unknown"
+    final_shape_family: str = "unknown"
+    final_confidence: float = 0.0
 
     # 向外径向补偿前的原始抓取点，以及本次被推开的像素距离。
     # 必须放在所有无默认值字段之后，否则 dataclass 会报
@@ -171,6 +180,10 @@ class TopPickPipeline:
         4. 新标定使用完整去畸变图坐标；识别 ROI 由同一相机配置绑定。
         5. 机械极限限制应在后续 robot_config / 状态机层设置。
     """
+
+    # 决赛模式默认关闭；用 __new__ 构造的测试/旧代码也有安全默认值。
+    finals_enabled = False
+    top_classifier = None
 
     def __init__(
         self,
@@ -255,6 +268,7 @@ class TopPickPipeline:
         ) = None,
         yaw_tcp_compensator: YawTcpCompensator | None = None,
         yaw_servo_calibration: YawServoCalibration | None = None,
+        finals_enabled: bool = False,
     ) -> None:
         self.model_path = Path(
             model_path
@@ -282,6 +296,15 @@ class TopPickPipeline:
             imgsz=imgsz,
             device=device,
         )
+
+        # 决赛模式：顶部只做"颜色 + 形状族"的轻量分类，用于挑选候选；
+        # 初赛关闭时不实例化、零开销，流程与之前完全一致。
+        self.finals_enabled = bool(finals_enabled)
+        self.top_classifier = (
+            TopObjectClassifier() if self.finals_enabled else None
+        )
+        if self.finals_enabled:
+            print("[FINALS] top color/shape classifier enabled")
 
         self.planner = (
             CollisionAwareGraspPlanner(
@@ -822,6 +845,21 @@ class TopPickPipeline:
             else:
                 orientation_family_yaws = [float(o.grasp_axis_robot_deg) for o in orientation_family]
                 orientation_family_contact = [float(o.contact_quality) for o in orientation_family]
+
+            # 决赛：每个物体只算一次颜色 + 形状族，挂到候选上供上层筛选。
+            final_class = None
+            if self.finals_enabled:
+                try:
+                    final_class = self.top_classifier.classify(
+                        frame,
+                        target_polygon,
+                        rectangularity=float(rectangularity),
+                        circularity=float(circularity),
+                        hull_vertex_count=int(hull_vertex_count),
+                        aspect_ratio=float(aspect_ratio),
+                    )
+                except Exception:
+                    final_class = None
 
             try:
                 target_robot = self.transform.pixels_to_robot(
@@ -1415,6 +1453,15 @@ class TopPickPipeline:
                     search_trial_count=0,  # 结束搜索后统一写入
                     search_safe_count=0,
                     score=float(score),
+                    final_color=(
+                        final_class.color if final_class is not None else "unknown"
+                    ),
+                    final_shape_family=(
+                        final_class.shape_family if final_class is not None else "unknown"
+                    ),
+                    final_confidence=(
+                        float(final_class.confidence) if final_class is not None else 0.0
+                    ),
                 )
 
                 trial_record = {
@@ -1557,6 +1604,7 @@ class TopPickPipeline:
     def process(
         self,
         frame: np.ndarray,
+        allowed=None,
     ) -> TopPickPipelineResult:
         if frame is None:
             raise ValueError(
@@ -1642,6 +1690,17 @@ class TopPickPipeline:
                 f"total={inference_ms + search_ms:.1f}ms "
                 f"objs={len(objects)} cands={len(candidates)}"
             )
+
+        # 决赛：只把"顶部类别命中已入箱类别"的候选交给共识；
+        # 初赛 allowed=None，行为与之前完全一致。
+        if allowed is not None:
+            filtered = [candidate for candidate in candidates if allowed(candidate)]
+            if len(filtered) != len(candidates):
+                print(
+                    f"[FINALS] candidates {len(candidates)} -> {len(filtered)} "
+                    "after class filter"
+                )
+            candidates = filtered
 
         stable = (
             self.consensus.update(

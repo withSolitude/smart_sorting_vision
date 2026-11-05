@@ -57,6 +57,23 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
         if section not in cfg:
             raise ConfigError(f"缺少配置段: {section}")
 
+    # 决赛模式是可选段；初赛不写也合法（等价于 enabled=false）。
+    finals_cfg = cfg.get("finals")
+    if finals_cfg is not None:
+        if not isinstance(finals_cfg, dict):
+            raise ConfigError("finals 必须是对象")
+        if "enabled" in finals_cfg and not isinstance(finals_cfg["enabled"], bool):
+            raise ConfigError("finals.enabled 必须是 true/false")
+        for key in ("required_boxes", "no_match_frames"):
+            if key in finals_cfg and int(finals_cfg[key]) <= 0:
+                raise ConfigError(f"finals.{key} 必须大于0")
+        if "gamble" in finals_cfg and not isinstance(finals_cfg["gamble"], bool):
+            raise ConfigError("finals.gamble 必须是 true/false")
+        if "min_class_confidence" in finals_cfg and not (
+            0.0 <= float(finals_cfg["min_class_confidence"]) <= 1.0
+        ):
+            raise ConfigError("finals.min_class_confidence 必须在 [0, 1]")
+
     for camera_name in ("top", "side"):
         camera_cfg = cfg["camera"].get(camera_name)
         if not isinstance(camera_cfg, dict):
