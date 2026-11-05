@@ -197,8 +197,6 @@ class SortingRuntime:
         self.current_sort_command: SortingFrame | None = None
         self.current_retry_pick_command: SortingFrame | None = None
         self.current_side_image = None
-        # 分拣期间预取的下一个顶部抓取结果（SORT_DONE 后直接下发，省一轮识别）。
-        self.prefetched_top = None
 
         self.completed_count = 0
         # 本场比赛内“夹取后识别台为空”的自动恢复次数，仅用于日志，不计成功件数。
@@ -646,12 +644,7 @@ class SortingRuntime:
         if frame is not None:
             self._send_command(frame, label=label, retry=True)
 
-    def _request_retry_pick(
-        self,
-        *,
-        reason: str,
-        allow_fallback_sort: bool = True,
-    ) -> None:
+    def _request_retry_pick(self, *, reason: str) -> None:
         """放弃本次未成功送达识别台的夹取，但保持比赛运行。
 
         注意：不能直接回 WAIT_TOP_OBJECT。下位机此时还停在 Recognition
@@ -669,7 +662,7 @@ class SortingRuntime:
 
         # 物体此时还留在识别台上（模型没认出来）。先尝试丢进一个空盒，
         # 否则重抓时它会一直占着识别台。
-        if allow_fallback_sort and self._try_fallback_sort(reason=reason):
+        if self._try_fallback_sort(reason=reason):
             return
 
         self.current_object = None
@@ -1117,77 +1110,37 @@ class SortingRuntime:
             self.process_top()
         elif self.state == RuntimeState.WAIT_SIDE_OBJECT:
             self.process_side()
-        elif self.state in (RuntimeState.WAIT_SORT_ACK, RuntimeState.WAIT_SORT_DONE):
-            self._prefetch_top()
 
     # =====================================================
     # 顶部视觉
     # =====================================================
-
-    def _prefetch_top(self):
-        """分拣动作进行时，先把下一个顶部抓取目标算好。
-
-        SORT_ACK / SORT_DONE 期间顶部相机是空闲的，而这段时间刚好被储物机构的
-        翻转和 DM4310 回零占着。利用它跑一轮识别，等 SORT_DONE 一到就能立刻
-        下发 PICK_TARGET，不必再从第一帧开始等共识。
-        """
-        if not self.running or self.prefetched_top is not None:
-            return
-        if self.state not in (
-            RuntimeState.WAIT_SORT_ACK,
-            RuntimeState.WAIT_SORT_DONE,
-        ):
-            return
-
-        image = self.top_camera.read()
-        if image is None:
-            return
-
-        result = self.top_pipeline.process(image)
-        if not bool(getattr(result, "ready", False)):
-            return
-        if result.x_mm is None or result.y_mm is None:
-            return
-
-        self.prefetched_top = result
-        print(
-            "[Runtime] PREFETCH top target "
-            f"x={float(result.x_mm):.1f} y={float(result.y_mm):.1f} "
-            f"yaw={float(getattr(result, 'yaw_deg', 0.0)):.1f}"
-        )
-
 
     def process_top(self):
         # 防止调试代码/回调在非顶部识别状态重复下发 PICK_TARGET。
         if not self.running or self.state != RuntimeState.WAIT_TOP_OBJECT:
             return
 
-        # 分拣期间已经预取到目标：直接用，省掉这一轮的取帧 + 2 帧共识 + 推理。
-        result = self.prefetched_top
-        self.prefetched_top = None
+        image = self.top_camera.read()
+        if image is None:
+            return
 
-        if result is None:
-            image = self.top_camera.read()
-            if image is None:
-                return
-
-            self._top_last_frame_at = time.monotonic()
-            result = self.top_pipeline.process(image)
+        self._top_last_frame_at = time.monotonic()
+        result = self.top_pipeline.process(image)
 
         # 正式比赛自动结束：只有顶部模型连续确认“0 个物体”，并且已经
         # 完成不少于配置的最小件数，才判定场上货物清空。
-            if int(getattr(result, "object_count", 0)) == 0:
-                now = time.monotonic()
-                if self._empty_scene_since is None:
-                    self._empty_scene_since = now
-                elif (
-                    self.completed_count >= self.minimum_items_before_empty_finish
-                    and (now - self._empty_scene_since) >= self.empty_finish_hold_s
-                ):
-                    self._finish_competition("top_scene_empty")
-                    return
-            else:
-                self._empty_scene_since = None
+        if int(getattr(result, "object_count", 0)) == 0:
+            now = time.monotonic()
+            if self._empty_scene_since is None:
+                self._empty_scene_since = now
+            elif (
+                self.completed_count >= self.minimum_items_before_empty_finish
+                and (now - self._empty_scene_since) >= self.empty_finish_hold_s
+            ):
+                self._finish_competition("top_scene_empty")
+                return
+        else:
+            self._empty_scene_since = None
 
         if not result.ready:
             return
@@ -1427,8 +1380,7 @@ class SortingRuntime:
         # Return -> Disable；收到 MCU_RETRY_PICK_READY 后重新开始顶部识别。
         if not bool(getattr(result, "found", True)):
             self._request_retry_pick(
-                reason=f"no_object from shape classifier: {side_reason or 'no_object'}",
-                allow_fallback_sort=False,
+                reason=f"no_object from shape classifier: {side_reason or 'no_object'}"
             )
             return
 
