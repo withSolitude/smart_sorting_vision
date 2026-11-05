@@ -57,6 +57,36 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
         if section not in cfg:
             raise ConfigError(f"缺少配置段: {section}")
 
+    # OCR 是可选段：不写等价于 enabled=false。
+    side_recognition = (
+        cfg.get("vision", {}).get("side", {}).get("recognition", {})
+    )
+    ocr_cfg = side_recognition.get("ocr")
+    if ocr_cfg is not None:
+        if not isinstance(ocr_cfg, dict):
+            raise ConfigError("vision.side.recognition.ocr 必须是对象")
+        if "enabled" in ocr_cfg and not isinstance(ocr_cfg["enabled"], bool):
+            raise ConfigError("vision.side.recognition.ocr.enabled 必须是 true/false")
+        if "run_when_qr_found" in ocr_cfg and not isinstance(
+            ocr_cfg["run_when_qr_found"], bool
+        ):
+            raise ConfigError(
+                "vision.side.recognition.ocr.run_when_qr_found 必须是 true/false"
+            )
+        engines = {
+            "auto",
+            "rapidocr",
+            "rapidocr_onnxruntime",
+            "easyocr",
+            "tesseract",
+            "pytesseract",
+        }
+        if "engine" in ocr_cfg and str(ocr_cfg["engine"]).strip().lower() not in engines:
+            raise ConfigError(
+                "vision.side.recognition.ocr.engine 只能是 "
+                "auto/rapidocr/easyocr/tesseract"
+            )
+
     for camera_name in ("top", "side"):
         camera_cfg = cfg["camera"].get(camera_name)
         if not isinstance(camera_cfg, dict):
