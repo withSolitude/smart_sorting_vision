@@ -31,19 +31,25 @@ class SideRecognizer:
         color_classifier: ColorClassifier,
         qr_detector: QRDetector,
         shape_classifier: ShapeClassifier | None,
+        ocr_recognizer=None,
         enable_color: bool = True,
         enable_qr: bool = True,
         enable_shape: bool = True,
+        enable_ocr: bool = False,
         qr_check_content: bool = False,
+        ocr_run_when_qr_found: bool = False,
     ) -> None:
 
         self.color_classifier = color_classifier
         self.qr_detector = qr_detector
         self.shape_classifier = shape_classifier
+        self.ocr_recognizer = ocr_recognizer
         self.enable_color = bool(enable_color)
         self.enable_qr = bool(enable_qr)
         self.enable_shape = bool(enable_shape)
+        self.enable_ocr = bool(enable_ocr)
         self.qr_check_content = bool(qr_check_content)
+        self.ocr_run_when_qr_found = bool(ocr_run_when_qr_found)
 
     def _normalize_qr_content(self, value: Any) -> str:
         """去掉解码结果首尾空白，供多帧一致性比较。"""
@@ -172,6 +178,36 @@ class SideRecognizer:
             qr_content = normalized or None
 
         # ========================================================
+        # 2.5 OCR（文字识别）
+        #
+        # 与颜色/二维码同级，默认关闭；开启后跑在同一份 crop/mask 上。
+        # qr 已经识别出来时默认跳过 OCR（省时间），可用
+        # ocr.run_when_qr_found=true 强制都跑。
+        # ========================================================
+
+        if self.enable_ocr and self.ocr_recognizer is not None:
+            if bool(qr_result.get("found", False)) and not self.ocr_run_when_qr_found:
+                text_result = {
+                    "found": False,
+                    "text": "",
+                    "confidence": 0.0,
+                    "engine": "",
+                    "reason": "skipped_qr_present",
+                    "box": None,
+                }
+            else:
+                text_result = self.ocr_recognizer.recognize(crop, crop_mask)
+        else:
+            text_result = {
+                "found": False,
+                "text": "",
+                "confidence": 0.0,
+                "engine": "",
+                "reason": "disabled",
+                "box": None,
+            }
+
+        # ========================================================
         # 3. Shape
         # ========================================================
 
@@ -234,11 +270,15 @@ class SideRecognizer:
             # 即使关闭内容共识，也保留解码内容供调试显示；
             # 是否参与 READY 判断由 SideRecognitionConsensus 决定。
             "qr_content": qr_content,
+            # OCR 文字：不参与 READY 判断，只向上层提供识别结果。
+            "text": str(text_result.get("text", "") or ""),
+            "text_confidence": float(text_result.get("confidence", 0.0)),
             "shape": shape_result.get("shape", "unknown"),
             "shape_confidence": float(shape_result.get("confidence", 0.0)),
             "details": {
                 "color": color_result,
                 "qr": qr_result,
+                "ocr": text_result,
                 "shape": shape_result,
                 "shape_selection": shape_meta,
             },
