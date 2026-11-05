@@ -38,80 +38,6 @@ from vision.calibration.yaw_tcp_compensation import YawTcpCompensator
 from vision.calibration.yaw_servo import YawServoCalibration
 
 
-def _point_to_polygon_px(polygon: np.ndarray, point: tuple[float, float]) -> float:
-    """点到多边形边界的非负距离；点在内部按 0 处理。"""
-    distance = cv2.pointPolygonTest(polygon, point, True)
-    return 0.0 if distance >= 0.0 else float(-distance)
-
-
-def _polygon_gap_px(a: np.ndarray, b: np.ndarray) -> float:
-    """两个多边形之间的近似最小距离（像素）。"""
-    a32 = np.asarray(a, dtype=np.float32).reshape(-1, 1, 2)
-    b32 = np.asarray(b, dtype=np.float32).reshape(-1, 1, 2)
-    d_ab = min(
-        _point_to_polygon_px(a32, (float(x), float(y)))
-        for x, y in np.asarray(b, dtype=np.float32).reshape(-1, 2)
-    )
-    d_ba = min(
-        _point_to_polygon_px(b32, (float(x), float(y)))
-        for x, y in np.asarray(a, dtype=np.float32).reshape(-1, 2)
-    )
-    return float(min(d_ab, d_ba))
-
-
-def prefer_axis_by_neighbors(
-    families,
-    target_polygon: np.ndarray,
-    other_polygons: list[np.ndarray],
-    *,
-    touching_gap_px: float = 4.0,
-    min_score_margin: float = 0.15,
-):
-    """按邻近物体方向确定性地选闭合轴（只选轴，不做碰撞拒绝）。
-
-    两个正方体贴在一起时，接触面法向就是邻居方位；闭合轴应与它垂直
-    （等价于平行于接触面），两指落在前后两个自由面，而不是夹在缝隙里。
-    没有贴合邻居、或两个方向分数接近时返回 None，保留原主姿态。
-    """
-    target = np.asarray(target_polygon, dtype=np.float32).reshape(-1, 2)
-    if len(target) < 3 or not other_polygons:
-        return None
-
-    center = target.mean(axis=0)
-    bearings_deg: list[float] = []
-    for polygon in other_polygons:
-        other = np.asarray(polygon, dtype=np.float32).reshape(-1, 2)
-        if len(other) < 3:
-            continue
-        if _polygon_gap_px(target, other) > float(touching_gap_px):
-            continue
-        delta = other.mean(axis=0) - center
-        if float(np.hypot(delta[0], delta[1])) < 1e-6:
-            continue
-        bearings_deg.append(
-            math.degrees(math.atan2(float(delta[1]), float(delta[0])))
-        )
-
-    if not bearings_deg:
-        return None
-
-    def axis_score(family) -> float:
-        axis_deg = float(getattr(family, "closing_axis_image_deg", 0.0))
-        # 闭合轴越垂直于邻居方位（sin 越接近 1）越好。
-        return min(
-            abs(math.sin(math.radians(axis_deg - bearing)))
-            for bearing in bearings_deg
-        )
-
-    ranked = sorted(families, key=axis_score, reverse=True)
-    if len(ranked) < 2:
-        return None
-    if axis_score(ranked[0]) < axis_score(ranked[1]) + float(min_score_margin):
-        return None
-    return ranked[0]
-
-
-
 @dataclass
 class TopPickCandidate:
     object_index: int
@@ -158,7 +84,7 @@ class TopPickCandidate:
     gripper_clearance_px: float
     gripper_clearance_mm: float
 
-    # 两个指爪（以及可选主体）的名义二维包络，仅用于调试/预览绘制。
+    # 名义二维包络，用于调试预览；选轴检查开启时包含预开口到接触的扫掠。
     gripper_footprint_polygons_px: list[np.ndarray]
 
     # 视觉估计的动态预开口；无法可靠估计时不输出可抓取候选。
@@ -309,6 +235,7 @@ class TopPickPipeline:
         gripper_body_longitudinal_offset_mm: float = -25.0,
         gripper_debug_log_rejections: bool = False,
         timing_enabled: bool = False,
+        grasp_axis_selection_enabled: bool = True,
         grasp_search_enabled: bool = True,
         grasp_search_yaw_offsets_deg=(0.0, -5.0, 5.0, -10.0, 10.0, -15.0, 15.0),
         grasp_search_longitudinal_offsets_mm=(0.0, -2.0, 2.0, -4.0, 4.0),
@@ -488,6 +415,7 @@ class TopPickPipeline:
         # 几何等价的抓取族分数接近时，沿用它而不是每帧重新洗牌。
         self._prev_frame_axes: list[tuple[float, float, float]] = []
 
+        self.grasp_axis_selection_enabled = bool(grasp_axis_selection_enabled)
         self.grasp_search_enabled = bool(grasp_search_enabled)
         # 每帧打印 [TIMING] infer/search/total，用来定位"顶部定位慢"到底慢在推理还是候选搜索。
         self.timing_enabled = bool(timing_enabled)
@@ -897,41 +825,6 @@ class TopPickPipeline:
                 orientation_family_yaws = [float(o.grasp_axis_robot_deg) for o in orientation_family]
                 orientation_family_contact = [float(o.contact_quality) for o in orientation_family]
 
-            # 确定性选轴：两个正方体贴在一起时，闭合轴应平行于接触面。
-            # 只调整基础姿态，不做碰撞拒绝，gripper_collision 可以保持关闭。
-            preferred_family = prefer_axis_by_neighbors(
-                orientation_family,
-                target_polygon,
-                other_polygons,
-            )
-            if preferred_family is not None:
-                base_yaw_deg = float(preferred_family.grasp_axis_robot_deg)
-                long_axis_deg = float(preferred_family.long_axis_robot_deg)
-                aspect_ratio = float(preferred_family.aspect_ratio)
-                orientation_reliable = bool(preferred_family.reliable)
-                orientation_mode = str(preferred_family.mode)
-                rectangularity = float(preferred_family.rectangularity)
-                circularity = float(preferred_family.circularity)
-                hull_vertex_count = int(preferred_family.hull_vertex_count)
-                closing_axis_image_deg = float(preferred_family.closing_axis_image_deg)
-                base_grasp_width_px = float(preferred_family.grasp_width_px)
-                base_grasp_width_mm = preferred_family.grasp_width_mm
-                contact_type = str(preferred_family.contact_type)
-                contact_quality = float(preferred_family.contact_quality)
-                support_overlap_px = float(preferred_family.support_overlap_px)
-                support_min_point_px = preferred_family.support_min_point_px
-                support_max_point_px = preferred_family.support_max_point_px
-                # 选中的族排到最前，后面的搜索/日志优先使用它。
-                orientation_family = [preferred_family] + [
-                    item for item in orientation_family if item is not preferred_family
-                ]
-                orientation_family_yaws = [
-                    float(item.grasp_axis_robot_deg) for item in orientation_family
-                ]
-                orientation_family_contact = [
-                    float(item.contact_quality) for item in orientation_family
-                ]
-
             try:
                 target_robot = self.transform.pixels_to_robot(
                     target_polygon,
@@ -947,6 +840,29 @@ class TopPickPipeline:
                 )
             except Exception:
                 continue
+
+            # 每条自然抓取轴有自己的支撑中面和安全抓点。切换轴时必须连同
+            # 抓点一起切换，再围绕该点应用局部偏移和一次径向补偿。
+            family_centers_robot: list[np.ndarray | None] = []
+            for family in orientation_family:
+                family_pixel = family.grasp_pixel_override
+                if family_pixel is None:
+                    family_centers_robot.append(base_center_robot)
+                    continue
+                try:
+                    center_robot = np.asarray(
+                        self.transform.pixel_to_robot(
+                            float(family_pixel[0]),
+                            float(family_pixel[1]),
+                            apply_tcp_offset=False,
+                        ),
+                        dtype=np.float64,
+                    )
+                    if center_robot.shape != (2,) or not np.all(np.isfinite(center_robot)):
+                        center_robot = None
+                except (ValueError, RuntimeError, TypeError):
+                    center_robot = None
+                family_centers_robot.append(center_robot)
 
             if (
                 target_robot.ndim != 2
@@ -1065,6 +981,13 @@ class TopPickPipeline:
                             >= self.grasp_search_max_trials_per_object
                         ):
                             break
+            elif self.grasp_axis_selection_enabled:
+                # 选轴与局部多姿态搜索独立。即使关闭 ±角度/位置搜索，也比较
+                # 所有真实平行边抓取族，避免只尝试恰好朝向邻物的主轴。
+                trial_specs = [
+                    (axial_difference_deg(yaw, base_yaw_deg), 0.0, 0.0)
+                    for yaw in orientation_family_yaws
+                ]
             else:
                 trial_specs = [(0.0, 0.0, 0.0)]
             # 边缘区独立尝试允许的真实舵机角，即使全局多姿态搜索关闭也能抓取。
@@ -1146,10 +1069,26 @@ class TopPickPipeline:
                     reject("yaw_outside_calibrated_range", yaw=yaw_deg,
                            meta={"yaw_error": str(exc)})
                     continue
+                family_distances = [
+                    abs(axial_difference_deg(yaw_deg, family_yaw))
+                    for family_yaw in orientation_family_yaws
+                ]
+                nearest_family_index = int(np.argmin(family_distances))
+                trial_family = (
+                    orientation_family[nearest_family_index]
+                    if orientation_family else None
+                )
+                trial_base_center = (
+                    family_centers_robot[nearest_family_index]
+                    if orientation_family else base_center_robot
+                )
+                if trial_base_center is None:
+                    reject("family_grasp_transform_failed", yaw=yaw_deg)
+                    continue
                 # 局部前后偏置、指爪包络与 TCP 均使用实际执行角，轴向角仅用于协议输出。
                 closing_axis, longitudinal_axis = axis_vectors(physical_yaw_deg)
                 candidate_center_robot = (
-                    base_center_robot
+                    trial_base_center
                     + float(longitudinal_offset_mm) * longitudinal_axis
                     + float(closing_offset_mm) * closing_axis
                 )
@@ -1303,14 +1242,50 @@ class TopPickPipeline:
                     )
                     continue
 
-                footprint_check = self.gripper_footprint.check(
-                    grasp_pixel=candidate_px,
-                    yaw_deg=float(physical_yaw_deg),
-                    opening_mm=preopen_mm,
-                    other_polygons=other_polygons,
-                    image_shape=frame.shape,
-                    context=collision_context,
-                )
+                if self.grasp_axis_selection_enabled:
+                    # 始终按实际双指几何检查所有邻物，覆盖下降时的预开口及
+                    # 随后闭合到目标支撑面之间的扫掠。没有 4px 邻物门限，
+                    # 也不把额外安全余量当成实体，避免密集场景过度拒抓。
+                    footprint_check = self.gripper_footprint.check_nominal(
+                        grasp_pixel=candidate_px,
+                        yaw_deg=float(physical_yaw_deg),
+                        opening_mm=preopen_mm,
+                        target_polygon_robot_mm=target_robot,
+                        other_polygons=other_polygons,
+                        image_shape=frame.shape,
+                        context=collision_context,
+                    )
+                    check_mode = "nominal_axis"
+                    if footprint_check.safe and self.gripper_footprint.enabled:
+                        # 用户显式开启全碰撞检查时，仍保留原来的膨胀余量规则。
+                        strict_check = self.gripper_footprint.check(
+                            grasp_pixel=candidate_px,
+                            yaw_deg=float(physical_yaw_deg),
+                            opening_mm=preopen_mm,
+                            other_polygons=other_polygons,
+                            image_shape=frame.shape,
+                            context=collision_context,
+                        )
+                        if not strict_check.safe:
+                            footprint_check = strict_check
+                            check_mode = "full_collision"
+                        else:
+                            footprint_check.clearance_mm = min(
+                                footprint_check.clearance_mm, strict_check.clearance_mm,
+                            )
+                            footprint_check.clearance_px = min(
+                                footprint_check.clearance_px, strict_check.clearance_px,
+                            )
+                else:
+                    footprint_check = self.gripper_footprint.check(
+                        grasp_pixel=candidate_px,
+                        yaw_deg=float(physical_yaw_deg),
+                        opening_mm=preopen_mm,
+                        other_polygons=other_polygons,
+                        image_shape=frame.shape,
+                        context=collision_context,
+                    )
+                    check_mode = "full_collision"
                 if not footprint_check.safe:
                     reject(
                         str(footprint_check.reason),
@@ -1319,6 +1294,8 @@ class TopPickPipeline:
                         opening=preopen_mm,
                         polygons=footprint_check.footprint_polygons_px,
                         meta={
+                            "check_mode": check_mode,
+                            "object_collision_pixels": footprint_check.object_collision_pixels,
                             "yaw_offset_deg": float(yaw_offset_deg),
                             "longitudinal_offset_mm": float(longitudinal_offset_mm),
                             "closing_offset_mm": float(closing_offset_mm),
@@ -1326,7 +1303,10 @@ class TopPickPipeline:
                     )
                     continue
 
-                if float(footprint_check.clearance_mm) < self.grasp_search_hard_min_clearance_mm:
+                if (
+                    self.gripper_footprint.enabled
+                    and float(footprint_check.clearance_mm) < self.grasp_search_hard_min_clearance_mm
+                ):
                     reject(
                         "clearance_below_hard_min",
                         px=candidate_px,
@@ -1416,11 +1396,6 @@ class TopPickPipeline:
                 )
                 # 找到当前姿态最近的真实基础抓取族。对于“另一对相对平行边”，
                 # 它本身就是合法基准方向，不应该因为与主方向相差约90°而被罚分。
-                family_distances = [
-                    abs(axial_difference_deg(yaw_deg, family_yaw))
-                    for family_yaw in orientation_family_yaws
-                ]
-                nearest_family_index = int(np.argmin(family_distances))
                 yaw_deviation_from_family = float(family_distances[nearest_family_index])
                 family_contact_quality = float(orientation_family_contact[nearest_family_index])
                 contact_score = max(0.0, min(family_contact_quality, 1.0))
@@ -1441,8 +1416,7 @@ class TopPickPipeline:
                 )
 
                 # 用当前物理宽度修正用于显示/兼容的像素宽度估计。
-                if orientation_family and nearest_family_index < len(orientation_family):
-                    trial_family = orientation_family[nearest_family_index]
+                if trial_family is not None:
                     ref_width_mm = trial_family.grasp_width_mm
                     ref_width_px = float(trial_family.grasp_width_px)
                 else:
@@ -1473,8 +1447,12 @@ class TopPickPipeline:
                     x_mm=float(x_mm),
                     y_mm=float(y_mm),
                     yaw_deg=float(yaw_deg),
-                    object_long_axis_deg=float(long_axis_deg),
-                    aspect_ratio=float(aspect_ratio),
+                    object_long_axis_deg=float(
+                        trial_family.long_axis_robot_deg if trial_family is not None else long_axis_deg
+                    ),
+                    aspect_ratio=float(
+                        trial_family.aspect_ratio if trial_family is not None else aspect_ratio
+                    ),
                     orientation_reliable=bool(
                         trial_family.reliable if trial_family is not None else orientation_reliable
                     ),
@@ -1544,7 +1522,9 @@ class TopPickPipeline:
                 }
                 safe_trial_records.append(trial_record)
 
-                if best_candidate is None or candidate.score > best_candidate.score:
+                # 微小浮点差不应让两条等价自然轴来回换；同分沿用先枚举的
+                # 主族（姿态规划器已将上一帧方向纳入迟滞）。
+                if best_candidate is None or candidate.score > best_candidate.score + 1e-6:
                     best_candidate = candidate
                     best_trial_record = trial_record
 

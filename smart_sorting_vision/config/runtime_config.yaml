@@ -194,7 +194,7 @@ vision:
         # 物体宽度 + 总余量；当前使用8mm（两侧合计）。
         # 每侧余量 = margin/2，直接等于允许的"抓取中心偏移"容差：
         # margin 8 只容 ±3.85mm，边缘目标会被 target_not_between_fingers 拒绝。
-        margin_mm: 8.0  # 物体宽度之外增加的安全余量（mm）；每侧 5mm，容差 ±4.85mm。
+        margin_mm: 8.0  # 总预开口余量（mm）；居中时每侧4mm，扣除0.15mm最小侧隙后容差约±3.85mm。
         # 安全协议范围；STM32 与 PC 使用同一条线性公式。
         min_command_mm: 13  # 预开口命令最小值（mm）。
         max_command_mm: 77  # 预开口命令最大值（mm）。
@@ -246,13 +246,16 @@ vision:
       use_visual_to_command_matrix: true  # 是否用标定矩阵把视觉偏移转换为机械命令。
 
     gripper_collision:
-      enabled: false  # 是否启用夹爪碰撞和禁入区域检查。
+      enabled: false  # 是否启用包含安全余量的完整碰撞检查；名义选轴检查由下方独立控制。
+
+      axis_selection:
+        enabled: true  # 按双指实体及闭合扫掠选轴；不依赖上方enabled，额外间隙用于评分。
 
       allowed_polygon_mm: null  # 允许抓取的机械区域多边形（mm）。
-      object_overlap_tolerance_px: 4  # 夹爪与目标允许的重叠容差（像素）。
+      object_overlap_tolerance_px: 4  # 夹爪与其他物体允许的重叠面积容差（像素个数）。
 
-      # 来自本次 STEP 顶视投影：夹持端零件最小外接矩形约 30.7 x 13.5 mm，
-      # 向上取整作为保守单指包络。
+      # 历史STEP全顶视投影约30.7x13.5mm；下列是现用配置，
+      # 必须按与邻物同高、实际参与碰撞的夹指截面核实，不能只量最尖端。
       finger_length_mm: 5.0  # 夹爪指端长度（mm）。
       finger_thickness_mm: 2.7  # 夹爪指端厚度（mm）。
       finger_longitudinal_offset_mm: 0.0  # 夹爪指端沿前后方向的偏移（mm）。
@@ -282,7 +285,7 @@ vision:
 
       # 同一物体多姿态抓取搜索
       grasp_search:
-        enabled: false  # 是否启用同一物体的多姿态抓取搜索。现场关闭，抓取轴靠帧间迟滞保持稳定。
+        enabled: false  # 是否启用多姿态搜索；axis_selection开启时仍比较自然轴，偏角/位移只用于完整搜索回退。
 
         yaw_offsets_deg:  # 同一物体尝试的Yaw偏移角度列表（度）。
           [0, -15 ,15 ]
@@ -293,7 +296,7 @@ vision:
         closing_offsets_mm:  # 同一物体尝试的左右偏移列表（mm）。
           [0.0]
 
-        hard_min_clearance_mm: 0.5  # 候选的硬性最小间隙（mm）。
+        hard_min_clearance_mm: 0.5  # 完整碰撞检查启用时的硬性最小间隙（mm）；名义选轴不据此拒抓。
         preferred_clearance_mm: 2.0  # 候选优先使用的间隙（mm）。
         min_target_overlap_mm: 1.5  # 目标最小有效重叠长度（mm）。
         min_side_gap_mm: 0.15  # 夹爪侧边最小间隙（mm）。

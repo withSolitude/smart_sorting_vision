@@ -323,8 +323,10 @@ class GripperFootprintModel:
             if p.ndim != 2 or p.shape[1] != 2 or len(p) < 3:
                 continue
             pts.append(np.round(p).astype(np.int32).reshape(-1, 1, 2))
-        if pts:
-            cv2.fillPoly(mask, pts, 255)
+        # 一次传入多个轮廓使用 even-odd 填充，重叠区可能被当成孔洞。
+        # 指爪与主体必须取实体并集，不能相互抵消。
+        for polygon in pts:
+            cv2.fillPoly(mask, [polygon], 255)
         return mask
 
     @staticmethod
@@ -337,8 +339,9 @@ class GripperFootprintModel:
             if p.ndim != 2 or p.shape[1] != 2 or len(p) < 3:
                 continue
             pts.append(np.round(p).astype(np.int32).reshape(-1, 1, 2))
-        if pts:
-            cv2.fillPoly(mask, pts, 255)
+        # 不同物体的分割轮廓可能局部交叠，障碍应取并集而非奇偶填充。
+        for polygon in pts:
+            cv2.fillPoly(mask, [polygon], 255)
         return mask
 
     def _forbidden_zone_mask(self, image_shape, expand_mm: float = 0.0) -> np.ndarray:
@@ -507,6 +510,278 @@ class GripperFootprintModel:
         if len(xs) == 0:
             return 0.0
         return float(np.min(context.distance_to_obstacle[ys, xs]))
+
+    def check_nominal(
+        self,
+        *,
+        grasp_pixel: tuple[float, float],
+        yaw_deg: float,
+        opening_mm: float | None,
+        target_polygon_robot_mm: np.ndarray,
+        other_polygons: list[np.ndarray],
+        image_shape,
+        context: GripperCollisionContext | None = None,
+    ) -> GripperFootprintCheck:
+        """检查实体预开口及闭合扫掠，不受 enabled 或任何膨胀余量影响。
+
+        yaw_deg 为实际执行的机器人闭合轴角。目标以不含 TCP 偏置的机器人
+        坐标传入；各指从预开口位置移动到目标在闭合轴上的支撑面即停止。
+        返回的轮廓和 clearance 均对应整个扫掠，而非仅闭合前的静态位置。
+        context 必须由相同的邻物、固定禁区和图像尺寸生成，可供多轴复用。
+        缺失开口、无效几何或不完整投影均拒绝，避免把漏画的包络当作安全。
+        """
+        polygons_px: list[np.ndarray] = []
+
+        def failed(reason: str, **kwargs) -> GripperFootprintCheck:
+            return GripperFootprintCheck(
+                safe=False,
+                reason=reason,
+                footprint_polygons_px=polygons_px,
+                clearance_px=0.0,
+                clearance_mm=0.0,
+                **kwargs,
+            )
+
+        def valid_polygon(value) -> np.ndarray:
+            polygon = np.asarray(value, dtype=np.float64)
+            if (
+                polygon.ndim != 2
+                or polygon.shape[1] != 2
+                or len(polygon) < 3
+                or not np.all(np.isfinite(polygon))
+                or np.any(np.abs(polygon) > np.finfo(np.float32).max)
+            ):
+                raise ValueError("invalid polygon")
+            area = abs(cv2.contourArea(polygon.astype(np.float32)))
+            if not math.isfinite(area) or area <= 1e-9:
+                raise ValueError("degenerate polygon")
+            return polygon
+
+        def project(polygon: np.ndarray) -> np.ndarray:
+            pixels = np.asarray(self._robot_to_pixels(polygon), dtype=np.float64)
+            if pixels.shape != polygon.shape:
+                raise ValueError("incomplete projection")
+            return valid_polygon(pixels).astype(np.float32)
+
+        try:
+            h, w = image_shape[:2]
+            if int(h) != h or int(w) != w or h < 1 or w < 1:
+                raise ValueError("invalid image shape")
+            target = valid_polygon(target_polygon_robot_mm)
+            # prepare_context 的旧接口会略过坏轮廓；实体检查必须先显式验证。
+            for polygon in other_polygons:
+                valid_polygon(polygon)
+            if self.allowed_polygon_mm is not None:
+                valid_polygon(self.allowed_polygon_mm)
+            if self.allowed_region_mm is not None and not np.all(np.isfinite(self.allowed_region_mm)):
+                raise ValueError("invalid allowed region")
+            opening = float(opening_mm)
+            yaw = float(yaw_deg)
+            geometry = [
+                self.finger_length_mm,
+                self.finger_thickness_mm,
+                self.finger_longitudinal_offset_mm,
+            ]
+            if self.body_enabled:
+                geometry += [
+                    self.body_width_mm,
+                    self.body_length_mm,
+                    self.body_longitudinal_offset_mm,
+                ]
+            if (
+                not math.isfinite(opening)
+                or opening <= 0.0
+                or not math.isfinite(yaw)
+                or not np.all(np.isfinite(geometry))
+                or self.finger_length_mm <= 0.0
+                or self.finger_thickness_mm <= 0.0
+                or (self.body_enabled and min(self.body_width_mm, self.body_length_mm) <= 0.0)
+            ):
+                raise ValueError("invalid gripper geometry")
+        except (TypeError, ValueError, IndexError, OverflowError, cv2.error):
+            return failed("invalid_nominal_geometry")
+
+        try:
+            center = np.asarray(
+                self.transform.pixel_to_robot(*map(float, grasp_pixel), apply_tcp_offset=False),
+                dtype=np.float64,
+            )
+            if center.shape != (2,) or not np.all(np.isfinite(center)):
+                raise ValueError("invalid grasp transform")
+            samples = [
+                np.asarray(self.transform.pixel_to_robot(
+                    float(grasp_pixel[0]) + du,
+                    float(grasp_pixel[1]) + dv,
+                    apply_tcp_offset=False,
+                ), dtype=np.float64)
+                for du, dv in ((1.0, 0.0), (0.0, 1.0))
+            ]
+            if any(p.shape != (2,) or not np.all(np.isfinite(p)) for p in samples):
+                raise ValueError("invalid local scale")
+            scales = [float(np.linalg.norm(p - center)) for p in samples]
+            if min(scales) <= 1e-9:
+                raise ValueError("degenerate local scale")
+            mm_per_px = min(scales)
+            theta = math.radians(yaw)
+            closing_axis = np.asarray([math.cos(theta), math.sin(theta)])
+            supports = (target - center) @ closing_axis
+            support_min, support_max = float(supports.min()), float(supports.max())
+            half_open = opening * 0.5
+            if support_min < -half_open - 1e-6 or support_max > half_open + 1e-6:
+                return failed("target_outside_preopen")
+
+            half_length = self.finger_length_mm * 0.5
+            y_min = self.finger_longitudinal_offset_mm - half_length
+            y_max = self.finger_longitudinal_offset_mm + half_length
+            # 左指内侧从 -half_open 到 support_min，右指从 +half_open 到
+            # support_max。矩形并集精确覆盖平移过程，同时包含预开口位置。
+            swept_local = [
+                self._rect_local(
+                    -half_open - self.finger_thickness_mm,
+                    max(-half_open, support_min), y_min, y_max,
+                ),
+                self._rect_local(
+                    min(half_open, support_max),
+                    half_open + self.finger_thickness_mm, y_min, y_max,
+                ),
+            ]
+            swept_robot = [self._rotate_translate(p, center, yaw) for p in swept_local]
+            if self.body_enabled:
+                swept_robot.append(self._make_footprint_robot(
+                    center_robot_mm=center, yaw_deg=yaw, opening_mm=opening,
+                    extra_margin_mm=0.0, include_opening_uncertainty=False,
+                )[-1])
+            polygons_px = [project(polygon) for polygon in swept_robot]
+            # 固定禁区的投影也不能被旧 prepare_context 静默漏掉。
+            for _, wall_polygon in self.forbidden_zones_mm:
+                project(valid_polygon(wall_polygon))
+        except Exception:
+            return failed("nominal_projection_failed")
+
+        allowed_polygon_clearance_mm = math.inf
+        if self.allowed_polygon_mm is not None:
+            contour = np.asarray(self.allowed_polygon_mm, dtype=np.float32).reshape(-1, 1, 2)
+
+            def cross2(a, b) -> float:
+                return float(a[0] * b[1] - a[1] * b[0])
+
+            boundary = np.asarray(self.allowed_polygon_mm, dtype=np.float64)
+            for polygon in swept_robot:
+                # 仅检查顶点不足以覆盖凹允许区：矩形的一条边可能横穿凹口。
+                distances = [float(cv2.pointPolygonTest(contour, tuple(map(float, p)), True)) for p in polygon]
+                if min(distances) < 0.0:
+                    return failed("allowed_polygon_collision", allowed_region_violation=True)
+                allowed_polygon_clearance_mm = min(allowed_polygon_clearance_mm, *distances)
+                polygon_contour = polygon.astype(np.float32).reshape(-1, 1, 2)
+                allowed_polygon_clearance_mm = min(allowed_polygon_clearance_mm, min(
+                    abs(float(cv2.pointPolygonTest(polygon_contour, tuple(map(float, p)), True)))
+                    for p in boundary
+                ))
+                for start, end in zip(polygon, np.roll(polygon, -1, axis=0)):
+                    direction = end - start
+                    cuts = [0.0, 1.0]
+                    for a, b in zip(boundary, np.roll(boundary, -1, axis=0)):
+                        edge = b - a
+                        denominator = cross2(direction, edge)
+                        if abs(denominator) > 1e-10:
+                            t = cross2(a - start, edge) / denominator
+                            u = cross2(a - start, direction) / denominator
+                            if 0.0 < t < 1.0 and -1e-9 <= u <= 1.0 + 1e-9:
+                                cuts.append(t)
+                        elif abs(cross2(a - start, direction)) <= 1e-10:
+                            for point in (a, b):
+                                t = float(np.dot(point - start, direction) / np.dot(direction, direction))
+                                if 0.0 < t < 1.0:
+                                    cuts.append(t)
+                    cuts.sort()
+                    for lo, hi in zip(cuts, cuts[1:]):
+                        midpoint = start + (lo + hi) * 0.5 * direction
+                        if cv2.pointPolygonTest(contour, tuple(map(float, midpoint)), False) < 0.0:
+                            return failed("allowed_polygon_collision", allowed_region_violation=True)
+        if not self._inside_allowed_region(swept_robot, 0.0):
+            return failed("allowed_region_collision", allowed_region_violation=True)
+        image_clearance_px = math.inf
+        if self.enforce_image_border:
+            # image_border_margin_px 也是额外余量，名义检查只使用真正的图像边界。
+            image_clearance_px = min(
+                float(np.min(np.concatenate((p[:, 0], w - 1 - p[:, 0], p[:, 1], h - 1 - p[:, 1]))))
+                for p in polygons_px
+            )
+            if image_clearance_px < 0.0:
+                return failed("image_border_collision", border_violation=True)
+
+        try:
+            if context is None or tuple(context.image_shape[:2]) != (h, w):
+                context = self.prepare_context(other_polygons=other_polygons, image_shape=image_shape)
+            for mask in (context.other_mask, context.wall_mask):
+                if not isinstance(mask, np.ndarray) or mask.shape != (h, w) or mask.dtype != np.uint8:
+                    raise ValueError("invalid obstacle mask")
+            distance = context.distance_to_obstacle
+            if distance is None:
+                if np.any(context.other_mask) or np.any(context.wall_mask):
+                    raise ValueError("missing obstacle distance")
+            elif (
+                not isinstance(distance, np.ndarray)
+                or distance.shape != (h, w)
+                or not np.issubdtype(distance.dtype, np.floating)
+            ):
+                raise ValueError("invalid obstacle distance")
+
+            # 候选通常只占整图的一小块。先在全图坐标中取整，再平移整数轮廓，
+            # 避免 round(x - roi_origin) 的 .5 舍入与整图版本产生一像素差异。
+            rounded = [np.round(polygon) for polygon in polygons_px]
+            limit = np.iinfo(np.int32).max
+            if any(np.any(np.abs(polygon.astype(np.float64)) > limit) for polygon in rounded):
+                return failed("nominal_projection_failed")
+            contours = [polygon.astype(np.int32) for polygon in rounded]
+            points = np.concatenate(contours, axis=0)
+            x0, y0 = np.maximum(points.min(axis=0), 0).tolist()
+            x1, y1 = np.minimum(points.max(axis=0).astype(np.int64) + 1, [w, h]).tolist()
+            if x0 >= x1 or y0 >= y1:
+                return failed("nominal_projection_failed")
+            nominal_mask = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
+            for polygon in contours:
+                cv2.fillPoly(nominal_mask, [polygon], 255, offset=(-x0, -y0))
+            if not np.any(nominal_mask):
+                return failed("nominal_projection_failed")
+            other_roi = context.other_mask[y0:y1, x0:x1]
+            wall_roi = context.wall_mask[y0:y1, x0:x1]
+            object_pixels = int(np.count_nonzero(cv2.bitwise_and(nominal_mask, other_roi)))
+            if object_pixels > self.object_overlap_tolerance_px:
+                return failed("other_object_collision", object_collision_pixels=object_pixels)
+            wall_pixels = int(np.count_nonzero(cv2.bitwise_and(nominal_mask, wall_roi)))
+            if wall_pixels:
+                return failed("fixed_wall_collision", wall_collision_pixels=wall_pixels)
+            if distance is None:
+                # 无障碍时沿用原图对角线，不能随本次候选的 ROI 大小改变分数。
+                obstacle_clearance_px = float(np.hypot(w, h))
+            else:
+                sampled_distance = distance[y0:y1, x0:x1][nominal_mask != 0]
+                if not np.all(np.isfinite(sampled_distance)) or np.any(sampled_distance < 0.0):
+                    raise ValueError("invalid queried obstacle distance")
+                obstacle_clearance_px = float(np.min(sampled_distance))
+            clearance_px = min(obstacle_clearance_px, image_clearance_px)
+        except (AttributeError, TypeError, ValueError, IndexError, cv2.error):
+            return failed("invalid_collision_context")
+
+        clearance_mm = min(float(clearance_px * mm_per_px), allowed_polygon_clearance_mm)
+        # 允许区也是真实边界，不能在没有邻物时误报一个无限大的自由间隙。
+        for polygon in swept_robot:
+            if self.allowed_region_mm is not None:
+                xmin, ymin, xmax, ymax = self.allowed_region_mm
+                clearance_mm = min(clearance_mm, float(np.min(np.concatenate((
+                    polygon[:, 0] - xmin, xmax - polygon[:, 0],
+                    polygon[:, 1] - ymin, ymax - polygon[:, 1],
+                )))))
+        return GripperFootprintCheck(
+            safe=True,
+            reason="ok",
+            footprint_polygons_px=polygons_px,
+            clearance_px=max(0.0, clearance_mm / mm_per_px),
+            clearance_mm=max(0.0, clearance_mm),
+            object_collision_pixels=object_pixels,
+            wall_collision_pixels=wall_pixels,
+        )
 
     def check(
         self,

@@ -92,7 +92,7 @@ class SingleYawPipelineTests(unittest.TestCase):
                     gripper_finger_longitudinal_offset_mm=10.0,
                 )
             polygon = np.array([[80, 80], [120, 80], [120, 120], [80, 120]], dtype=np.float32)
-            with patch.object(pipeline.gripper_footprint, "check", wraps=pipeline.gripper_footprint.check) as footprint, \
+            with patch.object(pipeline.gripper_footprint, "check_nominal", wraps=pipeline.gripper_footprint.check_nominal) as footprint, \
                  patch("vision.pipeline.top_pick_pipeline.evaluate_target_engagement",
                        wraps=evaluate_target_engagement) as engagement:
                 candidates = pipeline._build_candidates(

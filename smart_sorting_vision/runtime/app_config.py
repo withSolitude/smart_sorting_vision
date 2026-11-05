@@ -231,6 +231,20 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
         raise ConfigError("calibration.pixel_to_robot_swap_xy 必须为 true/false")
     cfg["camera"]["top"]["swap_robot_xy"] = swap_xy
 
+    # 旧现场配置没有 axis_selection 段时，默认启用名义夹指选轴检查。
+    # 此开关独立于完整安全余量碰撞检查，不能把字符串 "false" 当作真值。
+    gripper_collision = cfg["vision"]["top"].get("gripper_collision")
+    if not isinstance(gripper_collision, dict):
+        raise ConfigError("vision.top.gripper_collision 必须是对象")
+    axis_selection = gripper_collision.setdefault("axis_selection", {})
+    if not isinstance(axis_selection, dict):
+        raise ConfigError("vision.top.gripper_collision.axis_selection 必须是对象")
+    axis_enabled = axis_selection.setdefault("enabled", True)
+    if not isinstance(axis_enabled, bool):
+        raise ConfigError(
+            "vision.top.gripper_collision.axis_selection.enabled 必须是 true/false"
+        )
+
     # 抓取点向外径向补偿：边缘目标的分割 mask 会带上侧面，质心被拉向画面中心，
     # 这里只做参数校验，真正的补偿在 TopPickPipeline 里按候选点逐次应用。
     try:

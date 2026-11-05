@@ -195,6 +195,9 @@ class SmartSortingApp:
         top_preopen = top_orientation["dynamic_preopen"]
         top_gripper_collision = top_vision_cfg["gripper_collision"]
         top_grasp_search = top_gripper_collision["grasp_search"]
+        top_axis_selection_enabled = top_gripper_collision.get(
+            "axis_selection", {}
+        ).get("enabled", True)
         top_tcp_comp = top_vision_cfg["yaw_tcp_compensation"]
         yaw_servo_calibration = YawServoCalibration.from_config(self.config["calibration"]["yaw_servo"])
         print(
@@ -262,22 +265,35 @@ class SmartSortingApp:
 
         if bool(top_gripper_collision["enabled"]):
             print(
-                "[CONFIG] Gripper footprint collision ON: "
+                "[CONFIG] Gripper footprint collision ON (full margins): "
                 f"finger={float(top_gripper_collision['finger_length_mm']):.1f}x"
                 f"{float(top_gripper_collision['finger_thickness_mm']):.1f}mm, "
                 f"object_margin={float(top_gripper_collision['object_margin_mm']):.1f}mm, "
                 f"wall_margin={float(top_gripper_collision['wall_margin_mm']):.1f}mm, "
                 f"fixed_zones={len(forbidden_zones_mm)}"
             )
-            if bool(top_grasp_search["enabled"]):
-                print(
-                    "[CONFIG] Multi-pose grasp search ON: "
-                    f"yaw={top_grasp_search['yaw_offsets_deg']}, "
-                    f"long={top_grasp_search['longitudinal_offsets_mm']}mm, "
-                    f"hard_gap={float(top_grasp_search['hard_min_clearance_mm']):.2f}mm"
-                )
         else:
             print("[CONFIG] Gripper footprint collision OFF")
+
+        if top_axis_selection_enabled:
+            print(
+                "[CONFIG] Nominal grasp-axis clearance ON: "
+                f"finger={float(top_gripper_collision['finger_length_mm']):.1f}x"
+                f"{float(top_gripper_collision['finger_thickness_mm']):.1f}mm; "
+                "preopen + closing sweep; extra clearance is scored"
+            )
+        else:
+            print("[CONFIG] Nominal grasp-axis clearance OFF")
+
+        # 搜索和完整碰撞检查是独立开关；现场 collision=false 时也要显示搜索状态。
+        if bool(top_grasp_search["enabled"]):
+            print(
+                "[CONFIG] Multi-pose grasp search ON: quick natural axes; "
+                f"fallback_yaw={top_grasp_search['yaw_offsets_deg']}, "
+                f"fallback_long={top_grasp_search['longitudinal_offsets_mm']}mm"
+            )
+        else:
+            print("[CONFIG] Multi-pose grasp search OFF (natural-axis selection is independent)")
 
         self.top_pipeline = TopPickPipeline(
             model_path=top_model_cfg["path"],
@@ -324,6 +340,7 @@ class SmartSortingApp:
             preopen_standby_servo_deg=float(top_preopen["standby_servo_deg"]),
 
             gripper_collision_enabled=top_gripper_collision["enabled"],
+            grasp_axis_selection_enabled=top_axis_selection_enabled,
             gripper_finger_length_mm=top_gripper_collision["finger_length_mm"],
             gripper_finger_thickness_mm=top_gripper_collision["finger_thickness_mm"],
             gripper_finger_longitudinal_offset_mm=top_gripper_collision["finger_longitudinal_offset_mm"],
