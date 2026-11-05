@@ -69,7 +69,7 @@ model:
   side:
     # classifier 方案使用的 13 类模型（含"空托盘"）；整幅侧视 ROI 输入。
     # 换模型只改这里，imgsz 必须跟着改成该模型的训练尺寸。
-    path: outputs/training/side_cls/new/weights/best.engine
+    path: outputs/training/side_cls/new_side_cls_v1/weights/best.engine
     imgsz: 224  # 模型输入尺寸（像素）。
     device: 0  # 相机设备路径或推理设备编号。
     # 低于该值一律视为"还没看清"，上层会继续等后续帧而不会立刻判空。
@@ -80,10 +80,10 @@ model:
   side_seg:
     # seg 方案使用的模型；classifier 模式下完全不加载。
     # 注意：side_seg_v2_896 是用 imgsz 896 训练的，切换过去时下面的 imgsz 也要改 896。
-    path: outputs/training/side_seg/v1_seg_side/side_seg_v2_896/weights/best.engine
-    imgsz: 896  # 必须与训练一致（v2_896 是 896 训练的）
+    path: outputs/training/side_seg/side_seg_v2_896/weights/best.engine
+    imgsz: 896  # 训练时的输入尺寸，必须与训练一致
     device: 0  # 推理设备编号
-    confidence_threshold: 0.5  # 判空阈值：低于此值视为没有实例
+    confidence_threshold: 0.25  # 判空阈值：低于此值视为没有实例
     max_instances: 1  # 侧视只有一个物体，超过 1 没有意义
 
 calibration:
@@ -194,7 +194,7 @@ vision:
         # 物体宽度 + 总余量；当前使用8mm（两侧合计）。
         # 每侧余量 = margin/2，直接等于允许的"抓取中心偏移"容差：
         # margin 8 只容 ±3.85mm，边缘目标会被 target_not_between_fingers 拒绝。
-        margin_mm: 10.0  # 物体宽度之外增加的安全余量（mm）；每侧 5mm，容差 ±4.85mm。
+        margin_mm: 8.0  # 物体宽度之外增加的安全余量（mm）；每侧 5mm，容差 ±4.85mm。
         # 安全协议范围；STM32 与 PC 使用同一条线性公式。
         min_command_mm: 13  # 预开口命令最小值（mm）。
         max_command_mm: 77  # 预开口命令最大值（mm）。
@@ -282,13 +282,13 @@ vision:
 
       # 同一物体多姿态抓取搜索
       grasp_search:
-        enabled: false  # 是否启用同一物体的多姿态抓取搜索。
+        enabled: true  # 是否启用同一物体的多姿态抓取搜索。
 
         yaw_offsets_deg:  # 同一物体尝试的Yaw偏移角度列表（度）。
-          [0, -5, 5, -10, 10, -15, 15, -20, 20, -30, 30]
+          [0, -8, 8, -15 ,15 ]
 
         longitudinal_offsets_mm:  # 同一物体尝试的前后偏移列表（mm）。
-          [0.0, -2.0, 2.0, -3.0, 3.0]
+          [0.0, -3.0, 3.0]
 
         closing_offsets_mm:  # 同一物体尝试的左右偏移列表（mm）。
           [0.0]
@@ -302,7 +302,7 @@ vision:
         center_penalty_per_mm: 0.25  # 搜索评分中的中心偏移惩罚系数。
         # 离原点越远扣分越多（分/mm）。先抓靠近识别托盘一侧的物体，
         # 缩短拿着高件横穿其它物体的距离。0 = 不启用。
-        origin_penalty_per_mm: 0.03
+        origin_penalty_per_mm: 0.06
 
         max_trials_per_object: 200  # 每个目标最多搜索的候选数量。
 
