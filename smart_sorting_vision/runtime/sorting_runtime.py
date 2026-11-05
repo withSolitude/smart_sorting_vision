@@ -644,7 +644,12 @@ class SortingRuntime:
         if frame is not None:
             self._send_command(frame, label=label, retry=True)
 
-    def _request_retry_pick(self, *, reason: str) -> None:
+    def _request_retry_pick(
+        self,
+        *,
+        reason: str,
+        allow_fallback_sort: bool = True,
+    ) -> None:
         """放弃本次未成功送达识别台的夹取，但保持比赛运行。
 
         注意：不能直接回 WAIT_TOP_OBJECT。下位机此时还停在 Recognition
@@ -662,7 +667,7 @@ class SortingRuntime:
 
         # 物体此时还留在识别台上（模型没认出来）。先尝试丢进一个空盒，
         # 否则重抓时它会一直占着识别台。
-        if self._try_fallback_sort(reason=reason):
+        if allow_fallback_sort and self._try_fallback_sort(reason=reason):
             return
 
         self.current_object = None
@@ -1380,7 +1385,8 @@ class SortingRuntime:
         # Return -> Disable；收到 MCU_RETRY_PICK_READY 后重新开始顶部识别。
         if not bool(getattr(result, "found", True)):
             self._request_retry_pick(
-                reason=f"no_object from shape classifier: {side_reason or 'no_object'}"
+                reason=f"no_object from shape classifier: {side_reason or 'no_object'}",
+                allow_fallback_sort=False,
             )
             return
 
