@@ -960,8 +960,26 @@ class TopPickPipeline:
                 trial_specs = [(0.0, 0.0, 0.0)]
             # 边缘区独立尝试允许的真实舵机角，即使全局多姿态搜索关闭也能抓取。
             # 这些额外姿态只对 x>阈值 的目标生效，区域外仍使用原规划结果。
+            #
+            # 但基础姿态的舵机角本来就在窗口内时不再添加：否则基础姿态和这些
+            # 边缘姿态只是“分数接近”，会每帧抢赢家，选取点在两族之间来回跳
+            # （关掉 grasp_search 也照样跳）。只有基础姿态会被 allows 拒掉时，
+            # 才用边缘候选去救。
             edge_only_trials: set = set()
-            if self.edge_yaw_limit.enabled:
+            base_inside_edge_window = False
+            if self.edge_yaw_limit.enabled and self.yaw_servo_calibration is not None:
+                try:
+                    base_servo = self.yaw_servo_calibration.command_deg(
+                        self._wire_yaw(base_yaw_deg)
+                    )
+                    base_inside_edge_window = (
+                        self.edge_yaw_limit.servo_min_deg - 1e-7
+                        <= base_servo
+                        <= self.edge_yaw_limit.servo_max_deg + 1e-7
+                    )
+                except (TypeError, ValueError):
+                    base_inside_edge_window = False
+            if self.edge_yaw_limit.enabled and not base_inside_edge_window:
                 seen_trials = {
                     (self._wire_yaw(base_yaw_deg + offset), longitudinal, closing)
                     for offset, longitudinal, closing in trial_specs
