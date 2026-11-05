@@ -198,6 +198,7 @@ class SmartSortingApp:
         top_axis_selection_enabled = top_gripper_collision.get(
             "axis_selection", {}
         ).get("enabled", True)
+        top_failed_pick = dict(top_vision_cfg.get("failed_pick") or {})
         top_tcp_comp = top_vision_cfg["yaw_tcp_compensation"]
         yaw_servo_calibration = YawServoCalibration.from_config(self.config["calibration"]["yaw_servo"])
         print(
@@ -360,6 +361,19 @@ class SmartSortingApp:
             gripper_body_longitudinal_offset_mm=top_gripper_collision["body"]["longitudinal_offset_mm"],
             gripper_debug_log_rejections=top_gripper_collision["debug_log_rejections"],
             timing_enabled=bool(self.config.get("debug", {}).get("pipeline_timing", False)),
+            failed_pick_enabled=bool(top_failed_pick.get("enabled", True)),
+            failed_pick_search_radius_mm=float(
+                top_failed_pick.get("search_radius_mm", 120.0)
+            ),
+            failed_pick_area_ratio_min=float(
+                top_failed_pick.get("area_ratio_min", 0.6)
+            ),
+            failed_pick_area_ratio_max=float(
+                top_failed_pick.get("area_ratio_max", 1.6)
+            ),
+            failed_pick_iou_threshold=float(
+                top_failed_pick.get("iou_threshold", 0.35)
+            ),
             grasp_search_enabled=top_grasp_search["enabled"],
             grasp_search_yaw_offsets_deg=top_grasp_search["yaw_offsets_deg"],
             grasp_search_longitudinal_offsets_mm=top_grasp_search["longitudinal_offsets_mm"],
