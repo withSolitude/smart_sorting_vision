@@ -567,13 +567,9 @@ void Class_Holding_Jaw::Grap_Move()
             if (XY_Move_Finished() &&
                 Grap_Move_Count >= 1)
             {
-                // 预收缩已经在运动过程中做完的话，直接进下降，
-                // 省掉 Pre_Clip 这一次状态周转（10~20ms）。
-                const bool pre_clip_done =
-                    Pre_Clip_Early_Sent &&
-                    (uint32_t)(HAL_GetTick() - Pre_Clip_Early_Tick) >= Claw_PreClip_Time_ms;
                 Set_Grap_Move_Status(
-                    pre_clip_done ? Enum_Grap_Move_Descend : Enum_Grap_Move_Pre_Clip);
+                    Enum_Grap_Move_Pre_Clip
+                );
             }
 
 
@@ -2096,7 +2092,7 @@ bool Class_Holding_Jaw::Move_XY_Yaw_Direct(float X_mm, float Y_mm, float Yaw_Rad
 
     if (Edge_Move_Step == 1U)
     {
-        if (!XY_At_mm(X_mm, Y_mm))
+        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(X_mm, Y_mm))
             return false;
 
         if (Yaw_Servo_Motor.Control_Angle(Yaw_Rad, Servo_Move_Time_ms) != HAL_OK)
@@ -2114,7 +2110,7 @@ bool Class_Holding_Jaw::Move_XY_Yaw_Direct(float X_mm, float Y_mm, float Yaw_Rad
         // （去识别托盘、去相机前、回待机）之后下一步动的都是升降或夹爪，
         // 和 Yaw 是不同的轴，不需要等它转完，可以重叠起来。
         // 原来这里卡 Servo_Move_Time_ms，等于每次放件前白等最多 200ms。
-        if (!XY_At_mm(X_mm, Y_mm))
+        if (!XY_Motion.Get_Motion_Finished() || !XY_At_mm(X_mm, Y_mm))
             return false;
         Edge_Move_Step = 7U;
     }
@@ -2130,9 +2126,8 @@ bool Class_Holding_Jaw::Move_XY_Yaw_Direct(float X_mm, float Y_mm, float Yaw_Rad
 bool Class_Holding_Jaw::
 XY_Move_Finished() const
 {
-    // 到位只看坐标是否落在容差内，不再额外等驱动器的 Settle_ms 稳定标志：
-    // 那个标志要等 55ms 才置位，等于每段到位都白等一次。
-    if (!XY_Motion.Get_Position_Valid() || XY_Motion.Get_Fault()) return false;
+    if (!XY_Motion.Get_Position_Valid() || XY_Motion.Get_Fault() ||
+        !XY_Motion.Get_Motion_Finished()) return false;
     switch (Grap_Move_Status)
     {
         case Enum_Grap_Move_X_Y_Start: return XY_At_mm(Grap_Target_X_mm, Grap_Target_Y_mm);
