@@ -38,6 +38,80 @@ from vision.calibration.yaw_tcp_compensation import YawTcpCompensator
 from vision.calibration.yaw_servo import YawServoCalibration
 
 
+def _point_to_polygon_px(polygon: np.ndarray, point: tuple[float, float]) -> float:
+    """点到多边形边界的非负距离；点在内部按 0 处理。"""
+    distance = cv2.pointPolygonTest(polygon, point, True)
+    return 0.0 if distance >= 0.0 else float(-distance)
+
+
+def _polygon_gap_px(a: np.ndarray, b: np.ndarray) -> float:
+    """两个多边形之间的近似最小距离（像素）。"""
+    a32 = np.asarray(a, dtype=np.float32).reshape(-1, 1, 2)
+    b32 = np.asarray(b, dtype=np.float32).reshape(-1, 1, 2)
+    d_ab = min(
+        _point_to_polygon_px(a32, (float(x), float(y)))
+        for x, y in np.asarray(b, dtype=np.float32).reshape(-1, 2)
+    )
+    d_ba = min(
+        _point_to_polygon_px(b32, (float(x), float(y)))
+        for x, y in np.asarray(a, dtype=np.float32).reshape(-1, 2)
+    )
+    return float(min(d_ab, d_ba))
+
+
+def prefer_axis_by_neighbors(
+    families,
+    target_polygon: np.ndarray,
+    other_polygons: list[np.ndarray],
+    *,
+    touching_gap_px: float = 4.0,
+    min_score_margin: float = 0.15,
+):
+    """按邻近物体方向确定性地选闭合轴（只选轴，不做碰撞拒绝）。
+
+    两个正方体贴在一起时，接触面法向就是邻居方位；闭合轴应与它垂直
+    （等价于平行于接触面），两指落在前后两个自由面，而不是夹在缝隙里。
+    没有贴合邻居、或两个方向分数接近时返回 None，保留原主姿态。
+    """
+    target = np.asarray(target_polygon, dtype=np.float32).reshape(-1, 2)
+    if len(target) < 3 or not other_polygons:
+        return None
+
+    center = target.mean(axis=0)
+    bearings_deg: list[float] = []
+    for polygon in other_polygons:
+        other = np.asarray(polygon, dtype=np.float32).reshape(-1, 2)
+        if len(other) < 3:
+            continue
+        if _polygon_gap_px(target, other) > float(touching_gap_px):
+            continue
+        delta = other.mean(axis=0) - center
+        if float(np.hypot(delta[0], delta[1])) < 1e-6:
+            continue
+        bearings_deg.append(
+            math.degrees(math.atan2(float(delta[1]), float(delta[0])))
+        )
+
+    if not bearings_deg:
+        return None
+
+    def axis_score(family) -> float:
+        axis_deg = float(getattr(family, "closing_axis_image_deg", 0.0))
+        # 闭合轴越垂直于邻居方位（sin 越接近 1）越好。
+        return min(
+            abs(math.sin(math.radians(axis_deg - bearing)))
+            for bearing in bearings_deg
+        )
+
+    ranked = sorted(families, key=axis_score, reverse=True)
+    if len(ranked) < 2:
+        return None
+    if axis_score(ranked[0]) < axis_score(ranked[1]) + float(min_score_margin):
+        return None
+    return ranked[0]
+
+
+
 @dataclass
 class TopPickCandidate:
     object_index: int
@@ -822,6 +896,41 @@ class TopPickPipeline:
             else:
                 orientation_family_yaws = [float(o.grasp_axis_robot_deg) for o in orientation_family]
                 orientation_family_contact = [float(o.contact_quality) for o in orientation_family]
+
+            # 确定性选轴：两个正方体贴在一起时，闭合轴应平行于接触面。
+            # 只调整基础姿态，不做碰撞拒绝，gripper_collision 可以保持关闭。
+            preferred_family = prefer_axis_by_neighbors(
+                orientation_family,
+                target_polygon,
+                other_polygons,
+            )
+            if preferred_family is not None:
+                base_yaw_deg = float(preferred_family.grasp_axis_robot_deg)
+                long_axis_deg = float(preferred_family.long_axis_robot_deg)
+                aspect_ratio = float(preferred_family.aspect_ratio)
+                orientation_reliable = bool(preferred_family.reliable)
+                orientation_mode = str(preferred_family.mode)
+                rectangularity = float(preferred_family.rectangularity)
+                circularity = float(preferred_family.circularity)
+                hull_vertex_count = int(preferred_family.hull_vertex_count)
+                closing_axis_image_deg = float(preferred_family.closing_axis_image_deg)
+                base_grasp_width_px = float(preferred_family.grasp_width_px)
+                base_grasp_width_mm = preferred_family.grasp_width_mm
+                contact_type = str(preferred_family.contact_type)
+                contact_quality = float(preferred_family.contact_quality)
+                support_overlap_px = float(preferred_family.support_overlap_px)
+                support_min_point_px = preferred_family.support_min_point_px
+                support_max_point_px = preferred_family.support_max_point_px
+                # 选中的族排到最前，后面的搜索/日志优先使用它。
+                orientation_family = [preferred_family] + [
+                    item for item in orientation_family if item is not preferred_family
+                ]
+                orientation_family_yaws = [
+                    float(item.grasp_axis_robot_deg) for item in orientation_family
+                ]
+                orientation_family_contact = [
+                    float(item.contact_quality) for item in orientation_family
+                ]
 
             try:
                 target_robot = self.transform.pixels_to_robot(
