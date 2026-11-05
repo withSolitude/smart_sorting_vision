@@ -1697,6 +1697,16 @@ bool Class_Sorting_Storage::Get_Disable_Ready()
         std::fabs(DM4310.Get_Now_Omega()) <= DM4310_Omega_Tolerance;
 }
 
+// 只看托盘：翻转/保持/回位过程中返回 false，回到待机后才允许夹爪横穿托盘区域。
+// 注意与 Get_Disable_Ready 的区别：后者还要求 4310 回待机，会多等 0.4~1.3 s。
+bool Class_Sorting_Storage::Get_Tray_Ready() const
+{
+    return Storage_Status != Sorting_Storage_Status_TRAY_FLIP &&
+        Storage_Status != Sorting_Storage_Status_TRAY_HOLD &&
+        Storage_Status != Sorting_Storage_Status_TRAY_RETURN &&
+        Storage_Status != Sorting_Storage_Status_STOP_TRAY_RETURN;
+}
+
 bool Class_Sorting_Storage::Clear_Fault()
 {
     if (!Get_Disable_Ready()) return false;

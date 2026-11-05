@@ -1241,7 +1241,7 @@ Notify_Error(
     State = Explicit_Stop_Request_Pending ? Sorting_Handshake_State_STOPPED : Sorting_Handshake_State_ERROR;
 
 
-    Pending_Error_Code = Error_Code <= Sorting_Vision_Error_Grap_TOF_Timeout
+    Pending_Error_Code = Error_Code <= Sorting_Vision_Error_XY_Position_Jump
         ? Error_Code : static_cast<uint8_t>(Sorting_Vision_Error_None);
     Error_Notify_Pending = true;
     if (Communication != nullptr && Communication->Send_Error(Pending_Error_Code) == HAL_OK)

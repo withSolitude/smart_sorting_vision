@@ -155,6 +155,11 @@ public:
     // 安全待机必须同时满足 DM 反馈新鲜和托盘回位指令的动作时间。
     // UART 舵机没有实测位置应答，因此这里只能依据已发送命令和时间判断。
     bool Get_Disable_Ready();
+
+    // 托盘是否已经回到待机位（不在翻转/保持/回位过程中）。
+    // 上位机开始下一次抓取前用它判断：夹爪从待机位斜穿托盘区域是否安全。
+    bool Get_Tray_Ready() const;
+
     inline bool Get_Fault() const { return Fault_Latched; }
     // Explicit operator recovery; communication returning alone never clears it.
     bool Clear_Fault();
