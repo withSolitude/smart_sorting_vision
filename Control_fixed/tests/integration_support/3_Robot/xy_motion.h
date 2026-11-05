@@ -26,6 +26,7 @@ public:
     void Init() {}
     void TIM_1ms_PeriodElapsedCallback() {}
     bool Get_Position_Valid() const { return Position_Valid; }
+    void Clear_Fault() {}
     bool Get_Fault() const { return Fault; }
     XY_Fault Get_Fault_Code() const { return Fault_Code; }
     bool Get_Motion_Finished() const { return Motion_Finished; }

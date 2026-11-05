@@ -2257,6 +2257,32 @@ void Class_Holding_Jaw::Abort_XY_Fault()
     Abort_Grap_Fault(Enum_Grap_Error_XY_Drive_Fault);
 }
 
+bool Class_Holding_Jaw::Recover_From_XY_Fault(Enum_Grap_Move_Status previous)
+{
+    // 已经夹住/搬运物体时不能自动恢复，避免把物体带到错误位置。
+    if (previous == Enum_Grap_Move_Clip ||
+        previous == Enum_Grap_Move_Lift ||
+        previous == Enum_Grap_Move_X_Retreat ||
+        previous == Enum_Grap_Move_X_Y_Tray ||
+        previous == Enum_Grap_Move_Tray_Descend ||
+        previous == Enum_Grap_Move_Release ||
+        previous == Enum_Grap_Move_Tray_Lift ||
+        previous == Enum_Grap_Move_Recognition_Position ||
+        previous == Enum_Grap_Move_Return)
+    {
+        return false;
+    }
+
+    XY_Motion.Clear_Fault();
+    Fault_Lift_Stop_Pending = false;
+    Fault_Yaw_Stop_Pending = false;
+    Grap_Failed = false;
+    Grap_Error = Enum_Grap_Error_None;
+    Set_Grap_Move_Status(Enum_Grap_Move_Disable);
+    Request_Return_To_Disable();
+    return true;
+}
+
 void Class_Holding_Jaw::Abort_Grap_Fault(Enum_Grap_Error Reason)
 {
     if (Grap_Move_Status == Enum_Grap_Move_Fault)

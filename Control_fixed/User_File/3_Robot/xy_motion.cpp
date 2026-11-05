@@ -172,6 +172,18 @@ void Class_XY_Motion::Retry_Command_Phase()
     Phase_Tick = HAL_GetTick();
 }
 
+void Class_XY_Motion::Clear_Fault()
+{
+    // 堵转/丢 ACK 只清故障，不重置 Origin_Valid：原点仍然有效，可直接继续抓取。
+    Fault = Config_Valid() ? XY_Fault::None : XY_Fault::Configuration;
+    Phase = State::Stop_A;
+    Phase_Tick = HAL_GetTick();
+    Command_Retry_Count = 0U;
+    Stable = false;
+    Motion_Completed = false;
+    Move_Tick = HAL_GetTick();
+}
+
 void Class_XY_Motion::Capture_Feedback_Baselines()
 {
     const auto a = Motor_A.Get_Data(), b = Motor_B.Get_Data();
