@@ -24,13 +24,20 @@ from PyQt5.QtWidgets import (
 @dataclass
 class SortingDisplayRecord:
     """
-    一件已经完成分拣的货物记录。
+    一件货物的显示记录。
+
+    pending=False：已经收到 SORT_DONE，序号/成功数量是最终值。
+    pending=True ：侧面刚识别完、SORT_RESULT 已下发，储物动作还在进行；
+                   序号先留空，成功数量显示“储物中…”。
     """
 
     sequence: int
     product_name: str
     image_bgr: Optional[np.ndarray]
     success_count: int
+    pending: bool = False
+    cycle_id: int = 0
+    box_id: int = 0
 
 
 class SortingDisplayWindow(QMainWindow):
@@ -49,6 +56,8 @@ class SortingDisplayWindow(QMainWindow):
     """
 
     add_record_signal = pyqtSignal(object)
+    complete_record_signal = pyqtSignal(int, int, int)
+    fail_record_signal = pyqtSignal(int)
     reset_signal = pyqtSignal()
 
     def __init__(
@@ -62,6 +71,8 @@ class SortingDisplayWindow(QMainWindow):
         self.max_visible_rows = max_visible_rows
 
         self.records: list[SortingDisplayRecord] = []
+        # cycle_id -> 行号；等 SORT_DONE 到了再把这一行补成最终值。
+        self._pending_rows: dict[int, int] = {}
 
         self.setWindowTitle(
             "智能分拣系统"
@@ -74,6 +85,14 @@ class SortingDisplayWindow(QMainWindow):
 
         self.add_record_signal.connect(
             self._add_record
+        )
+
+        self.complete_record_signal.connect(
+            self._complete_record
+        )
+
+        self.fail_record_signal.connect(
+            self._fail_record
         )
 
         self.reset_signal.connect(
@@ -325,6 +344,66 @@ class SortingDisplayWindow(QMainWindow):
             record
         )
 
+    def add_pending_item(
+        self,
+        *,
+        cycle_id: int,
+        product_name: str,
+        image_bgr: Optional[np.ndarray] = None,
+        box_id: int = 0,
+    ):
+        """
+        侧面识别完成、SORT_RESULT 已下发时调用：先把这一件显示出来。
+
+        序号留空、成功数量显示“储物中…”，收到 SORT_DONE 后由
+        complete_item() 补齐；可以从其他线程调用。
+        """
+
+        if image_bgr is not None:
+            try:
+                image_bgr = image_bgr.copy()
+            except AttributeError:
+                pass
+
+        record = SortingDisplayRecord(
+            sequence=0,
+            product_name=product_name,
+            image_bgr=image_bgr,
+            success_count=0,
+            pending=True,
+            cycle_id=int(cycle_id),
+            box_id=int(box_id),
+        )
+
+        self.add_record_signal.emit(
+            record
+        )
+
+    def complete_item(
+        self,
+        *,
+        cycle_id: int,
+        sequence: int,
+        success_count: int,
+    ):
+        """SORT_DONE 之后把“储物中…”那一行补成最终序号和成功数量。"""
+
+        self.complete_record_signal.emit(
+            int(cycle_id),
+            int(sequence),
+            int(success_count),
+        )
+
+    def fail_pending_item(
+        self,
+        cycle_id: int,
+    ):
+        """本件没等到 SORT_DONE（故障/重连/重抓）：把行标成“未完成”。"""
+
+        self.fail_record_signal.emit(
+            int(cycle_id)
+        )
+
     def reset(self):
         """
         新一轮比赛开始时清空。
@@ -363,9 +442,7 @@ class SortingDisplayWindow(QMainWindow):
         # --------------------------------------------------------
 
         sequence_item = QTableWidgetItem(
-            str(
-                record.sequence
-            )
+            "—" if record.pending else str(record.sequence)
         )
 
         sequence_item.setTextAlignment(
@@ -441,9 +518,7 @@ class SortingDisplayWindow(QMainWindow):
         # --------------------------------------------------------
 
         count_item = QTableWidgetItem(
-            str(
-                record.success_count
-            )
+            "储物中…" if record.pending else str(record.success_count)
         )
 
         count_item.setTextAlignment(
@@ -471,8 +546,80 @@ class SortingDisplayWindow(QMainWindow):
 
         self.table.scrollToBottom()
 
+        if record.pending:
+            self._pending_rows[record.cycle_id] = row
+            self.status_label.setText(
+                f"已识别：{record.product_name} → {record.box_id} 号箱，储物中…"
+            )
+        else:
+            self.status_label.setText(
+                f"第 {record.sequence} 件货物分拣完成"
+            )
+
+    # ============================================================
+    # 待完成记录 -> 完成 / 未完成
+    # ============================================================
+
+    def _complete_record(
+        self,
+        cycle_id: int,
+        sequence: int,
+        success_count: int,
+    ):
+        row = self._pending_rows.pop(
+            int(cycle_id),
+            None,
+        )
+
+        if row is None or row >= self.table.rowCount():
+            return
+
+        sequence_item = self.table.item(row, 0)
+
+        if sequence_item is not None:
+            sequence_item.setText(
+                str(sequence)
+            )
+
+        count_item = self.table.item(row, 3)
+
+        if count_item is not None:
+            count_item.setText(
+                str(success_count)
+            )
+
+        for record in self.records:
+            if record.cycle_id == int(cycle_id) and record.pending:
+                record.pending = False
+                record.sequence = int(sequence)
+                record.success_count = int(success_count)
+                break
+
         self.status_label.setText(
-            f"第 {record.sequence} 件货物分拣完成"
+            f"第 {sequence} 件货物分拣完成"
+        )
+
+    def _fail_record(
+        self,
+        cycle_id: int,
+    ):
+        row = self._pending_rows.pop(
+            int(cycle_id),
+            None,
+        )
+
+        if row is None or row >= self.table.rowCount():
+            return
+
+        count_item = self.table.item(row, 3)
+
+        if count_item is not None:
+            count_item.setText(
+                "未完成"
+            )
+
+        self.status_label.setText(
+            "上一件未等到储物完成"
         )
 
     # ============================================================
@@ -539,6 +686,8 @@ class SortingDisplayWindow(QMainWindow):
 
     def _reset_table(self):
         self.records.clear()
+
+        self._pending_rows.clear()
 
         self.table.setRowCount(
             0
