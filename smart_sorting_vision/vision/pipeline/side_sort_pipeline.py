@@ -16,6 +16,9 @@ from vision.color.color_classifier import (
 from vision.code_reader.qr_detector import (
     QRDetector,
 )
+from vision.text.ocr_recognizer import (
+    TextRecognizer,
+)
 from vision.shape.shape_classifier import (
     ShapeClassifier,
 )
@@ -67,6 +70,10 @@ class SideSortPipelineResult:
     crop: np.ndarray | None = None
     crop_mask: np.ndarray | None = None
     crop_bbox: tuple[int, int, int, int] | None = None
+
+    # OCR 文字（不参与 READY 判定；enabled=false 时恒为空）。
+    text: str = ""
+    text_confidence: float = 0.0
 
 
 class SideSortPipeline:
@@ -126,6 +133,8 @@ class SideSortPipeline:
         color_config: dict[str, Any] | None = None,
         qr_config: dict[str, Any] | None = None,
         qr_check_content: bool = False,
+        ocr_config: dict[str, Any] | None = None,
+        ocr_run_when_qr_found: bool = False,
         no_object_labels: tuple[str, ...] | list[str] = (
             "no_object",
             "empty",
@@ -133,6 +142,7 @@ class SideSortPipeline:
         ),
         enable_color: bool = True,
         enable_qr: bool = True,
+        enable_ocr: bool = False,
         enable_shape: bool = True,
     ) -> None:
         self.presence_mode = str(presence_mode).strip().lower()
@@ -179,6 +189,7 @@ class SideSortPipeline:
             "[SIDE CONFIG] "
             f"color={self.enable_color} "
             f"qr={self.enable_qr} "
+            f"ocr={self.enable_ocr} "
             f"qr_content_check={self.qr_check_content} "
             f"shape={self.enable_shape} "
             f"presence={self.presence_mode}"
@@ -230,6 +241,12 @@ class SideSortPipeline:
             if self.enable_qr else None
         )
 
+        self.enable_ocr = bool(enable_ocr)
+        self.ocr_recognizer = (
+            TextRecognizer(ocr_config)
+            if self.enable_ocr else None
+        )
+
         self.shape_classifier = (
             ShapeClassifier(
                 model_path=
@@ -255,10 +272,14 @@ class SideSortPipeline:
                     self.qr_detector,
                 shape_classifier=
                     self.shape_classifier,
+                ocr_recognizer=
+                    self.ocr_recognizer,
                 enable_color=self.enable_color,
                 enable_qr=self.enable_qr,
                 enable_shape=self.enable_shape,
+                enable_ocr=self.enable_ocr,
                 qr_check_content=self.qr_check_content,
+                ocr_run_when_qr_found=ocr_run_when_qr_found,
             )
         )
 
@@ -684,6 +705,12 @@ class SideSortPipeline:
                 crop=crop,
                 crop_mask=crop_mask,
                 crop_bbox=crop_bbox,
+                text=str(
+                    final_result.get("text", "") or ""
+                ),
+                text_confidence=float(
+                    final_result.get("text_confidence", 0.0)
+                ),
             )
 
         return SideSortPipelineResult(
@@ -735,4 +762,10 @@ class SideSortPipeline:
             crop=crop,
             crop_mask=crop_mask,
             crop_bbox=crop_bbox,
+            text=str(
+                raw_result.get("text", "") or ""
+            ),
+            text_confidence=float(
+                raw_result.get("text_confidence", 0.0)
+            ),
         )

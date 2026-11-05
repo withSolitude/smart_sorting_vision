@@ -16,6 +16,8 @@ class ObjectInfo:
     color: str
     shape: str
     qr_present: bool = False
+    # OCR 文字：不参与分箱键，只用于日志和后续"按文字分拣"的扩展。
+    text: str = ""
 
     def key(self) -> str:
         """生成稳定、无歧义的分箱键。"""
