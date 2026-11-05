@@ -196,7 +196,6 @@ class SmartSortingApp:
         top_gripper_collision = top_vision_cfg["gripper_collision"]
         top_grasp_search = top_gripper_collision["grasp_search"]
         top_tcp_comp = top_vision_cfg["yaw_tcp_compensation"]
-        finals_cfg = self.config.get("finals", {})
         yaw_servo_calibration = YawServoCalibration.from_config(self.config["calibration"]["yaw_servo"])
         print(
             "[CONFIG] 单 180° Yaw: "
@@ -362,18 +361,7 @@ class SmartSortingApp:
             y_limits_mm=y_limits,
             yaw_tcp_compensator=yaw_tcp_compensator,
             yaw_servo_calibration=yaw_servo_calibration,
-            finals_enabled=bool(finals_cfg.get("enabled", False)),
         )
-        if bool(finals_cfg.get("enabled", False)):
-            print(
-                "[CONFIG] FINALS mode ON: "
-                f"required_boxes={finals_cfg.get('required_boxes', 6)}, "
-                f"min_class_confidence={finals_cfg.get('min_class_confidence', 0.45)}, "
-                f"no_match_frames={finals_cfg.get('no_match_frames', 8)}, "
-                f"gamble={finals_cfg.get('gamble', True)}"
-            )
-        else:
-            print("[CONFIG] FINALS mode OFF (preliminary behavior)")
 
         side_model_cfg = self.config["model"]["side"]
         side_vision_cfg = self.config["vision"]["side"]
@@ -485,8 +473,6 @@ class SmartSortingApp:
             on_finished=self._on_finished,
             on_session_start=self._on_session_start,
             on_recognized=self._on_recognized,
-            on_session_finished=self._on_session_finished,
-            finals_config=finals_cfg,
             loop_sleep_idle_s=scheduler_cfg["idle_sleep_s"],
             loop_sleep_wait_s=scheduler_cfg["wait_sleep_s"],
             loop_sleep_vision_s=scheduler_cfg["vision_sleep_s"],
@@ -543,21 +529,6 @@ class SmartSortingApp:
             f"[COMPETITION] START cycle={runtime.cycle_id} "
             f"already_completed={runtime.completed_count}"
         )
-
-    def _on_session_finished(self, reason):
-        """决赛软结束：6 个箱已满且侧面认出的类没有箱可用。
-
-        这一件不翻托盘（没有发 SORT_RESULT），机构回待机后由操作员取走
-        夹爪上的物体。这里只更新界面提示。
-        """
-        print(f"[FINALS] session finished: {reason}")
-        if self.display is not None:
-            try:
-                self.display.set_status(  # type: ignore[attr-defined]
-                    f"决赛结束：{reason}（未翻托盘，请取走夹爪上的物体）"
-                )
-            except Exception:
-                pass
 
     _COLOR_NAMES_CN = {
         "red": "红色",

@@ -28,7 +28,6 @@ from enum import Enum
 from communication.sorting_protocol import SortingFrame, SortingProtocol, Mode, make_heartbeat
 from communication.stm32_link import LinkOfflineError
 from vision.storage.object_info import ObjectInfo
-from vision.classify.top_classifier import shape_family
 
 
 class RuntimeState(Enum):
@@ -100,8 +99,6 @@ class SortingRuntime:
         on_finished=None,
         on_session_start=None,
         on_recognized=None,
-        on_session_finished=None,
-        finals_config: dict | None = None,
         loop_sleep_idle_s: float = 0.010,
         loop_sleep_wait_s: float = 0.002,
         loop_sleep_vision_s: float = 0.001,
@@ -131,26 +128,6 @@ class SortingRuntime:
         # 侧面识别通过、SORT_RESULT 已下发时回调，用于 UI 立即显示本件，
         # 不必等储物动作结束。参数：(cycle_id, ObjectInfo, 侧视裁剪图, box_id)。
         self.on_recognized = on_recognized
-        # 决赛软结束回调（不发 SORT_RESULT、不翻托盘）。
-        self.on_session_finished = on_session_finished
-
-        # --------------------------------------------------------
-        # 决赛模式（初赛 enabled=false 时以下逻辑全部不生效）
-        #
-        # 第一阶段：六类没凑齐，抓最好抓的，箱位由侧面动态分配；
-        # 第二阶段：六类齐了，只抓"顶部颜色/形状族命中已入箱类别"的；
-        # 第三阶段：匹配的抓完，赌一个最接近的，侧面识别后无箱可用则软结束。
-        # --------------------------------------------------------
-        finals_cfg = dict(finals_config or {})
-        self.finals_enabled = bool(finals_cfg.get("enabled", False))
-        self.finals_required_boxes = max(1, int(finals_cfg.get("required_boxes", 6)))
-        self.finals_min_confidence = float(finals_cfg.get("min_class_confidence", 0.45))
-        self.finals_no_match_frames = max(1, int(finals_cfg.get("no_match_frames", 8)))
-        self.finals_gamble_enabled = bool(finals_cfg.get("gamble", True))
-        self.finals_finished = False
-        self._finals_no_match = 0
-        self._finals_gamble_pick = False
-        self._finals_current_cycle_gamble = False
 
         # 状态感知的主循环调度：
         # - IDLE 不需要高频轮询，保持低 CPU；
@@ -658,10 +635,6 @@ class SortingRuntime:
         self._safe_reset(self.top_pipeline)
         self._safe_reset(self.side_pipeline)
         self._empty_scene_since = None
-        # 决赛：新周期重新开始过滤；赌一把只对上一件有效。
-        self._finals_no_match = 0
-        self._finals_gamble_pick = False
-        self._finals_current_cycle_gamble = False
         self.cycle_id += 1
         self._enter_state(RuntimeState.WAIT_TOP_OBJECT)
 
@@ -833,74 +806,6 @@ class SortingRuntime:
         self._safe_reset(self.side_pipeline)
         self._enter_state(RuntimeState.IDLE)
         self._send_stop_best_effort()
-
-    # =====================================================
-    # 决赛模式辅助（finals.enabled=false 时全部不生效）
-    # =====================================================
-
-    def _finals_box_classes(self) -> list[tuple[str, str]]:
-        """已入箱类别 -> [(颜色, 形状族)]；形状族由侧面形状名映射。"""
-        entries: list[tuple[str, str]] = []
-        for box in self.storage_manager.boxes:
-            key = str(getattr(box, "object_key", "") or "")
-            parts = key.split("|")
-            if len(parts) < 2:
-                continue
-            color = parts[0].strip()
-            family = shape_family(parts[1])
-            if color and family != "unknown":
-                entries.append((color, family))
-        return entries
-
-    def _finals_boxes_full(self) -> bool:
-        boxes = list(self.storage_manager.boxes)
-        if not boxes:
-            return False
-        occupied = sum(1 for box in boxes if not box.empty())
-        return occupied >= min(self.finals_required_boxes, len(boxes))
-
-    def _finals_allowed(self):
-        """返回顶部候选过滤函数；None 表示不过滤（初赛/第一阶段/赌一把）。"""
-        if not self.finals_enabled or self.finals_finished:
-            return None
-        if self._finals_gamble_pick or not self._finals_boxes_full():
-            return None
-        entries = self._finals_box_classes()
-        if not entries:
-            return None
-        threshold = self.finals_min_confidence
-
-        def allowed(candidate) -> bool:
-            if float(getattr(candidate, "final_confidence", 0.0)) < threshold:
-                return False
-            color = str(getattr(candidate, "final_color", "unknown"))
-            family = str(getattr(candidate, "final_shape_family", "unknown"))
-            if color == "unknown" or family == "unknown":
-                return False
-            return any(color == box_color and family == box_family
-                       for box_color, box_family in entries)
-
-        return allowed
-
-    def _finish_finals(self, reason: str) -> None:
-        """决赛软结束：不发 SORT_RESULT、不翻托盘，机构回待机。"""
-        print(
-            f"[FINALS] FINISH reason={reason} "
-            f"boxes={[(box.box_id, box.object_key) for box in self.storage_manager.boxes]} "
-            "(no SORT_RESULT sent, tray not flipped)"
-        )
-        self.finals_finished = True
-        self.running = False
-        self._clear_cycle_data(cancel_reservation=True)
-        self._safe_reset(self.top_pipeline)
-        self._safe_reset(self.side_pipeline)
-        self._enter_state(RuntimeState.IDLE)
-        self._send_stop_best_effort()
-        if callable(self.on_session_finished):
-            try:
-                self.on_session_finished(reason)
-            except Exception as exc:
-                print(f"[FINALS][WARN] on_session_finished failed: {exc}")
 
     def _send_stop_best_effort(self) -> None:
         if self.stm32 is None:
@@ -1299,7 +1204,7 @@ class SortingRuntime:
         if image is None:
             return
 
-        result = self.top_pipeline.process(image, allowed=self._finals_allowed())
+        result = self.top_pipeline.process(image)
         if not bool(getattr(result, "ready", False)):
             return
         if result.x_mm is None or result.y_mm is None:
@@ -1370,7 +1275,7 @@ class SortingRuntime:
                 return
 
             self._top_last_frame_at = time.monotonic()
-            result = self.top_pipeline.process(image, allowed=self._finals_allowed())
+            result = self.top_pipeline.process(image)
 
             # 正式比赛自动结束：只有顶部模型连续确认“0 个物体”，并且已经
             # 完成不少于配置的最小件数，才判定场上货物清空。
@@ -1386,26 +1291,6 @@ class SortingRuntime:
                     return
             else:
                 self._empty_scene_since = None
-
-        # 决赛第二阶段：连续多帧没有"命中已入箱类别"的候选，下一帧赌一把。
-        if self.finals_enabled and not self._finals_gamble_pick:
-            allowed_now = self._finals_allowed()
-            if allowed_now is not None:
-                if int(getattr(result, "candidate_count", 0)) == 0:
-                    self._finals_no_match += 1
-                else:
-                    self._finals_no_match = 0
-                if (
-                    self._finals_no_match >= self.finals_no_match_frames
-                    and self.finals_gamble_enabled
-                ):
-                    print(
-                        "[FINALS] no class-matching candidate for "
-                        f"{self._finals_no_match} frames; gamble on the next frame"
-                    )
-                    self._finals_gamble_pick = True
-                    self._safe_reset(self.top_pipeline)
-                    return
 
         if not result.ready:
             return
@@ -1471,14 +1356,6 @@ class SortingRuntime:
             return
 
         self.current_pick = result
-        if self.finals_enabled and self._finals_gamble_pick:
-            # 赌一把：这一件不按类别过滤，侧面识别后没有对应箱就软结束。
-            self._finals_current_cycle_gamble = True
-            self._finals_gamble_pick = False
-            print(
-                "[FINALS] gambling pick: side result decides; "
-                "no available box -> soft finish (no tray flip)"
-            )
         tx = SortingFrame(
             mode=Mode.PICK_TARGET,
             x_mm=x_mm,
@@ -1600,11 +1477,6 @@ class SortingRuntime:
 
         reservation = self.storage_manager.reserve(obj)
         if not reservation.success or reservation.reservation_id is None:
-            # 决赛：6 个箱都占满后，侧面又认出一个没有箱的类（顶部误判/赌一把没中）。
-            # 不发 SORT_RESULT、不翻托盘，直接软结束；否则最后一个物体留在夹爪上。
-            if self.finals_enabled:
-                self._finish_finals(f"no_available_box:{reservation.reason}")
-                return
             self._fail(f"storage reserve failed: {reservation.reason}")
             return
 
