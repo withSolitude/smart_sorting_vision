@@ -241,6 +241,11 @@ class SortingRuntime:
         self._urgent_stop_event = threading.Event()
         self._rx_thread: threading.Thread | None = None
 
+        # 独立心跳线程：顶部单帧推理可达 2 s 以上，主循环在这段时间里
+        # 发不出任何帧；MCU 侧连续 3 s 没收到帧就发 STOP_WORK 把整场停掉。
+        self._heartbeat_stop_event = threading.Event()
+        self._heartbeat_thread: threading.Thread | None = None
+
     @staticmethod
     def _normalize_limits(value, *, name: str):
         if value is None:
@@ -321,6 +326,53 @@ class SortingRuntime:
         if thread is not None and thread.is_alive():
             thread.join(timeout=0.5)
         self._rx_thread = None
+
+    # =====================================================
+    # 心跳线程
+    #
+    # 顶部识别（尤其 grasp_search 打开、物体很多时）一次 process() 可能
+    # 阻塞主循环 2 s 以上，主循环里的 _send_heartbeat_if_due() 就发不出去。
+    # MCU 侧 1 s 没有新帧就把视觉链路判 DISABLE，连续 3 s 就 Request_Stop_Work，
+    # 上位机会收到 MCU_STOP_WORK 并整场停下。心跳必须与视觉计算解耦。
+    # =====================================================
+
+    def _start_heartbeat_thread(self) -> None:
+        if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+            return
+        self._heartbeat_stop_event.clear()
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            name="stm32-heartbeat",
+            daemon=True,
+        )
+        self._heartbeat_thread.start()
+
+    def _stop_heartbeat_thread(self) -> None:
+        self._heartbeat_stop_event.set()
+        thread = self._heartbeat_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=0.5)
+        self._heartbeat_thread = None
+
+    def _heartbeat_loop(self) -> None:
+        """只发心跳，不改状态；发送失败交给主循环的链路看门狗处理。"""
+        while not self._heartbeat_stop_event.wait(0.05):
+            if self._link_offline or self.state == RuntimeState.LINK_OFFLINE:
+                continue
+            if not bool(getattr(self.stm32, "is_online", True)):
+                continue
+            now = time.monotonic()
+            if (now - self._last_heartbeat_sent_at) < self.heartbeat_interval_s:
+                continue
+            try:
+                # 串口层自带锁，和主循环的命令发送互斥。
+                self.stm32.send_frame(make_heartbeat())
+                self._last_heartbeat_sent_at = now
+            except (LinkOfflineError, OSError):
+                # 链路故障由主循环统一切 LINK_OFFLINE，这里不并发改状态。
+                pass
+            except Exception as exc:
+                print(f"[Runtime][WARN] heartbeat send failed: {exc}")
 
     def _poll_control_events(self):
         # 单元测试/独立 run_once 调用时没有接收线程，保持原来的同步 poll。
@@ -1826,6 +1878,7 @@ class SortingRuntime:
         )
         self._shutdown_event.clear()
         self._start_rx_thread()
+        self._start_heartbeat_thread()
         try:
             while not self._shutdown_event.is_set():
                 self.run_once()
@@ -1837,4 +1890,5 @@ class SortingRuntime:
         except KeyboardInterrupt:
             self.shutdown(send_stop=True)
         finally:
+            self._stop_heartbeat_thread()
             self._stop_rx_thread()
