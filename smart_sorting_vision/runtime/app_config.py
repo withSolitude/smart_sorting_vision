@@ -248,6 +248,19 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
     except (ValueError, TypeError) as exc:
         raise ConfigError(f"vision.top.edge_yaw_limit 无效: {exc}") from exc
 
+    # 失败抓取排除：可选段，缺省启用。
+    failed_pick = cfg["vision"]["top"].get("failed_pick")
+    if failed_pick is not None:
+        if not isinstance(failed_pick, dict):
+            raise ConfigError("vision.top.failed_pick 必须是对象")
+        if "enabled" in failed_pick and not isinstance(failed_pick["enabled"], bool):
+            raise ConfigError("vision.top.failed_pick.enabled 必须是 true/false")
+        for key in ("search_radius_mm", "area_ratio_min", "area_ratio_max", "iou_threshold"):
+            if key in failed_pick and float(failed_pick[key]) <= 0:
+                raise ConfigError(f"vision.top.failed_pick.{key} 必须大于0")
+        if "give_up_frames" in failed_pick and int(failed_pick["give_up_frames"]) <= 0:
+            raise ConfigError("vision.top.failed_pick.give_up_frames 必须大于0")
+
     top_tcp_comp = cfg["vision"]["top"].get("yaw_tcp_compensation", {})
     if bool(top_tcp_comp.get("enabled", False)):
         try:

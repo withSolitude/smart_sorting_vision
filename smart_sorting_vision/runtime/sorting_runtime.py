@@ -774,6 +774,13 @@ class SortingRuntime:
         if allow_fallback_sort and self._try_fallback_sort(reason=reason):
             return
 
+        # 侧面判空 = 这次确实没夹起来。把最后一帧选中的物体交给顶部流水线，
+        # 后续帧用质心对齐 IoU 跟踪它（允许被夹爪推走几厘米）并排除。
+        if not allow_fallback_sort:
+            mark_failed = getattr(self.top_pipeline, "mark_pick_failed", None)
+            if callable(mark_failed):
+                mark_failed()
+
         self.current_object = None
         self.current_box = None
         self.current_sort_command = None
@@ -1328,6 +1335,11 @@ class SortingRuntime:
 
             self._top_last_frame_at = time.monotonic()
             result = self.top_pipeline.process(image)
+
+            # 本帧所有候选都是“失败过一次”的物体：本轮不再尝试，直接收尾。
+            if bool(getattr(result, "blocked_all", False)):
+                self._finish_competition("all_objects_attempted")
+                return
 
             # 正式比赛自动结束：只有顶部模型连续确认“0 个物体”，并且已经
             # 完成不少于配置的最小件数，才判定场上货物清空。

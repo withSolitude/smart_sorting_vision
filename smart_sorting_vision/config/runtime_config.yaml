@@ -245,6 +245,15 @@ vision:
       # true 时复用 Yaw-TCP 标定得到的 J^-1，把“物理平面mm”换成XY命令mm。
       use_visual_to_command_matrix: true  # 是否用标定矩阵把视觉偏移转换为机械命令。
 
+    # 失败抓取：侧面判空后，下一帧用质心对齐 IoU 找同一物体并排除。
+    failed_pick:
+      enabled: true  # 是否启用失败物体排除。
+      search_radius_mm: 120.0  # 失败物体允许移动的搜索半径（mm）。
+      area_ratio_min: 0.6  # 与新检测的面积比下限。
+      area_ratio_max: 1.6  # 与新检测的面积比上限。
+      iou_threshold: 0.35  # 质心对齐后的 mask IoU 阈值。
+      give_up_frames: 3  # 连续找不到多少帧后放弃排除。
+
     gripper_collision:
       enabled: false  # 是否启用夹爪碰撞和禁入区域检查。
 
