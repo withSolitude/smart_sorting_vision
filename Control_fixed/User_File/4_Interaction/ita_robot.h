@@ -269,10 +269,9 @@ private:
     // 2026-10-29 最新实机标定：q = q0 + k * (theta - theta0)。
     // 与上位机 calibration.yaw_servo 三项参数保持一致。
     // theta 采用以 theta0 为中心的唯一 180° 区间，不再搜索另一物理姿态。
-    // Must match calibration.yaw_servo in smart_sorting_vision/config/runtime_config.yaml.
-    float Pick_Yaw_Reference_Closing_Axis_Robot_Deg = -63.280987f;
-    float Pick_Yaw_Reference_Servo_Command_Deg = 0.232430f;
-    float Pick_Yaw_Servo_Deg_Per_Gripper_Deg = 1.04720792f;
+    float Pick_Yaw_Reference_Closing_Axis_Robot_Deg = -63.856443506f;
+    float Pick_Yaw_Reference_Servo_Command_Deg = 0.394945458f;
+    float Pick_Yaw_Servo_Deg_Per_Gripper_Deg = 1.077582510f;
 
     // 运行时允许的Yaw舵机命令范围。拟合结果略微越界时由下方转换函数压到边界，
     // 不能因为浮点拟合误差让整次抓取直接失败。
