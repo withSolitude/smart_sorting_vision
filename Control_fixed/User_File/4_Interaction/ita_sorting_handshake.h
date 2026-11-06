@@ -194,6 +194,9 @@ public:
     // 机械层取顶部识别任务
     // ========================================================
 
+    // XY 故障自动恢复时丢弃已 ACK 的 PICK，回到等待新目标。
+    void Abort_Current_Pick();
+
     bool Pop_Pick_Request(
         Struct_Sorting_Pick_Request &Request_Out
     );

@@ -239,11 +239,15 @@ private:
 
     uint16_t Pick_Start_Wait_Count = 0;
 
-    // TOF 瞬时掉线重试计数：现场偶发约 1 秒无响应，Start_Grap 会报
+    // XY 可恢复故障（堵转/丢 ACK）自动重试次数；每次 START 清零。
+    uint8_t XY_Recovery_Count = 0U;
+    static constexpr uint8_t XY_Recovery_Limit = 3U;
+
+    // TOF 瞬时掉线重试计数：现场偶发 1s 左右的 TOF 无响应，Start_Grap 会报
     // TOF_Invalid。保持 Pick_Start_Pending，最多等这么久再按故障上报。
     uint16_t Pick_Start_Tof_Wait_Count = 0;
 
-    // 10ms 调度下 120 拍 = 1.2s；TOF 判离线约需 1s，留一点余量。
+    // 10ms 调度下 120 拍 = 1.2s；TOF 判离线需要约 1s，留一点余量。
     static constexpr uint16_t Pick_Start_Tof_Grace_Ticks = 120U;
 
 
@@ -265,9 +269,10 @@ private:
     // 2026-10-29 最新实机标定：q = q0 + k * (theta - theta0)。
     // 与上位机 calibration.yaw_servo 三项参数保持一致。
     // theta 采用以 theta0 为中心的唯一 180° 区间，不再搜索另一物理姿态。
-    float Pick_Yaw_Reference_Closing_Axis_Robot_Deg = -63.856443506f;
-    float Pick_Yaw_Reference_Servo_Command_Deg = 0.394945458f;
-    float Pick_Yaw_Servo_Deg_Per_Gripper_Deg = 1.077582510f;
+    // Must match calibration.yaw_servo in smart_sorting_vision/config/runtime_config.yaml.
+    float Pick_Yaw_Reference_Closing_Axis_Robot_Deg = -63.280987f;
+    float Pick_Yaw_Reference_Servo_Command_Deg = 0.232430f;
+    float Pick_Yaw_Servo_Deg_Per_Gripper_Deg = 1.04720792f;
 
     // 运行时允许的Yaw舵机命令范围。拟合结果略微越界时由下方转换函数压到边界，
     // 不能因为浮点拟合误差让整次抓取直接失败。

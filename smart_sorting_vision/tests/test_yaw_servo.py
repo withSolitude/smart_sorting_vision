@@ -33,7 +33,7 @@ class SingleYawTests(unittest.TestCase):
 
     def test_reported_minus_82_target_uses_updated_calibration(self):
         # 用户日志中旧参数算到 137.78° 而被拒绝；新标定应约为 -19.16°。
-        self.assertAlmostEqual(self.yaw.command_deg(-82.0), -19.1562336977683, places=6)
+        self.assertAlmostEqual(self.yaw.command_deg(-82.0), -19.3702686681830, places=6)
 
     def test_reference_and_half_open_boundary(self):
         self.assertAlmostEqual(

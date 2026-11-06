@@ -129,6 +129,15 @@ uint8_t UART_Transmit_Data(UART_HandleTypeDef *huart, uint8_t *Data, uint16_t Le
  */
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
+    // ReceiveToIdle DMA 在半传输(HT)时也会进入此回调。HT 只表示DMA
+    // 写到缓冲区中点，帧还没有结束；此时切换双缓冲会丢掉后半帧，
+    // TOF 的7字节Modbus响应尤其容易被拆成“半帧+半帧”。
+    if (huart == nullptr ||
+        HAL_UARTEx_GetRxEventType(huart) == HAL_UART_RXEVENT_HT)
+    {
+        return;
+    }
+
     // 判断程序初始化完成
     if (!init_finished)
     {

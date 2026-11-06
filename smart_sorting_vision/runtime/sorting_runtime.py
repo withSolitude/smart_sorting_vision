@@ -302,6 +302,9 @@ class SortingRuntime:
                 continue
 
             for frame in frames:
+                # 在接收线程先记录有效 MCU 帧，避免主线程被视觉推理阻塞时，
+                # 心跳 ACK 滞留在队列里导致 watchdog 误判超过3秒掉线。
+                self._last_peer_seen_at = time.monotonic()
                 if frame.mode in (Mode.MCU_ERROR, Mode.MCU_STOP_WORK):
                     self._urgent_stop_event.set()
                 self._rx_queue.put(frame)

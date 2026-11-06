@@ -67,6 +67,11 @@ struct Struct_TOF050F_Data
     bool Distance_Valid = false;
 
 
+    // 最近一次有效测距帧到达时间。
+    // Distance_Valid 只表示曾经收到过有效帧，抓取前必须同时检查新鲜度。
+    uint32_t Distance_Timestamp_ms = 0;
+
+
     // ========================================================
     // 传感器是否在线
     // ========================================================
@@ -79,6 +84,10 @@ struct Struct_TOF050F_Data
     // ========================================================
 
     uint32_t Rx_Count = 0;
+
+
+    // 有效测距帧数量（不包含写寄存器ACK）。
+    uint32_t Distance_Rx_Count = 0;
 
 
     // ========================================================
@@ -265,6 +274,12 @@ public:
     }
 
 
+    inline uint32_t Get_Distance_Rx_Count() const
+    {
+        return Data.Distance_Rx_Count;
+    }
+
+
     // ========================================================
     // 获取数据有效状态
     // ========================================================
@@ -272,6 +287,14 @@ public:
     inline bool Get_Distance_Valid() const
     {
         return Data.Distance_Valid;
+    }
+
+
+    // 返回最近有效测距帧距当前的毫秒数。
+    inline uint32_t Get_Distance_Age_ms() const
+    {
+        return static_cast<uint32_t>(
+            HAL_GetTick() - Data.Distance_Timestamp_ms);
     }
 
 
@@ -318,6 +341,14 @@ public:
 
 
 private:
+
+    // Modbus响应可能因为UART空闲中断被拆成多次回调（例如3+4字节）。
+    // 在这里保留未完成帧，避免把半帧直接计为格式错误并丢弃。
+    static constexpr uint16_t Rx_Accumulation_Capacity = 64U;
+    uint8_t Rx_Accumulation[Rx_Accumulation_Capacity] = {0};
+    uint16_t Rx_Accumulation_Length = 0U;
+
+    void Process_Rx_Accumulation();
 
     // ========================================================
     // UART

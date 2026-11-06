@@ -355,6 +355,7 @@ Service_Sorting_Stop_Ready_Ack()
 bool Class_Robot::
 Start_Sorting_Work()
 {
+    XY_Recovery_Count = 0U;
     // ========================================================
     // 如果上一轮STOP以后夹爪仍然在安全回位，
     // 不允许马上重新启动。
@@ -628,7 +629,6 @@ void Class_Robot::Handle_Stop_Request()
 
     Pick_Start_Pending = false;
     Pick_Start_Wait_Count = 0;
-    Pick_Start_Tof_Wait_Count = 0U;
     Pending_Pick_Request = Struct_Sorting_Pick_Request{};
 
     if (Pick_Action_Active)
@@ -918,7 +918,10 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
 
         if (Calib_Action_Active && Calib_Move_Count >= Calib_Timeout_10ms)
         {
-            Holding_Jaw.Abort_XY_Fault();
+            [[maybe_unused]] const auto previous_status =
+        Holding_Jaw.Get_Grap_Move_Status();
+
+    Holding_Jaw.Abort_XY_Fault();
             Service_XY_Fault();
         }
     }
@@ -1275,14 +1278,17 @@ TIM_10ms_Calculate_PeriodElapsedCallback()
             HAL_ERROR
         )
         {
+            // ------------------------------------------------
+            // 现场偶发 TOF 掉线约 1 秒（5 次 Modbus 响应超时），
+            // Start_Grap 会报 TOF_Invalid。此时请求本身是有效的，
+            // 保持 Pick_Start_Pending 最多等 1.2 秒，等传感器恢复后
+            // 直接启动；超时才按原逻辑上报故障。
+            // ------------------------------------------------
+
             const uint8_t error_code =
                 Grap_Error_To_Sorting_Error_Code(
                     Holding_Jaw.Get_Grap_Error());
 
-            // 现场偶发 TOF 掉线约 1 秒（连续 5 次 Modbus 响应超时），
-            // Start_Grap 会报 TOF_Invalid。此时请求本身有效，保持
-            // Pick_Start_Pending 最多等 1.2 秒，恢复后直接启动；
-            // 超时才按原逻辑上报故障。
             if (error_code ==
                     Sorting_Vision_Error_Grap_TOF_Invalid &&
                 Pick_Start_Tof_Wait_Count <
@@ -1584,12 +1590,14 @@ bool Class_Robot::Service_XY_Fault()
         return false;
     }
 
+    [[maybe_unused]] const auto previous_status =
+        Holding_Jaw.Get_Grap_Move_Status();
+
     Holding_Jaw.Abort_XY_Fault();
     Sorting_Start_Request_Pending = false;
     Pick_Start_Pending = false;
     Pick_Action_Active = false;
     Pick_Start_Wait_Count = 0U;
-    Pick_Start_Tof_Wait_Count = 0U;
     Pending_Pick_Request = Struct_Sorting_Pick_Request{};
     Stop_Waiting_Safe_Disable = false;
     Retry_Pick_Return_Active = false;

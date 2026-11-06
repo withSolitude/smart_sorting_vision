@@ -152,6 +152,45 @@ void Class_XY_Motion::Set_Phase(State phase)
 {
     Phase = phase;
     Phase_Tick = HAL_GetTick();
+    if (Preserve_Command_Retry_Count)
+    {
+        Preserve_Command_Retry_Count = false;
+    }
+    else
+    {
+        Command_Retry_Count = 0U;
+    }
+}
+
+void Class_XY_Motion::Retry_Command_Phase()
+{
+    // 等待 ACK 的阶段退回对应的发命令阶段，下一拍 1ms 回调会重新发；
+    // 已经是发命令阶段时只刷新 Phase_Tick，让下一次循环重发。
+    switch (Phase)
+    {
+        case State::Wait_Enable_A: Phase = State::Enable_A; break;
+        case State::Wait_Enable_B: Phase = State::Enable_B; break;
+        case State::Wait_Arm_A: Phase = State::Arm_A; break;
+        case State::Wait_Arm_B: Phase = State::Arm_B; break;
+        case State::Wait_Sync: Phase = State::Sync; break;
+        case State::Stopping: Phase = State::Stop_A; break;
+        default: break;
+    }
+    Preserve_Command_Retry_Count = true;
+    Phase_Tick = HAL_GetTick();
+}
+
+void Class_XY_Motion::Clear_Fault()
+{
+    // 只清故障状态；Set_Fault() 已经把原点标记为失效时，这里不能伪造原点。
+    Fault = Config_Valid() ? XY_Fault::None : XY_Fault::Configuration;
+    Phase = State::Stop_A;
+    Phase_Tick = HAL_GetTick();
+    Command_Retry_Count = 0U;
+    Preserve_Command_Retry_Count = false;
+    Stable = false;
+    Motion_Completed = false;
+    Move_Tick = HAL_GetTick();
 }
 
 void Class_XY_Motion::Capture_Feedback_Baselines()
@@ -366,8 +405,18 @@ void Class_XY_Motion::TIM_1ms_PeriodElapsedCallback()
     if (normal_command_phase &&
         (uint32_t)(now-Phase_Tick) >= XY_Config::Command_Timeout_ms)
     {
-        Set_Fault(XY_Fault::Command_Timeout);
-        Begin_Stop(); // CAN恢复后继续尝试两轴停止，绝不因超时声称已经停机
+        // 偶发丢 ACK（CAN 干扰/瞬时丢帧）先重发当前阶段命令；
+        // 连续超时 Command_Retry_Limit 次才判故障，避免一次丢帧停整场。
+        if (Command_Retry_Count < XY_Config::Command_Retry_Limit)
+        {
+            ++Command_Retry_Count;
+            Retry_Command_Phase();
+        }
+        else
+        {
+            Set_Fault(XY_Fault::Command_Timeout);
+            Begin_Stop(); // CAN恢复后继续尝试两轴停止，绝不因超时声称已经停机
+        }
     }
 
     if (Homing_Active && (uint32_t)(now - Homing_Tick) >= XY_Config::Homing_Timeout_ms)

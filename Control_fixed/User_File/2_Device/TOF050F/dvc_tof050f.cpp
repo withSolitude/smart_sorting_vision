@@ -105,11 +105,19 @@ void Class_TOF050F::Init(
         false;
 
 
+    Data.Distance_Timestamp_ms =
+        0;
+
+
     Data.Online =
         false;
 
 
     Data.Rx_Count =
+        0;
+
+
+    Data.Distance_Rx_Count =
         0;
 
 
@@ -147,6 +155,9 @@ void Class_TOF050F::Init(
 
     Pending_New_Address =
         Device_Address;
+
+    Rx_Accumulation_Length =
+        0U;
 }
 
 
@@ -728,11 +739,16 @@ bool Class_TOF050F::Parse_Read_Response(
             true;
 
 
+        Data.Distance_Timestamp_ms =
+            HAL_GetTick();
+
+
         Data.Online =
             true;
 
 
         Data.Rx_Count++;
+        Data.Distance_Rx_Count++;
 
 
         Waiting_Response =
@@ -867,6 +883,124 @@ bool Class_TOF050F::Parse_Write_Response(
 // UART RX Callback
 // ============================================================
 
+void Class_TOF050F::Process_Rx_Accumulation()
+{
+    // 每次只在缓冲区头部处理一个完整Modbus帧；未完成的尾部保留到
+    // 下一次UART空闲回调，这样3+4字节之类的拆帧也能正常解析。
+    const auto discard = [this](uint16_t count)
+    {
+        if (count >= Rx_Accumulation_Length)
+        {
+            Rx_Accumulation_Length = 0U;
+            return;
+        }
+
+        for (uint16_t i = count; i < Rx_Accumulation_Length; ++i)
+        {
+            Rx_Accumulation[i - count] = Rx_Accumulation[i];
+        }
+        Rx_Accumulation_Length =
+            static_cast<uint16_t>(Rx_Accumulation_Length - count);
+    };
+
+    for (;;)
+    {
+        // 至少需要地址、功能码和CRC前的最小帧头。若只有一个尾部地址，
+        // 保留它等待下一次回调。
+        if (Rx_Accumulation_Length < 2U)
+        {
+            return;
+        }
+
+        uint16_t address_offset = 0U;
+        while (address_offset < Rx_Accumulation_Length &&
+               Rx_Accumulation[address_offset] != Device_Address)
+        {
+            ++address_offset;
+        }
+
+        if (address_offset > 0U)
+        {
+            discard(address_offset);
+            if (Rx_Accumulation_Length < 2U)
+            {
+                return;
+            }
+        }
+
+        const uint8_t function = Rx_Accumulation[1];
+        uint16_t frame_length = 0U;
+
+        if (function == 0x03U)
+        {
+            if (Rx_Accumulation_Length < 3U)
+            {
+                return;
+            }
+            if (Rx_Accumulation[2] != 0x02U)
+            {
+                ++Data.Frame_Error_Count;
+                discard(1U);
+                continue;
+            }
+            frame_length = 7U;
+        }
+        else if (function == 0x06U)
+        {
+            frame_length = 8U;
+        }
+        else if ((function & 0x80U) != 0U)
+        {
+            frame_length = 5U;
+        }
+        else
+        {
+            ++Data.Frame_Error_Count;
+            discard(1U);
+            continue;
+        }
+
+        if (Rx_Accumulation_Length < frame_length)
+        {
+            return;
+        }
+
+        if (!Check_CRC(Rx_Accumulation, frame_length))
+        {
+            ++Data.CRC_Error_Count;
+            discard(1U);
+            continue;
+        }
+
+        if (function == 0x03U)
+        {
+            Parse_Read_Response(Rx_Accumulation, frame_length);
+        }
+        else if (function == 0x06U)
+        {
+            Parse_Write_Response(Rx_Accumulation, frame_length);
+        }
+        else
+        {
+            // Modbus异常响应按一次丢包处理，但不把Status永久锁死；
+            // 连续5次异常才标记离线，后续正常帧可以自动恢复。
+            ++Data.Frame_Error_Count;
+            Waiting_Response = false;
+            if (Offline_Count < 255U)
+            {
+                ++Offline_Count;
+            }
+            if (Offline_Count >= 5U)
+            {
+                Data.Online = false;
+                Data.Distance_Valid = false;
+            }
+        }
+
+        discard(frame_length);
+    }
+}
+
 void Class_TOF050F::UART_RxCpltCallback(
     uint8_t *Buffer,
     uint16_t Length)
@@ -878,94 +1012,24 @@ void Class_TOF050F::UART_RxCpltCallback(
     }
 
 
-    // ========================================================
-    // 优先解析03测距返回
-    // ========================================================
-
-    if (Parse_Read_Response(
-            Buffer,
-            Length))
+    for (uint16_t i = 0U; i < Length; ++i)
     {
-        return;
-    }
-
-
-    // ========================================================
-    // 再解析06写寄存器返回
-    // ========================================================
-
-    if (Parse_Write_Response(
-            Buffer,
-            Length))
-    {
-        return;
-    }
-
-
-    // ========================================================
-    // Modbus异常响应：
-    //
-    // Function = 原Function | 0x80
-    //
-    // 最短5字节
-    // ========================================================
-
-    for (uint16_t i = 0;
-         i + 5 <= Length;
-         i++)
-    {
-        if (Buffer[i] !=
-            Device_Address)
+        if (Rx_Accumulation_Length >= Rx_Accumulation_Capacity)
         {
-            continue;
-        }
-
-
-        if ((Buffer[i + 1] & 0x80) == 0)
-        {
-            continue;
-        }
-
-
-        if (Check_CRC(
-                &Buffer[i],
-                5))
-        {
-            Data.Frame_Error_Count++;
-
-
-            Waiting_Response =
-                false;
-
-
-            // 异常响应按“一次丢包”处理，不能把 Status 永久锁死：
-            // 旧实现置 ERROR 后 Request_Distance() 一直失败，TOF 再也
-            // 不轮询。这里继续轮询，连续 5 次失败才判离线。
-            if (Offline_Count < 255U)
+            // 正常帧会在7/8字节处被消费；只有异常噪声才会走到这里，
+            // 丢掉最早的一半，避免永远占满而阻塞后续有效帧。
+            const uint16_t keep = Rx_Accumulation_Capacity / 2U;
+            for (uint16_t j = keep; j < Rx_Accumulation_Length; ++j)
             {
-                ++Offline_Count;
+                Rx_Accumulation[j - keep] = Rx_Accumulation[j];
             }
-
-            if (Offline_Count >= 5U)
-            {
-                Data.Online =
-                    false;
-
-                Data.Distance_Valid =
-                    false;
-            }
-
-
-            return;
+            Rx_Accumulation_Length =
+                static_cast<uint16_t>(Rx_Accumulation_Length - keep);
         }
+
+        Rx_Accumulation[Rx_Accumulation_Length++] = Buffer[i];
+        Process_Rx_Accumulation();
     }
-
-
-    // ========================================================
-    // 没有找到有效帧
-    // ========================================================
-
-    Data.Frame_Error_Count++;
 }
 
 
@@ -988,7 +1052,7 @@ TIM_100ms_PeriodElapsedCallback()
     //
     // 100ms调用一次
     //
-    // 2次 = 200ms
+    // 2次 = 200ms；超时后立即重发，不再额外空等一个100ms周期。
     // ========================================================
 
     if (Waiting_Response)
@@ -1023,6 +1087,13 @@ TIM_100ms_PeriodElapsedCallback()
 
                 Data.Distance_Valid =
                     false;
+            }
+
+            // 丢帧时立刻发起下一次读取，避免“超时 -> 空等100ms -> 再请求”
+            // 把正常重试推迟到夹爪TOF截止时间之后。
+            if (Auto_Request_Enable)
+            {
+                Request_Distance();
             }
         }
 
