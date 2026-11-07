@@ -41,8 +41,6 @@ class SmartSortingApp:
         self.runtime_thread = None
         self._log_lock = threading.Lock()
         self._session_log_path = None
-        # 已经在 UI 上以“识别完成、储物中”显示过、但还没等到 SORT_DONE 的周期。
-        self._pending_cycles: set[int] = set()
 
     def check_files(self):
         required = {
@@ -503,7 +501,6 @@ class SmartSortingApp:
             side_timeout_fallback_sort=bool(runtime_cfg.get("side_timeout_fallback_sort", True)),
             on_finished=self._on_finished,
             on_session_start=self._on_session_start,
-            on_recognized=self._on_recognized,
             loop_sleep_idle_s=scheduler_cfg["idle_sleep_s"],
             loop_sleep_wait_s=scheduler_cfg["wait_sleep_s"],
             loop_sleep_vision_s=scheduler_cfg["vision_sleep_s"],
@@ -582,38 +579,6 @@ class SmartSortingApp:
         color_cn = cls._COLOR_NAMES_CN.get(raw_color.lower(), raw_color)
         return f"{str(shape)}_{color_cn}"
 
-    def _on_recognized(self, cycle_id, obj, image_bgr, box_id):
-        """侧面识别完成、SORT_RESULT 已下发：先把这一件显示到 UI。
-
-        库存提交仍以 SORT_DONE 为准；这里只是让操作员在储物动作进行时
-        就能看到本件的颜色/形状/图片。
-        """
-        if self.display is None:
-            return
-
-        # 上一件如果没等到 SORT_DONE（故障/重连/重抓），先把旧行标成未完成。
-        for stale in list(self._pending_cycles):
-            if stale != int(cycle_id):
-                self._pending_cycles.discard(stale)
-                try:
-                    self.display.fail_pending_item(stale)
-                except Exception as exc:
-                    print(f"[WARN] display fail_pending_item: {exc}")
-
-        self._pending_cycles.add(int(cycle_id))
-        try:
-            self.display.add_pending_item(
-                cycle_id=int(cycle_id),
-                product_name=self._product_name(
-                    getattr(obj, "color", "unknown"),
-                    getattr(obj, "shape", "unknown"),
-                ),
-                image_bgr=image_bgr,
-                box_id=int(box_id or 0),
-            )
-        except Exception as exc:
-            print(f"[WARN] display add_pending_item: {exc}")
-
     def _on_finished(self, record):
         safe = {k: v for k, v in record.items() if k != "image_bgr"}
         safe["time"] = datetime.now().isoformat(timespec="seconds")
@@ -631,32 +596,14 @@ class SmartSortingApp:
         if self.display is None:
             return
 
-        cycle_id = int(record.get("cycle_id", 0) or 0)
-        sequence = int(record["sequence"])
-        success_count = int(record["success_count"])
-
-        # 识别时已经上屏的那一行：只补序号和计数，不再新增行。
-        if cycle_id in self._pending_cycles:
-            self._pending_cycles.discard(cycle_id)
-            try:
-                self.display.complete_item(
-                    cycle_id=cycle_id,
-                    sequence=sequence,
-                    success_count=success_count,
-                )
-            except Exception as exc:
-                print(f"[WARN] display complete_item: {exc}")
-            return
-
-        # 没有对应待完成行（例如 UI 关闭/重开）：直接追加一条完成的。
         self.display.add_finished_item(
-            sequence=sequence,
+            box_id=int(record["box_id"]),
             product_name=self._product_name(
                 record.get("color", "unknown"),
                 record.get("shape", "unknown"),
             ),
             image_bgr=record.get("image_bgr"),
-            success_count=success_count,
+            box_count=int(record["box_count"]),
         )
 
     def run(self):
@@ -701,7 +648,7 @@ class SmartSortingApp:
         qt_app = QApplication.instance() or QApplication(sys.argv)
         self.display = SortingDisplayWindow(
             fullscreen=bool(ui_cfg.get("fullscreen", True)),
-            max_visible_rows=int(ui_cfg.get("max_visible_rows", 6)),
+            box_count=len(self.storage.boxes),
         )
 
         self.runtime_thread = threading.Thread(
