@@ -111,6 +111,7 @@ class TopPickCandidate:
     shape: str | None = None
     color_confidence: float = 0.0
     shape_confidence: float = 0.0
+    forced_fallback: bool = False
 
 
 @dataclass
@@ -148,6 +149,7 @@ class TopPickPipelineResult:
     shape: str | None = None
     color_confidence: float = 0.0
     shape_confidence: float = 0.0
+    forced_fallback: bool = False
 
 
 class TopPickPipeline:
@@ -478,6 +480,8 @@ class TopPickPipeline:
         self.class_priority_enabled = False
         self.completed_class_keys: set[str] | None = None
         self.unseen_class_bonus = 1000.0
+        self.force_grasp_fallback_enabled = False
+        self.force_grasp_fallback_penalty = 100000.0
 
         if self.min_orientation_aspect_ratio < 1.0:
             raise ValueError("min_orientation_aspect_ratio must be >= 1.0")
@@ -702,6 +706,7 @@ class TopPickPipeline:
         objects: list[dict],
         *,
         fast_only: bool = False,
+        allow_unsafe_fallback: bool = False,
     ) -> list[TopPickCandidate]:
         self.last_gripper_rejections = []
         self.last_gripper_search_alternatives = []
@@ -1242,37 +1247,44 @@ class TopPickPipeline:
                 best_engagement_gap_mm = max(
                     best_engagement_gap_mm, float(engagement.min_side_gap_mm)
                 )
+                forced_engagement_violation = False
                 if not engagement.fits_between_fingers:
-                    reject(
-                        "target_not_between_fingers",
-                        px=candidate_px,
-                        yaw=yaw_deg,
-                        opening=preopen_mm,
-                        meta={
-                            "min_side_gap_mm": float(engagement.min_side_gap_mm),
-                            "width_mm": float(engagement.width_mm),
-                            "left_gap_mm": float(engagement.left_gap_mm),
-                            "right_gap_mm": float(engagement.right_gap_mm),
-                            "yaw_offset_deg": float(yaw_offset_deg),
-                            "longitudinal_offset_mm": float(longitudinal_offset_mm),
-                            "closing_offset_mm": float(closing_offset_mm),
-                        },
-                    )
-                    continue
+                    if allow_unsafe_fallback and engagement.min_side_gap_mm > -8.0:
+                        forced_engagement_violation = True
+                    else:
+                        reject(
+                            "target_not_between_fingers",
+                            px=candidate_px,
+                            yaw=yaw_deg,
+                            opening=preopen_mm,
+                            meta={
+                                "min_side_gap_mm": float(engagement.min_side_gap_mm),
+                                "width_mm": float(engagement.width_mm),
+                                "left_gap_mm": float(engagement.left_gap_mm),
+                                "right_gap_mm": float(engagement.right_gap_mm),
+                                "yaw_offset_deg": float(yaw_offset_deg),
+                                "longitudinal_offset_mm": float(longitudinal_offset_mm),
+                                "closing_offset_mm": float(closing_offset_mm),
+                            },
+                        )
+                        continue
                 if not engagement.has_longitudinal_overlap:
-                    reject(
-                        "target_contact_overlap_too_small",
-                        px=candidate_px,
-                        yaw=yaw_deg,
-                        opening=preopen_mm,
-                        meta={
-                            "target_overlap_mm": float(engagement.longitudinal_overlap_mm),
-                            "yaw_offset_deg": float(yaw_offset_deg),
-                            "longitudinal_offset_mm": float(longitudinal_offset_mm),
-                            "closing_offset_mm": float(closing_offset_mm),
-                        },
-                    )
-                    continue
+                    if allow_unsafe_fallback and engagement.longitudinal_overlap_mm > -3.0:
+                        forced_engagement_violation = True
+                    else:
+                        reject(
+                            "target_contact_overlap_too_small",
+                            px=candidate_px,
+                            yaw=yaw_deg,
+                            opening=preopen_mm,
+                            meta={
+                                "target_overlap_mm": float(engagement.longitudinal_overlap_mm),
+                                "yaw_offset_deg": float(yaw_offset_deg),
+                                "longitudinal_offset_mm": float(longitudinal_offset_mm),
+                                "closing_offset_mm": float(closing_offset_mm),
+                            },
+                        )
+                        continue
 
                 if self.grasp_axis_selection_enabled:
                     # 始终按实际双指几何检查所有邻物，覆盖下降时的预开口及
@@ -1318,36 +1330,46 @@ class TopPickPipeline:
                         context=collision_context,
                     )
                     check_mode = "full_collision"
+                forced_collision_violation = False
                 if not footprint_check.safe:
-                    reject(
-                        str(footprint_check.reason),
-                        px=candidate_px,
-                        yaw=yaw_deg,
-                        opening=preopen_mm,
-                        polygons=footprint_check.footprint_polygons_px,
-                        meta={
-                            "check_mode": check_mode,
-                            "object_collision_pixels": footprint_check.object_collision_pixels,
-                            "yaw_offset_deg": float(yaw_offset_deg),
-                            "longitudinal_offset_mm": float(longitudinal_offset_mm),
-                            "closing_offset_mm": float(closing_offset_mm),
-                        },
-                    )
-                    continue
+                    if (
+                        allow_unsafe_fallback
+                        and str(footprint_check.reason) == "other_object_collision"
+                    ):
+                        forced_collision_violation = True
+                    else:
+                        reject(
+                            str(footprint_check.reason),
+                            px=candidate_px,
+                            yaw=yaw_deg,
+                            opening=preopen_mm,
+                            polygons=footprint_check.footprint_polygons_px,
+                            meta={
+                                "check_mode": check_mode,
+                                "object_collision_pixels": footprint_check.object_collision_pixels,
+                                "yaw_offset_deg": float(yaw_offset_deg),
+                                "longitudinal_offset_mm": float(longitudinal_offset_mm),
+                                "closing_offset_mm": float(closing_offset_mm),
+                            },
+                        )
+                        continue
 
                 if (
                     self.gripper_footprint.enabled
                     and float(footprint_check.clearance_mm) < self.grasp_search_hard_min_clearance_mm
                 ):
-                    reject(
-                        "clearance_below_hard_min",
-                        px=candidate_px,
-                        yaw=yaw_deg,
-                        opening=preopen_mm,
-                        polygons=footprint_check.footprint_polygons_px,
-                        meta={"clearance_mm": float(footprint_check.clearance_mm)},
-                    )
-                    continue
+                    if allow_unsafe_fallback and forced_collision_violation:
+                        forced_collision_violation = True
+                    else:
+                        reject(
+                            "clearance_below_hard_min",
+                            px=candidate_px,
+                            yaw=yaw_deg,
+                            opening=preopen_mm,
+                            polygons=footprint_check.footprint_polygons_px,
+                            meta={"clearance_mm": float(footprint_check.clearance_mm)},
+                        )
+                        continue
 
                 try:
                     x_mm, y_mm = self.transform.pixel_to_robot(
@@ -1461,6 +1483,14 @@ class TopPickPipeline:
                     ):
                         score += self.unseen_class_bonus
 
+                forced_fallback = bool(
+                    forced_collision_violation or forced_engagement_violation
+                )
+                if forced_fallback:
+                    score -= self.force_grasp_fallback_penalty
+                    score -= 10.0 * float(footprint_check.object_collision_pixels)
+                    score -= 50.0 * max(0.0, -float(engagement.min_side_gap_mm))
+
                 # 用当前物理宽度修正用于显示/兼容的像素宽度估计。
                 if trial_family is not None:
                     ref_width_mm = trial_family.grasp_width_mm
@@ -1553,6 +1583,7 @@ class TopPickPipeline:
                     shape=str(obj.get("shape", "unknown")),
                     color_confidence=float(obj.get("color_confidence", 0.0)),
                     shape_confidence=float(obj.get("shape_confidence", 0.0)),
+                    forced_fallback=forced_fallback,
                 )
 
                 trial_record = {
@@ -1800,6 +1831,15 @@ class TopPickPipeline:
         self.class_priority_enabled = bool(enabled)
         self.unseen_class_bonus = float(unseen_class_bonus)
 
+    def set_grasp_fallback(
+        self,
+        *,
+        enabled: bool,
+        penalty: float = 100000.0,
+    ) -> None:
+        self.force_grasp_fallback_enabled = bool(enabled)
+        self.force_grasp_fallback_penalty = max(0.0, float(penalty))
+
     def set_completed_class_keys(self, keys: set[str] | None) -> None:
         normalized = None if keys is None else {str(key) for key in keys}
         if normalized == self.completed_class_keys:
@@ -1938,6 +1978,18 @@ class TopPickPipeline:
                 fast_only=False,
             )
 
+        if not candidates and self.force_grasp_fallback_enabled:
+            print(
+                "[FORCED GRASP] no fully safe candidate; "
+                "searching the lowest-risk collision fallback"
+            )
+            candidates = self._build_candidates(
+                frame,
+                objects,
+                fast_only=False,
+                allow_unsafe_fallback=True,
+            )
+
         # 优先夹没夹过的物体；全部夹过之后才允许重试失败的。
         fresh_candidates = [
             candidate
@@ -1995,6 +2047,7 @@ class TopPickPipeline:
         selected_shape = None
         selected_color_confidence = 0.0
         selected_shape_confidence = 0.0
+        selected_forced_fallback = False
         if output_ready and stable.grasp_pixel is not None and candidates:
             target = (float(stable.grasp_pixel[0]), float(stable.grasp_pixel[1]))
 
@@ -2043,6 +2096,14 @@ class TopPickPipeline:
                 selected_shape_confidence = float(
                     getattr(chosen, "shape_confidence", 0.0)
                 )
+                selected_forced_fallback = bool(
+                    getattr(chosen, "forced_fallback", False)
+                )
+                if selected_forced_fallback:
+                    print(
+                        "[FORCED GRASP] selected lowest-risk fallback "
+                        f"object={_object_index(chosen)}"
+                    )
 
         return TopPickPipelineResult(
             ready=
@@ -2089,4 +2150,5 @@ class TopPickPipeline:
             shape=selected_shape,
             color_confidence=selected_color_confidence,
             shape_confidence=selected_shape_confidence,
+            forced_fallback=selected_forced_fallback,
         )

@@ -530,6 +530,15 @@ class SmartSortingApp:
             enabled=bool(class_priority_cfg.get("enabled", True)),
             unseen_class_bonus=float(class_priority_cfg.get("unseen_class_bonus", 1000.0)),
         )
+        fallback_cfg = dict(
+            top_gripper_collision.get("force_grasp_fallback")
+            or top_vision_cfg.get("force_grasp_fallback")
+            or {}
+        )
+        self.top_pipeline.set_grasp_fallback(
+            enabled=bool(fallback_cfg.get("enabled", True)),
+            penalty=float(fallback_cfg.get("penalty", 100000.0)),
+        )
 
         # 必须在正式 WAIT START 前完成。这样 TensorRT execution context、
         # CUDA kernel、PyTorch/NumPy 后处理都不会拖到第一件货物。

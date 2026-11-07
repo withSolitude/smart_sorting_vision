@@ -1392,6 +1392,12 @@ class SortingRuntime:
         if not result.ready:
             return
 
+        if bool(getattr(result, "forced_fallback", False)):
+            print(
+                "[Runtime][FORCED GRASP] using lowest-risk candidate after "
+                "all fully safe candidates were rejected"
+            )
+
         top_color = str(getattr(result, "color", "") or "").strip()
         top_shape = str(getattr(result, "shape", "") or "").strip()
         if (
