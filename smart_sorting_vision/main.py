@@ -594,17 +594,12 @@ class SmartSortingApp:
         if self.display is None:
             return
 
-        box_id = int(record["box_id"])
-        if box_id == self.storage.trash_box_id:
-            product_name = "垃圾桶"
-        else:
-            product_name = self._product_name(
+        self.display.add_finished_item(
+            box_id=int(record["box_id"]),
+            product_name=self._product_name(
                 record.get("color", "unknown"),
                 record.get("shape", "unknown"),
-            )
-        self.display.add_finished_item(
-            box_id=box_id,
-            product_name=product_name,
+            ),
             image_bgr=record.get("image_bgr"),
             box_count=int(record["box_count"]),
         )
