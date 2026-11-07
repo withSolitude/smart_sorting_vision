@@ -528,7 +528,6 @@ runtime:
 ui:
   enabled: true  # 是否显示比赛运行界面。
   fullscreen: true  # 是否全屏显示比赛界面。
-  max_visible_rows: 6  # 界面最多显示的历史记录行数。
 
 debug:
   # 每帧打印 [TIMING] infer/search/total，用来定位顶部定位耗时；稳定后可改回 false
