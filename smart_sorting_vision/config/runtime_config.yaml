@@ -86,6 +86,15 @@ model:
     confidence_threshold: 0.25  # 判空阈值：低于此值视为没有实例
     max_instances: 1  # 侧视只有一个物体，超过 1 没有意义
 
+  # 可选的顶部视角 YOLO-cls 形状模型。留空时复用 model.side.path。
+  # 如果顶部和侧面训练域不同，把这里替换成顶部专用 engine/pt。
+  top_shape:
+    path: null
+    imgsz: 224
+    device: 0
+    confidence_threshold: 0.5
+    topk: 3
+
 calibration:
   top_intrinsics: data/calibration/top_camera/top_camera_intrinsics.npz  # 顶部相机内参文件路径。
   pixel_to_robot: data/calibration/top_camera/robot_mapping/pixel_to_robot.json  # 像素到机械 XY 的标定文件路径。
@@ -130,6 +139,15 @@ vision:
     border_margin_px: 12  # 图像边缘安全余量（像素）。
     min_safe_area_px: 50  # 安全区域最小面积（像素）。
     min_clearance_px: 3.0  # 抓取点最小安全间隙（像素）。
+
+    # 顶部分类链：YOLO-seg 实例 mask -> HSV/Lab 颜色 -> YOLO-cls 形状。
+    # 形状分类器默认复用当前 model.side 的 YOLO-cls 权重。
+    # 需要顶部专用权重时填写 model.top_shape.path。
+    top_attribute_recognition:
+      enabled: true
+      mask_padding_ratio: 0.12  # mask 外接框四周留白比例。
+      shape_background_bgr: [0, 0, 0]  # mask 外送入 YOLO-cls 的背景颜色。
+      min_mask_pixels: 150
 
     # 仅限制靠近电机/相机一侧的抓取姿态；角度为下位机Yaw舵机命令角，不是PICK_TARGET轴向角。
     edge_yaw_limit:
@@ -509,6 +527,7 @@ runtime:
 
   # 正式比赛不允许把 unknown 直接分配到储物盒。
   reject_unknown: true
+  use_top_attributes_for_storage: true  # 分箱使用顶部 mask 的颜色/形状，二维码仍可由侧面识别补充。
   # 侧面识别超时时，物体已夹在爪里：优先丢进一个空储物盒（unknown 类），
   # 只有连空盒都没有时才回退到 RETRY_PICK。
   side_timeout_fallback_sort: true  # 是否拒绝颜色或形状 unknown 的结果。

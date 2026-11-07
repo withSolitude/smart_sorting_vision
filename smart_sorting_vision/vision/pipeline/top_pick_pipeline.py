@@ -36,6 +36,7 @@ from vision.grasp.grasp_pose_search import (
 )
 from vision.calibration.yaw_tcp_compensation import YawTcpCompensator
 from vision.calibration.yaw_servo import YawServoCalibration
+from vision.pipeline.top_attribute_recognizer import TopAttributeRecognizer
 
 
 @dataclass
@@ -106,6 +107,10 @@ class TopPickCandidate:
     radial_base_pixel: tuple[float, float] | None = None
     radial_shift_px: float = 0.0
     previously_failed: bool = False
+    color: str | None = None
+    shape: str | None = None
+    color_confidence: float = 0.0
+    shape_confidence: float = 0.0
 
 
 @dataclass
@@ -139,6 +144,10 @@ class TopPickPipelineResult:
 
     # 本帧所有候选都被“失败抓取”排除；runtime 据此结束本轮。
     blocked_all: bool = False
+    color: str | None = None
+    shape: str | None = None
+    color_confidence: float = 0.0
+    shape_confidence: float = 0.0
 
 
 class TopPickPipeline:
@@ -265,6 +274,7 @@ class TopPickPipeline:
         ) = None,
         yaw_tcp_compensator: YawTcpCompensator | None = None,
         yaw_servo_calibration: YawServoCalibration | None = None,
+        attribute_recognizer: TopAttributeRecognizer | None = None,
     ) -> None:
         self.model_path = Path(
             model_path
@@ -464,6 +474,7 @@ class TopPickPipeline:
 
         self.yaw_tcp_compensator = yaw_tcp_compensator
         self.yaw_servo_calibration = yaw_servo_calibration
+        self.attribute_recognizer = attribute_recognizer
 
         if self.min_orientation_aspect_ratio < 1.0:
             raise ValueError("min_orientation_aspect_ratio must be >= 1.0")
@@ -1521,6 +1532,10 @@ class TopPickPipeline:
                     search_safe_count=0,
                     score=float(score),
                     previously_failed=bool(obj.get("_blocked")),
+                    color=str(obj.get("color", "unknown")),
+                    shape=str(obj.get("shape", "unknown")),
+                    color_confidence=float(obj.get("color_confidence", 0.0)),
+                    shape_confidence=float(obj.get("shape_confidence", 0.0)),
                 )
 
                 trial_record = {
@@ -1752,6 +1767,13 @@ class TopPickPipeline:
         self._failed_references = []
         self._last_pick_reference = None
 
+    def set_attribute_recognizer(
+        self,
+        recognizer: TopAttributeRecognizer | None,
+    ) -> None:
+        """在共享侧面识别模型初始化后注入顶部属性识别器。"""
+        self.attribute_recognizer = recognizer
+
     def _match_failed_object(self, objects, image_shape) -> None:
         references = getattr(self, "_failed_references", [])
         if not references:
@@ -1924,6 +1946,10 @@ class TopPickPipeline:
                 output_ready = False
                 output_reason = "yaw_window_boundary_unstable"
 
+        selected_color = None
+        selected_shape = None
+        selected_color_confidence = 0.0
+        selected_shape_confidence = 0.0
         if output_ready and stable.grasp_pixel is not None and candidates:
             target = (float(stable.grasp_pixel[0]), float(stable.grasp_pixel[1]))
 
@@ -1951,6 +1977,23 @@ class TopPickPipeline:
                     self._last_pick_reference = self._reference_from_object(
                         objects[index], frame.shape
                     )
+                    if self.attribute_recognizer is not None:
+                        attr = self.attribute_recognizer.classify(
+                            frame,
+                            objects[index].get("polygon"),
+                        )
+                        chosen.color = attr.color
+                        chosen.shape = attr.shape
+                        chosen.color_confidence = attr.color_confidence
+                        chosen.shape_confidence = attr.shape_confidence
+                selected_color = getattr(chosen, "color", None)
+                selected_shape = getattr(chosen, "shape", None)
+                selected_color_confidence = float(
+                    getattr(chosen, "color_confidence", 0.0)
+                )
+                selected_shape_confidence = float(
+                    getattr(chosen, "shape_confidence", 0.0)
+                )
 
         return TopPickPipelineResult(
             ready=
@@ -1993,4 +2036,8 @@ class TopPickPipeline:
                 float(inference_ms),
             candidates=
                 candidates,
+            color=selected_color,
+            shape=selected_shape,
+            color_confidence=selected_color_confidence,
+            shape_confidence=selected_shape_confidence,
         )

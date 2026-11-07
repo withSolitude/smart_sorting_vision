@@ -18,6 +18,8 @@ from vision.cameras.side_camera import SideCamera
 from vision.cameras.top_camera import TopCamera
 from vision.pipeline.side_sort_pipeline import SideSortPipeline
 from vision.pipeline.top_pick_pipeline import TopPickPipeline
+from vision.pipeline.top_attribute_recognizer import TopAttributeRecognizer
+from vision.shape.shape_classifier import ShapeClassifier
 from vision.calibration.yaw_tcp_compensation import YawTcpCompensator
 from vision.calibration.yaw_servo import YawServoCalibration
 from vision.calibration.descent_drift_compensation import DescentDriftCompensator
@@ -129,6 +131,24 @@ class SmartSortingApp:
         side_stats = self.side_pipeline.warmup(
             runs=side_runs,
         )
+        top_attr_cfg = dict(
+            self.config["vision"]["top"].get("top_attribute_recognition") or {}
+        )
+        side_mode = str(
+            self.config["vision"]["side"].get("presence_mode", "classifier")
+        ).strip().lower()
+        if (
+            bool(top_attr_cfg.get("enabled", True))
+            and self.top_pipeline.attribute_recognizer is not None
+        ):
+            top_shape_classifier = self.top_pipeline.attribute_recognizer.shape_classifier
+            if (
+                top_shape_classifier is not self.side_pipeline.shape_classifier
+                or side_mode == "seg"
+            ):
+                # seg 侧视模式本身不调用 YOLO-cls，顶部 mask 分类第一次用到时
+                # 不能把 TensorRT/CUDA 首次初始化拖进比赛周期。
+                top_shape_classifier.warmup(runs=side_runs)
         self.side_pipeline.reset()
 
         print(
@@ -460,6 +480,50 @@ class SmartSortingApp:
             enable_shape=enable_shape,
         )
 
+        top_attribute_cfg = dict(
+            top_vision_cfg.get("top_attribute_recognition") or {}
+        )
+        if bool(top_attribute_cfg.get("enabled", True)):
+            if self.side_pipeline.color_classifier is None:
+                raise RuntimeError(
+                    "顶部属性识别需要启用 vision.side.recognition.color"
+                )
+            if self.side_pipeline.shape_classifier is None:
+                raise RuntimeError(
+                    "顶部属性识别需要启用 vision.side.recognition.shape"
+                )
+            top_shape_classifier = self.side_pipeline.shape_classifier
+            top_shape_cfg = dict(self.config.get("model", {}).get("top_shape") or {})
+            top_shape_path = top_shape_cfg.get("path")
+            if top_shape_path:
+                top_shape_classifier = ShapeClassifier(
+                    model_path=top_shape_path,
+                    imgsz=int(top_shape_cfg.get("imgsz", side_model_cfg["imgsz"])),
+                    device=top_shape_cfg.get("device", side_model_cfg["device"]),
+                    confidence_threshold=float(
+                        top_shape_cfg.get(
+                            "confidence_threshold", side_model_cfg["confidence_threshold"]
+                        )
+                    ),
+                    topk=int(top_shape_cfg.get("topk", side_model_cfg["topk"])),
+                    no_object_labels=no_object_labels,
+                )
+            self.top_pipeline.set_attribute_recognizer(
+                TopAttributeRecognizer(
+                    color_classifier=self.side_pipeline.color_classifier,
+                    shape_classifier=top_shape_classifier,
+                    padding_ratio=float(top_attribute_cfg.get("mask_padding_ratio", 0.12)),
+                    shape_background_bgr=tuple(
+                        top_attribute_cfg.get("shape_background_bgr", [0, 0, 0])
+                    ),
+                    min_mask_pixels=int(top_attribute_cfg.get("min_mask_pixels", 150)),
+                )
+            )
+            print(
+                "[CONFIG] Top attributes ON: YOLO-seg mask -> HSV/Lab color "
+                "and YOLO-cls shape"
+            )
+
         # 必须在正式 WAIT START 前完成。这样 TensorRT execution context、
         # CUDA kernel、PyTorch/NumPy 后处理都不会拖到第一件货物。
         self._warmup_inference_backends()
@@ -499,6 +563,9 @@ class SmartSortingApp:
             max_items=runtime_cfg["max_items"],
             reject_unknown=runtime_cfg["reject_unknown"],
             side_timeout_fallback_sort=bool(runtime_cfg.get("side_timeout_fallback_sort", True)),
+            use_top_attributes_for_storage=bool(
+                runtime_cfg.get("use_top_attributes_for_storage", True)
+            ),
             on_finished=self._on_finished,
             on_session_start=self._on_session_start,
             loop_sleep_idle_s=scheduler_cfg["idle_sleep_s"],

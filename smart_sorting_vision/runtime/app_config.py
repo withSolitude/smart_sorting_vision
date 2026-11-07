@@ -209,6 +209,11 @@ def load_runtime_config(project_root: str | Path, config_path: str | Path) -> di
         side_seg_cfg["path"] = _resolve_path(
             root, side_seg_cfg["path"], name="model.side_seg.path"
         )
+    top_shape_cfg = cfg.get("model", {}).get("top_shape")
+    if isinstance(top_shape_cfg, dict) and top_shape_cfg.get("path"):
+        top_shape_cfg["path"] = _resolve_path(
+            root, top_shape_cfg["path"], name="model.top_shape.path"
+        )
 
     workspace = cfg["mechanics"].get("workspace_mm", {})
     x_limits = _as_float_pair(workspace.get("x"), name="mechanics.workspace_mm.x")

@@ -22,6 +22,7 @@ import math
 import queue
 import threading
 import time
+from typing import Any
 from dataclasses import dataclass
 from enum import Enum
 
@@ -96,6 +97,7 @@ class SortingRuntime:
         max_items: int = 0,
         reject_unknown: bool = True,
         side_timeout_fallback_sort: bool = True,
+        use_top_attributes_for_storage: bool = False,
         on_finished=None,
         on_session_start=None,
         on_recognized=None,
@@ -123,6 +125,7 @@ class SortingRuntime:
         # 侧面识别超时时，物体停在识别台上（未分类）：优先丢进一个空盒，
         # 不要让它一直占着识别台，也不要直接跳过这一件。
         self.side_timeout_fallback_sort = bool(side_timeout_fallback_sort)
+        self.use_top_attributes_for_storage = bool(use_top_attributes_for_storage)
         self.on_finished = on_finished
         self.on_session_start = on_session_start
         # 侧面识别通过、SORT_RESULT 已下发时回调，用于 UI 立即显示本件，
@@ -196,6 +199,7 @@ class SortingRuntime:
         self.current_pick_command: SortingFrame | None = None
         self.current_preopen_command: SortingFrame | None = None
         self.current_object: ObjectInfo | None = None
+        self.current_top_attributes: dict[str, Any] | None = None
         self.current_box: int | None = None
         self.current_reservation_id: int | None = None
         self.current_sort_command: SortingFrame | None = None
@@ -679,6 +683,7 @@ class SortingRuntime:
         self.current_pick_command = None
         self.current_preopen_command = None
         self.current_object = None
+        self.current_top_attributes = None
         self.current_box = None
         self.current_reservation_id = None
         self.current_sort_command = None
@@ -820,9 +825,19 @@ class SortingRuntime:
         if not self.side_timeout_fallback_sort:
             return False
 
-        # 识别失败时颜色/形状都未知，用一个统一的占位 ObjectInfo，
-        # 这样后续所有"认不出来"的物体都会归到同一个盒子。
-        obj = ObjectInfo(color="unknown", shape="unknown", qr_present=False)
+        if self.use_top_attributes_for_storage and self.current_top_attributes is not None:
+            obj = ObjectInfo(
+                color=str(self.current_top_attributes["color"]),
+                shape=str(self.current_top_attributes["shape"]),
+                qr_present=False,
+            )
+            print(
+                "[RECOVERY] side timeout, keep top mask attributes "
+                f"color={obj.color} shape={obj.shape}"
+            )
+        else:
+            # 没有顶部有效属性时保留原来的 unknown 兜底策略。
+            obj = ObjectInfo(color="unknown", shape="unknown", qr_present=False)
         reservation = self.storage_manager.reserve(obj)
         if not reservation.success or reservation.reservation_id is None:
             print(
@@ -1362,6 +1377,28 @@ class SortingRuntime:
         if not result.ready:
             return
 
+        top_color = str(getattr(result, "color", "") or "").strip()
+        top_shape = str(getattr(result, "shape", "") or "").strip()
+        if (
+            self.use_top_attributes_for_storage
+            and top_color.lower() not in ("", "unknown", "none")
+            and top_shape.lower() not in ("", "unknown", "none")
+        ):
+            self.current_top_attributes = {
+                "color": top_color,
+                "shape": top_shape,
+                "color_confidence": float(getattr(result, "color_confidence", 0.0)),
+                "shape_confidence": float(getattr(result, "shape_confidence", 0.0)),
+            }
+            print(
+                "[TOP ATTR] "
+                f"color={top_color} shape={top_shape} "
+                f"cconf={self.current_top_attributes['color_confidence']:.3f} "
+                f"sconf={self.current_top_attributes['shape_confidence']:.3f}"
+            )
+        else:
+            self.current_top_attributes = None
+
         if result.x_mm is None or result.y_mm is None:
             self._fail("top pipeline returned READY without XY")
             return
@@ -1505,6 +1542,15 @@ class SortingRuntime:
         color = str(getattr(result, "color", "unknown"))
         shape = str(getattr(result, "shape", "unknown"))
         qr_present = bool(getattr(result, "qr_present", False))
+
+        top_attrs = self.current_top_attributes
+        if self.use_top_attributes_for_storage and top_attrs is not None:
+            color = str(top_attrs["color"])
+            shape = str(top_attrs["shape"])
+            print(
+                "[STORAGE ATTR] using top mask attributes "
+                f"color={color} shape={shape} qr={int(qr_present)}"
+            )
 
         if self.reject_unknown and (
             color.strip().lower() in ("", "unknown", "none")
