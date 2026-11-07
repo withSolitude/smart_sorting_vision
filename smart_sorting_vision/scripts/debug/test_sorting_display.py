@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import QApplication
 
 ROOT = Path(
     __file__
-).resolve().parents[1]
+).resolve().parents[2]
 
 sys.path.insert(
     0,
@@ -24,7 +24,7 @@ from ui.sorting_display import (
 )
 
 
-def make_test_image():
+def make_test_image(bgr):
     """
     生成一张假的 BGR 图像。
 
@@ -41,12 +41,7 @@ def make_test_image():
         dtype=np.uint8,
     )
 
-    # BGR
-    image[
-        60:300,
-        140:340,
-        2,
-    ] = 220
+    image[60:300, 140:340] = bgr
 
     return image
 
@@ -61,33 +56,31 @@ def main():
         fullscreen=True
     )
 
-    image = make_test_image()
-
     def item_1():
 
         window.add_finished_item(
-            sequence=1,
-            product_name="红色五棱柱",
-            image_bgr=image,
-            success_count=1,
+            box_id=1,
+            product_name="正方体_蓝色",
+            image_bgr=make_test_image((220, 0, 0)),
+            box_count=1,
         )
 
     def item_2():
 
         window.add_finished_item(
-            sequence=2,
-            product_name="蓝色圆柱",
-            image_bgr=image,
-            success_count=2,
+            box_id=2,
+            product_name="三棱柱_红色",
+            image_bgr=make_test_image((0, 0, 220)),
+            box_count=1,
         )
 
     def item_3():
 
         window.add_finished_item(
-            sequence=3,
-            product_name="黑色正方体",
-            image_bgr=image,
-            success_count=3,
+            box_id=1,
+            product_name="正方体_蓝色",
+            image_bgr=make_test_image((100, 0, 0)),
+            box_count=2,
         )
 
     QTimer.singleShot(
