@@ -523,6 +523,13 @@ class SmartSortingApp:
                 "[CONFIG] Top attributes ON: YOLO-seg mask -> HSV/Lab color "
                 "and YOLO-cls shape"
             )
+        class_priority_cfg = dict(
+            top_vision_cfg.get("class_priority") or {}
+        )
+        self.top_pipeline.set_class_priority(
+            enabled=bool(class_priority_cfg.get("enabled", True)),
+            unseen_class_bonus=float(class_priority_cfg.get("unseen_class_bonus", 1000.0)),
+        )
 
         # 必须在正式 WAIT START 前完成。这样 TensorRT execution context、
         # CUDA kernel、PyTorch/NumPy 后处理都不会拖到第一件货物。

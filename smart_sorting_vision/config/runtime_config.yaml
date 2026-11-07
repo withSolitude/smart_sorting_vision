@@ -149,6 +149,10 @@ vision:
       shape_background_bgr: [0, 0, 0]  # mask 外送入 YOLO-cls 的背景颜色。
       min_mask_pixels: 150
 
+    class_priority:
+      enabled: true  # 六类未齐时，优先抓顶部识别为未完成类别的安全候选。
+      unseen_class_bonus: 1000.0  # 只改变抓取排序，不改变侧面最终分箱结果。
+
     # 仅限制靠近电机/相机一侧的抓取姿态；角度为下位机Yaw舵机命令角，不是PICK_TARGET轴向角。
     edge_yaw_limit:
       enabled: true  # 是否启用边缘抓取姿态约束；下位机中转路线另由edge_motion_config.h配置。
@@ -527,7 +531,7 @@ runtime:
 
   # 正式比赛不允许把 unknown 直接分配到储物盒。
   reject_unknown: true
-  use_top_attributes_for_storage: true  # 分箱使用顶部 mask 的颜色/形状，二维码仍可由侧面识别补充。
+  use_top_attributes_for_storage: false  # 最终分箱使用侧面颜色/形状；顶部属性只参与抓取排序。
   # 侧面识别超时时，物体已夹在爪里：优先丢进一个空储物盒（unknown 类），
   # 只有连空盒都没有时才回退到 RETRY_PICK。
   side_timeout_fallback_sort: true  # 是否拒绝颜色或形状 unknown 的结果。

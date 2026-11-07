@@ -692,8 +692,23 @@ class SortingRuntime:
         self._reset_side_vote_stats()
         self._last_command_send_at = 0.0
 
+    def _update_top_class_priority(self) -> None:
+        setter = getattr(self.top_pipeline, "set_completed_class_keys", None)
+        if not callable(setter):
+            return
+        completed: set[str] = set()
+        for box in getattr(self.storage_manager, "boxes", []):
+            object_key = getattr(box, "object_key", None)
+            if not object_key:
+                continue
+            parts = str(object_key).split("|", 2)
+            if len(parts) >= 2:
+                completed.add(f"{parts[0].strip().lower()}|{parts[1].strip()}")
+        setter(completed)
+
     def _begin_cycle(self) -> None:
         self._clear_cycle_data(cancel_reservation=True)
+        self._update_top_class_priority()
         self._safe_reset(self.top_pipeline)
         self._safe_reset(self.side_pipeline)
         self._empty_scene_since = None

@@ -475,6 +475,9 @@ class TopPickPipeline:
         self.yaw_tcp_compensator = yaw_tcp_compensator
         self.yaw_servo_calibration = yaw_servo_calibration
         self.attribute_recognizer = attribute_recognizer
+        self.class_priority_enabled = False
+        self.completed_class_keys: set[str] | None = None
+        self.unseen_class_bonus = 1000.0
 
         if self.min_orientation_aspect_ratio < 1.0:
             raise ValueError("min_orientation_aspect_ratio must be >= 1.0")
@@ -1444,6 +1447,20 @@ class TopPickPipeline:
                     * (abs(float(x_mm)) + abs(float(y_mm)))
                 )
 
+                if self.class_priority_enabled and self.completed_class_keys is not None:
+                    class_key = "|".join(
+                        (
+                            str(obj.get("color", "unknown")).strip().lower(),
+                            str(obj.get("shape", "unknown")).strip(),
+                        )
+                    )
+                    if (
+                        class_key.split("|", 1)[0] not in ("", "unknown", "none")
+                        and class_key.split("|", 1)[1] not in ("", "unknown", "none")
+                        and class_key not in self.completed_class_keys
+                    ):
+                        score += self.unseen_class_bonus
+
                 # 用当前物理宽度修正用于显示/兼容的像素宽度估计。
                 if trial_family is not None:
                     ref_width_mm = trial_family.grasp_width_mm
@@ -1774,6 +1791,23 @@ class TopPickPipeline:
         """在共享侧面识别模型初始化后注入顶部属性识别器。"""
         self.attribute_recognizer = recognizer
 
+    def set_class_priority(
+        self,
+        *,
+        enabled: bool,
+        unseen_class_bonus: float = 1000.0,
+    ) -> None:
+        self.class_priority_enabled = bool(enabled)
+        self.unseen_class_bonus = float(unseen_class_bonus)
+
+    def set_completed_class_keys(self, keys: set[str] | None) -> None:
+        normalized = None if keys is None else {str(key) for key in keys}
+        if normalized == self.completed_class_keys:
+            return
+        self.completed_class_keys = normalized
+        self.consensus.reset()
+        self._prev_frame_axes = []
+
     def _match_failed_object(self, objects, image_shape) -> None:
         references = getattr(self, "_failed_references", [])
         if not references:
@@ -1842,6 +1876,16 @@ class TopPickPipeline:
                 yolo_result
             )
         )
+
+        if (
+            self.attribute_recognizer is not None
+            and self.class_priority_enabled
+            and self.completed_class_keys is not None
+            and objects
+        ):
+            # 需要比较未完成类别时，为每个实例生成一次顶部属性提示。
+            # 没有类别优先级时仍只识别最终选中的实例，避免增加常态延迟。
+            self.attribute_recognizer.enrich_objects(frame, objects)
 
         self._match_failed_object(objects, frame.shape)
 
@@ -1977,7 +2021,11 @@ class TopPickPipeline:
                     self._last_pick_reference = self._reference_from_object(
                         objects[index], frame.shape
                     )
-                    if self.attribute_recognizer is not None:
+                    if (
+                        self.attribute_recognizer is not None
+                        and str(getattr(chosen, "color", "unknown")).lower()
+                        in ("", "unknown", "none")
+                    ):
                         attr = self.attribute_recognizer.classify(
                             frame,
                             objects[index].get("polygon"),
