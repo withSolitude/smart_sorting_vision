@@ -1881,6 +1881,7 @@ class TopPickPipeline:
             self.attribute_recognizer is not None
             and self.class_priority_enabled
             and self.completed_class_keys is not None
+            and len(self.completed_class_keys) < 6
             and objects
         ):
             # 需要比较未完成类别时，为每个实例生成一次顶部属性提示。
